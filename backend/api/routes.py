@@ -148,6 +148,13 @@ async def get_option_contracts(ticker: str):
     return await uw_client.get_option_contracts(ticker)
 
 
+@router.get("/uw/budget")
+async def get_uw_budget():
+    """Snapshot of UW daily call budget + current market session."""
+    from feeds.uw_budget import budget
+    return budget.status()
+
+
 # ------------------------------------------------------------------ #
 #  Database — per-feed tables                                          #
 # ------------------------------------------------------------------ #

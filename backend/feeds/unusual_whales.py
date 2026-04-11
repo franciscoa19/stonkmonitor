@@ -6,8 +6,11 @@ Auth: Bearer token + UW-CLIENT-API-ID header required on every request.
 import asyncio
 import json
 import logging
+import time
 import aiohttp
 from typing import Callable, Optional
+
+from feeds.uw_budget import budget, current_session, interval_for
 
 logger = logging.getLogger(__name__)
 
@@ -47,16 +50,34 @@ class UnusualWhalesClient:
             await self._session.close()
 
     async def _get(self, path: str, params: dict = None) -> dict | list:
-        """Shared GET helper with error logging and 429 backoff."""
+        """Shared GET helper with error logging, 429 backoff, and budget tracking."""
+        # Hard safety: if we're over the pause threshold, refuse the call.
+        # stream_flow already backs off proactively; this catches stray callers
+        # (IV scanner, manual endpoints) before they push us over the limit.
+        if budget.should_pause():
+            logger.warning(
+                f"UW budget pause ({budget.daily_count}/{budget.daily_limit}) "
+                f"— skipping {path}"
+            )
+            return {}
+
         session = await self._get_session()
         url = f"{UW_BASE}{path}"
         async with session.get(url, params=params or {}) as resp:
+            # Always update the budget tracker from response headers,
+            # even on errors — UW returns the counters on 429 too.
+            budget.update_from_headers(path, resp.headers)
+
             if resp.status == 401:
                 logger.error(f"UW 401 Unauthorized — check your API key")
                 return {}
             if resp.status == 429:
                 retry_after = int(resp.headers.get("Retry-After", 30))
-                logger.warning(f"UW 429 rate limit on {path} — backing off {retry_after}s")
+                logger.warning(
+                    f"UW 429 rate limit on {path} "
+                    f"(daily {budget.daily_count}/{budget.daily_limit}) "
+                    f"— backing off {retry_after}s"
+                )
                 await asyncio.sleep(retry_after)
                 return {}
             if resp.status != 200:
@@ -147,27 +168,35 @@ class UnusualWhalesClient:
         self,
         on_event: Callable,
         channels: list[str] = None,
-        poll_interval: float = 15.0,
+        poll_interval: float = 15.0,       # retained for API compat, no longer used
         seed_seen_ids: set = None,
     ):
         """
-        Poll UW REST endpoints on a tight loop to simulate streaming.
-        Deduplicates by tracking seen IDs so each event fires only once.
-        channels can include: "options-flow", "darkpool", "insider-trades", "congress-trades"
+        Poll UW REST endpoints to simulate streaming, but intelligently:
 
-        seed_seen_ids: pre-populated set of IDs from the DB so restarts don't
-                       re-fire already-processed congress/insider events.
+          * Each channel has its own per-session interval (see feeds/uw_budget.py).
+            Interval -1 means "don't poll in this session at all" — we skip it.
+          * We track the last-poll timestamp per channel and only call when
+            the interval has elapsed, so the loop can sleep short (~5s) and
+            still hit exactly the cadence we configured.
+          * If the daily budget tracker says we're over the throttle threshold
+            (default 80%), every channel interval is doubled.
+          * If the budget tracker says we're over the pause threshold (95%),
+            the whole loop idles for 5 minutes at a time until midnight rolls
+            the counter.
+          * Sessions transition (e.g. RTH closes) are logged so the operator
+            can see why the cadence just changed.
+
+        Dedup key behavior and seed_seen_ids are unchanged.
         """
         if channels is None:
             channels = ["options-flow", "darkpool", "insider-trades", "congress-trades"]
 
-        # Seed with any IDs already in DB so restarts don't replay old events
         seen_ids: set[str] = set(seed_seen_ids) if seed_seen_ids else set()
         logger.info(f"UW feed: seeded dedup set with {len(seen_ids)} existing IDs")
 
         async def fetch_and_emit(feed_type: str, items: list):
             for item in items:
-                # Build a dedup key from whatever ID fields UW returns
                 uid = (
                     item.get("id") or
                     item.get("trade_id") or
@@ -177,7 +206,7 @@ class UnusualWhalesClient:
                 if uid in seen_ids:
                     continue
                 seen_ids.add(uid)
-                if len(seen_ids) > 5000:          # keep memory bounded
+                if len(seen_ids) > 5000:
                     seen_ids.clear()
 
                 event = {"channel": feed_type, "data": item}
@@ -186,10 +215,6 @@ class UnusualWhalesClient:
                 else:
                     on_event(event)
 
-        logger.info("UW feed starting (REST polling mode, staggered)...")
-
-        # Stagger channels so we never exceed 3 concurrent requests (UW limit)
-        # Each channel polls sequentially with a small gap between them
         CHANNEL_FUNCS = {
             "options-flow":   lambda: self.get_options_flow(limit=50),
             "darkpool":       lambda: self.get_darkpool_flow(limit=50),
@@ -198,15 +223,42 @@ class UnusualWhalesClient:
         }
         active_channels = [ch for ch in CHANNEL_FUNCS if ch in channels]
 
-        # Per-channel cooldown tracker for 429 backoff
-        backoff: dict[str, float] = {ch: 0.0 for ch in active_channels}
+        # Per-channel last-poll timestamps (monotonic seconds)
+        last_poll: dict[str, float] = {ch: 0.0 for ch in active_channels}
+        last_session: str = current_session()
+        logger.info(
+            f"UW feed starting — session={last_session} "
+            f"channels={active_channels} "
+            f"intervals={{{', '.join(f'{c}:{interval_for(c, last_session)}s' for c in active_channels)}}}"
+        )
 
         while True:
+            # Budget pause: sleep a long time then re-check. The daily counter
+            # resets on UW's end at midnight UTC so we'll eventually recover.
+            if budget.should_pause():
+                logger.warning(
+                    f"UW budget PAUSE {budget.daily_count}/{budget.daily_limit} "
+                    f"({budget.usage_pct*100:.0f}%) — idling 5 min"
+                )
+                await asyncio.sleep(300)
+                continue
+
+            sess = current_session()
+            if sess != last_session:
+                logger.info(f"UW feed session change: {last_session} → {sess}")
+                last_session = sess
+
+            throttle_mult = 2.0 if budget.should_throttle() else 1.0
+            now = time.monotonic()
+
             for feed_type in active_channels:
-                # Respect per-channel backoff
-                if backoff[feed_type] > 0:
-                    backoff[feed_type] = max(0.0, backoff[feed_type] - poll_interval)
+                base = interval_for(feed_type, sess)
+                if base < 0:
+                    continue   # channel disabled for this session
+                due_in = (last_poll[feed_type] + base * throttle_mult) - now
+                if due_in > 0:
                     continue
+
                 try:
                     result = await CHANNEL_FUNCS[feed_type]()
                     if result:
@@ -214,7 +266,10 @@ class UnusualWhalesClient:
                 except Exception as e:
                     logger.warning(f"Poll error on {feed_type}: {e}")
 
-                # Stagger: 2s gap between each channel call
+                last_poll[feed_type] = time.monotonic()
+                # 2s gap between channels so we never hit UW's 3-concurrent limit
                 await asyncio.sleep(2)
 
-            await asyncio.sleep(poll_interval)
+            # Main-loop tick. Short enough to respect the tightest interval
+            # (15s RTH) without drifting, long enough to be basically free.
+            await asyncio.sleep(5)

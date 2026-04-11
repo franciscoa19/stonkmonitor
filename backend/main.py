@@ -646,15 +646,30 @@ async def kalshi_position_monitor():
 
 
 async def iv_scanner_loop():
-    """Poll IV rank + earnings setup for watchlist tickers every 5 minutes."""
+    """Poll IV rank + earnings setup for watchlist tickers every 5 minutes.
+
+    Budget-aware: on weekends nothing moves, so we skip entirely. During
+    throttle (UW >80% daily) we double the cycle time. IV snapshots are
+    also useless outside market hours on weekdays — we slow to 30 min there.
+    """
     import time as _time
     from api.routes import _watchlist
+    from feeds.uw_budget import current_session, budget
     from signals.earnings_scanner import scan_ticker as earnings_scan
     await asyncio.sleep(30)  # give server time to start
 
     _earnings_last_run: dict[str, float] = {}  # ticker → epoch of last scan
 
     while True:
+        sess = current_session()
+        if sess == "weekend":
+            await asyncio.sleep(1800)  # check again in 30 min
+            continue
+        if budget.should_pause():
+            logger.info("IV scanner paused — UW budget exhausted")
+            await asyncio.sleep(600)
+            continue
+
         for ticker in list(_watchlist):
             try:
                 # ── IV Rank (UW) ────────────────────────────────────────
@@ -681,7 +696,55 @@ async def iv_scanner_loop():
             except Exception as e:
                 logger.warning(f"IV scanner error for {ticker}: {e}")
             await asyncio.sleep(2)  # 2s between tickers
-        await asyncio.sleep(300)  # 5 min between full scans
+
+        # Cycle cadence: 5 min RTH, 15 min extended, 30 min overnight.
+        # Throttle doubles all of these.
+        cycle = {"rth": 300, "extended": 900, "overnight": 1800}.get(sess, 900)
+        if budget.should_throttle():
+            cycle *= 2
+        await asyncio.sleep(cycle)
+
+
+async def uw_budget_monitor_loop():
+    """Log and broadcast UW daily call budget every 10 min.
+
+    Also fires a Telegram warning the first time we cross 80% so the
+    operator knows to back off manual probing. No-op until the UW client
+    has made at least one call (headers populate the tracker).
+    """
+    from feeds.uw_budget import budget, current_session
+    warned_80 = False
+    warned_95 = False
+    await asyncio.sleep(60)
+    while True:
+        try:
+            if budget.last_update_ts > 0:
+                status = budget.status()
+                logger.info(
+                    f"UW budget: {status['daily_count']}/{status['daily_limit']} "
+                    f"({status['usage_pct']*100:.1f}%) session={status['session']}"
+                )
+                await manager.broadcast({"type": "uw_budget", "data": status})
+                pct = status["usage_pct"]
+                if pct >= 0.95 and not warned_95 and telegram.enabled:
+                    await telegram.send_info(
+                        f"⛔ UW API at {pct*100:.0f}% "
+                        f"({status['daily_count']}/{status['daily_limit']}) — feed paused"
+                    )
+                    warned_95 = True
+                elif pct >= 0.80 and not warned_80 and telegram.enabled:
+                    await telegram.send_info(
+                        f"⚠️ UW API at {pct*100:.0f}% "
+                        f"({status['daily_count']}/{status['daily_limit']}) — throttling"
+                    )
+                    warned_80 = True
+                # Reset warning flags once usage falls back down (new day)
+                if pct < 0.50:
+                    warned_80 = False
+                    warned_95 = False
+        except Exception as e:
+            logger.debug(f"uw_budget_monitor error: {e}")
+        await asyncio.sleep(600)  # 10 min
 
 
 # ------------------------------------------------------------------ #
@@ -702,6 +765,7 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     uw_task = asyncio.create_task(start_uw_stream())
     iv_task = asyncio.create_task(iv_scanner_loop())
+    uw_budget_task = asyncio.create_task(uw_budget_monitor_loop())
 
     # Kalshi — login + start scan loop if configured
     kalshi_task = None
