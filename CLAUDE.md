@@ -54,13 +54,15 @@ npm run dev   # → http://localhost:3000
 ## Environment Variables (`backend/.env`)
 
 ```env
-UNUSUAL_WHALES_API_KEY=...
-ALPACA_API_KEY=...          ALPACA_SECRET_KEY=...      ALPACA_PAPER=true
-DISCORD_WEBHOOK_URL=...
-TELEGRAM_BOT_TOKEN=REDACTED_TELEGRAM_TOKEN
-TELEGRAM_CHAT_ID=REDACTED_CHAT_ID          # franesqu's chat ID — pre-resolved
-KALSHI_KEY_ID=REDACTED_KALSHI_KEY_ID
-KALSHI_PRIVATE_KEY=C:\Users\franc\claude\backend\kalshi_private.pem
+UNUSUAL_WHALES_API_KEY=<your_uw_key>
+ALPACA_API_KEY=<your_alpaca_key>
+ALPACA_SECRET_KEY=<your_alpaca_secret>
+ALPACA_PAPER=true
+DISCORD_WEBHOOK_URL=<your_webhook_url>
+TELEGRAM_BOT_TOKEN=<your_bot_token>
+TELEGRAM_CHAT_ID=<your_chat_id>   # resolved automatically on startup from getUpdates
+KALSHI_KEY_ID=<your_kalshi_key_id>
+KALSHI_PRIVATE_KEY=<path_to_kalshi_private.pem>
 KALSHI_DEMO=false
 KALSHI_SCAN_INTERVAL=60
 ```
