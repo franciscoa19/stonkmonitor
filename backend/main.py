@@ -77,9 +77,16 @@ _startup_complete = False
 
 # ── Kalshi pending orders ────────────────────────────────────────────────────
 _kalshi_pending: dict[int, dict] = {}   # alert_id → order params
-_kalshi_alerted: dict[str, float] = {}  # ticker → epoch when last alerted
+_kalshi_alerted: dict[str, float] = {}  # ticker → epoch when last buy-alerted
 _kalshi_alert_counter = 0
 KALSHI_ALERT_COOLDOWN = 3600  # don't re-alert same ticker within 1 hour
+
+# ── Kalshi position tracking (for sell alerts) ────────────────────────────────
+# Populated when we confirm a buy; monitored for exit signals
+_kalshi_positions: dict[str, dict] = {}  # ticker → {entry_cents, contracts, side, sell_alerted_at}
+_kalshi_sell_pending: dict[int, dict] = {}  # alert_id → sell params
+KALSHI_SELL_ALERT_COOLDOWN = 1800  # 30 min between sell alerts on same position
+KALSHI_SELL_THRESHOLDS = [3.0, 5.0, 10.0]  # alert at 3x, 5x, 10x gain
 
 # ------------------------------------------------------------------ #
 #  Signal Pipeline                                                     #
@@ -182,7 +189,7 @@ async def kalshi_scan_loop():
         try:
             balance_data = await kalshi_client.get_balance()
             balance_usd  = balance_data.get("balance", 0) / 100  # cents → dollars
-            markets      = await kalshi_client.get_markets(status="open", limit=200)
+            markets      = await kalshi_client.get_markets()  # paginates all categories
             opps         = kalshi_scanner.scan(markets, balance_usd)
 
             if opps:
@@ -237,12 +244,12 @@ async def kalshi_scan_loop():
 
 async def confirm_kalshi(alert_id: int, msg_id: int):
     """User tapped Execute on a Kalshi alert — place the order."""
+    import time as _time
     pending = _kalshi_pending.pop(alert_id, None)
     if not pending:
         await telegram.edit_message(msg_id, "⚠️ Order expired or already processed.")
         return
 
-    import time as _time
     if _time.time() > pending["expires"]:
         await telegram.edit_message(msg_id, "⏰ Order expired (10-min window passed).")
         return
@@ -268,6 +275,29 @@ async def confirm_kalshi(alert_id: int, msg_id: int):
         )
         logger.info(f"Kalshi order placed: {pending['ticker']} {pending['side']} "
                     f"×{pending['count']} @ {pending['price_cents']}¢ → {order_id}")
+
+        # Register position for sell monitoring
+        ticker = pending["ticker"]
+        existing = _kalshi_positions.get(ticker)
+        if existing:
+            # Average down/up with new contracts
+            total = existing["contracts"] + pending["count"]
+            avg   = (existing["entry_cents"] * existing["contracts"] +
+                     pending["price_cents"] * pending["count"]) / total
+            existing["contracts"]  = total
+            existing["entry_cents"] = avg
+        else:
+            _kalshi_positions[ticker] = {
+                "ticker":         ticker,
+                "title":          pending["title"],
+                "side":           pending["side"],
+                "contracts":      pending["count"],
+                "entry_cents":    pending["price_cents"],
+                "sell_alerted_at": 0.0,
+                "alerted_threshold": 0.0,  # last threshold we already fired
+            }
+        logger.info(f"Position monitor registered: {ticker}")
+
     except Exception as e:
         logger.error(f"Kalshi order failed: {e}")
         await telegram.edit_message(msg_id, f"❌ Order failed: {e}")
@@ -278,6 +308,146 @@ async def skip_kalshi(alert_id: int, msg_id: int):
     pending = _kalshi_pending.pop(alert_id, None)
     title = (pending or {}).get("title", "")[:50]
     await telegram.edit_message(msg_id, f"⏭ Skipped: {title}")
+
+
+# ── Kalshi sell handlers ──────────────────────────────────────────────────────
+
+async def _execute_kalshi_sell(alert_id: int, msg_id: int, fraction: float):
+    """Place a sell order for fraction (1.0 = all, 0.5 = half) of the position."""
+    pending = _kalshi_sell_pending.pop(alert_id, None)
+    if not pending:
+        await telegram.edit_message(msg_id, "⚠️ Position alert expired or already acted on.")
+        return
+
+    ticker    = pending["ticker"]
+    side      = pending["side"]
+    contracts = max(1, int(pending["contracts"] * fraction))
+    price     = pending["current_cents"]
+
+    try:
+        result = await kalshi_client.place_order(
+            ticker=ticker,
+            side=side,
+            action="sell",
+            count=contracts,
+            order_type="limit",
+            price=round(price),
+        )
+        order_id = (result.get("order") or {}).get("order_id", "?")
+        status   = (result.get("order") or {}).get("status", "submitted")
+
+        # Update tracked position
+        pos = _kalshi_positions.get(ticker)
+        if pos:
+            pos["contracts"] = max(0, pos["contracts"] - contracts)
+            if pos["contracts"] == 0:
+                _kalshi_positions.pop(ticker, None)
+
+        sold_val = contracts * price / 100
+        await telegram.edit_message(
+            msg_id,
+            f"{'✅' if fraction == 1.0 else '✂️'} <b>KALSHI SELL PLACED</b>\n"
+            f"Market: {pending['title'][:55]}\n"
+            f"Sold: <b>{contracts}x {side.upper()}</b> @ {price:.0f}¢\n"
+            f"Proceeds: <b>${sold_val:.2f}</b>\n"
+            f"Order ID: <code>{order_id}</code>  Status: <b>{status}</b>"
+        )
+        logger.info(f"Kalshi sell: {ticker} {side} ×{contracts} @ {price:.0f}¢ → {order_id}")
+    except Exception as e:
+        logger.error(f"Kalshi sell failed: {e}")
+        await telegram.edit_message(msg_id, f"❌ Sell failed: {e}")
+
+
+async def kalshi_sell_all(alert_id: int, msg_id: int):
+    await _execute_kalshi_sell(alert_id, msg_id, fraction=1.0)
+
+
+async def kalshi_sell_half(alert_id: int, msg_id: int):
+    await _execute_kalshi_sell(alert_id, msg_id, fraction=0.5)
+
+
+async def kalshi_hold(alert_id: int, msg_id: int):
+    pending = _kalshi_sell_pending.pop(alert_id, None)
+    title = (pending or {}).get("title", "")[:50]
+    await telegram.edit_message(msg_id, f"💎 Holding: {title}")
+
+
+# ── Kalshi position monitor ───────────────────────────────────────────────────
+
+async def kalshi_position_monitor():
+    """Every 2 min: check tracked positions for spike exits."""
+    import time as _time
+    await asyncio.sleep(60)  # let things settle
+    while True:
+        try:
+            if not _kalshi_positions:
+                await asyncio.sleep(120)
+                continue
+
+            now = _time.time()
+            for ticker, pos in list(_kalshi_positions.items()):
+                if pos["contracts"] <= 0:
+                    _kalshi_positions.pop(ticker, None)
+                    continue
+
+                # Fetch live market price
+                market = await kalshi_client.get_market(ticker)
+                if not market:
+                    continue
+
+                side = pos["side"]
+                if side == "yes":
+                    # We hold YES; sell at YES bid (what buyers will pay us)
+                    current = float(market.get("yes_bid_dollars") or 0) * 100
+                else:
+                    current = float(market.get("no_bid_dollars") or 0) * 100
+
+                if current <= 0:
+                    continue
+
+                entry     = pos["entry_cents"]
+                gain_x    = current / entry if entry > 0 else 1.0
+                last_alert = pos.get("sell_alerted_at", 0)
+                last_thresh = pos.get("alerted_threshold", 0.0)
+
+                # Find the highest threshold we've crossed that we haven't alerted for
+                triggered = None
+                for thresh in KALSHI_SELL_THRESHOLDS:
+                    if gain_x >= thresh and thresh > last_thresh:
+                        triggered = thresh
+
+                if triggered and (now - last_alert) > KALSHI_SELL_ALERT_COOLDOWN:
+                    _kalshi_alert_counter += 1
+                    alert_id = _kalshi_alert_counter
+                    _kalshi_sell_pending[alert_id] = {
+                        "ticker":        ticker,
+                        "title":         pos["title"],
+                        "side":          side,
+                        "contracts":     pos["contracts"],
+                        "entry_cents":   entry,
+                        "current_cents": current,
+                    }
+                    pos["sell_alerted_at"]   = now
+                    pos["alerted_threshold"] = triggered
+
+                    await telegram.send_kalshi_position_alert(
+                        alert_id=alert_id,
+                        ticker=ticker,
+                        title=pos["title"],
+                        side=side,
+                        contracts=pos["contracts"],
+                        entry_cents=entry,
+                        current_cents=current,
+                    )
+                    logger.info(
+                        f"Sell alert #{alert_id}: {ticker} {side} "
+                        f"entry={entry:.1f}¢ now={current:.1f}¢ ({gain_x:.1f}x)"
+                    )
+
+        except Exception as e:
+            logger.error(f"Position monitor error: {e}")
+
+        await asyncio.sleep(120)  # check every 2 minutes
 
 
 async def iv_scanner_loop():
@@ -320,11 +490,13 @@ async def lifespan(app: FastAPI):
 
     # Kalshi — login + start scan loop if configured
     kalshi_task = None
+    kalshi_monitor_task = None
     if kalshi_client:
         ok = await kalshi_client.ping()
         if ok:
             kalshi_task = asyncio.create_task(kalshi_scan_loop())
-            logger.info("Kalshi scanner started")
+            kalshi_monitor_task = asyncio.create_task(kalshi_position_monitor())
+            logger.info("Kalshi scanner + position monitor started")
 
     # Give the first poll cycle time to backfill, then open notifications
     async def enable_notifications():
@@ -347,6 +519,9 @@ async def lifespan(app: FastAPI):
             on_skip=auto_trade.skip_trade,
             on_kalshi_confirm=confirm_kalshi,
             on_kalshi_skip=skip_kalshi,
+            on_kalshi_sell_all=kalshi_sell_all,
+            on_kalshi_sell_half=kalshi_sell_half,
+            on_kalshi_hold=kalshi_hold,
         )
         logger.info(f"Telegram: {'chat_id=' + str(telegram.chat_id) if telegram.chat_id else 'waiting for /start'}")
 
@@ -356,6 +531,8 @@ async def lifespan(app: FastAPI):
     iv_task.cancel()
     if kalshi_task:
         kalshi_task.cancel()
+    if kalshi_monitor_task:
+        kalshi_monitor_task.cancel()
     await uw_client.close()
     if kalshi_client:
         await kalshi_client.close()

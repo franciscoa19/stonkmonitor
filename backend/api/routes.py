@@ -250,7 +250,7 @@ async def kalshi_scan():
         raise HTTPException(503, "Kalshi not configured")
     balance_data = await kalshi_client.get_balance()
     balance_usd  = balance_data.get("balance", 0) / 100  # cents → dollars
-    markets = await kalshi_client.get_markets(limit=200)
+    markets = await kalshi_client.get_markets()
     opps    = kalshi_scanner.scan(markets, balance_usd)
     return {
         "balance_usd": balance_usd,

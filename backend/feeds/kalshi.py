@@ -180,39 +180,51 @@ class KalshiClient:
     async def get_markets(
         self,
         status: str = "open",
-        limit: int = 200,
-        cursor: str = None,
+        page_size: int = 200,
+        max_markets: int = 5000,
     ) -> list[dict]:
         """
-        Fetch open markets via the events endpoint (which has richer data +
-        correct pricing). Returns a flat list of market dicts enriched with
-        the parent event's title and category.
+        Fetch ALL open markets by paginating the events endpoint.
+        Returns a flat list of market dicts enriched with the parent
+        event's title and category.
 
         Real field names (all prices in dollars 0.0–1.0):
           yes_ask_dollars, yes_bid_dollars, no_ask_dollars, no_bid_dollars
-          volume_fp, open_interest_fp, liquidity_dollars
-          close_time, ticker, title, category (from event)
+          volume_fp, open_interest_fp, close_time, ticker, title, category
         """
-        params = {"status": status, "limit": limit, "with_nested_markets": "true"}
-        if cursor:
-            params["cursor"] = cursor
-        data = await self._get("/events", params)
-        events = data.get("events", [])
+        markets: list[dict] = []
+        cursor: Optional[str] = None
 
-        # Flatten events → markets, attach event-level metadata
-        markets = []
-        for event in events:
-            event_title    = event.get("title", "")
-            event_category = event.get("category", "")
-            for m in event.get("markets", []):
-                m["event_title"]    = event_title
-                m["event_category"] = event_category
-                # Normalise: use market title if set, else event title
-                if not m.get("title"):
-                    m["title"] = event_title
-                markets.append(m)
+        while len(markets) < max_markets:
+            params: dict = {
+                "status": status,
+                "limit": page_size,
+                "with_nested_markets": "true",
+            }
+            if cursor:
+                params["cursor"] = cursor
 
-        return markets
+            data = await self._get("/events", params)
+            events = data.get("events", [])
+            if not events:
+                break
+
+            for event in events:
+                event_title    = event.get("title", "")
+                event_category = event.get("category", "")
+                for m in event.get("markets", []):
+                    m["event_title"]    = event_title
+                    m["event_category"] = event_category
+                    if not m.get("title"):
+                        m["title"] = event_title
+                    markets.append(m)
+
+            cursor = data.get("cursor")
+            if not cursor:
+                break  # no more pages
+
+        logger.info(f"Kalshi: fetched {len(markets)} markets across all categories")
+        return markets[:max_markets]
 
     async def get_events(self, status: str = "open", limit: int = 200) -> list[dict]:
         """Raw events list (without flattening)."""

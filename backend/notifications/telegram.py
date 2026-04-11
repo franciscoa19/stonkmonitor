@@ -24,6 +24,9 @@ class TelegramNotifier:
         self._on_skip: Optional[Callable] = None
         self._on_kalshi_confirm: Optional[Callable] = None
         self._on_kalshi_skip: Optional[Callable] = None
+        self._on_kalshi_sell_all: Optional[Callable] = None
+        self._on_kalshi_sell_half: Optional[Callable] = None
+        self._on_kalshi_hold: Optional[Callable] = None
 
     def _url(self, method: str) -> str:
         return TGAPI.format(token=self.token, method=method)
@@ -218,6 +221,61 @@ class TelegramNotifier:
         }
         return await self.send_message(text, reply_markup=keyboard)
 
+    async def send_kalshi_position_alert(
+        self,
+        alert_id: int,
+        ticker: str,
+        title: str,
+        side: str,
+        contracts: int,
+        entry_cents: float,
+        current_cents: float,
+    ) -> Optional[int]:
+        """
+        Send a position spike alert with Sell All / Sell Half / Hold buttons.
+        Fires when a held position has moved significantly in our favor.
+        """
+        if not self.enabled or not self.chat_id:
+            return None
+
+        gain_x    = current_cents / entry_cents if entry_cents > 0 else 1.0
+        entry_val = contracts * entry_cents / 100
+        curr_val  = contracts * current_cents / 100
+        gain_usd  = curr_val - entry_val
+        half      = max(1, contracts // 2)
+
+        if gain_x >= 10:
+            emoji, urgency = "🚀", "MOON — consider taking profits!"
+        elif gain_x >= 5:
+            emoji, urgency = "📈", "Big move — strong sell signal"
+        else:
+            emoji, urgency = "💹", "Nice gain — trim or hold?"
+
+        text = (
+            f"<b>{emoji} KALSHI POSITION SPIKE</b>\n"
+            f"{'─' * 30}\n"
+            f"<b>{title[:65]}</b>\n"
+            f"{'─' * 30}\n"
+            f"Side:  <b>{side.upper()}</b> × {contracts} contracts\n"
+            f"Entry: <b>{entry_cents:.0f}¢</b>  →  Now: <b>{current_cents:.0f}¢</b>\n"
+            f"Gain:  <b>{gain_x:.1f}x</b>  (+${gain_usd:.2f})\n"
+            f"Value: ${entry_val:.2f} → <b>${curr_val:.2f}</b>\n"
+            f"{'─' * 30}\n"
+            f"<i>{urgency}</i>"
+        )
+
+        keyboard = {
+            "inline_keyboard": [[
+                {"text": f"✅ SELL ALL ({contracts}x)",
+                 "callback_data": f"ksell_all_{alert_id}"},
+                {"text": f"✂️ SELL HALF ({half}x)",
+                 "callback_data": f"ksell_half_{alert_id}"},
+                {"text": "🚫 HOLD",
+                 "callback_data": f"ksell_hold_{alert_id}"},
+            ]]
+        }
+        return await self.send_message(text, reply_markup=keyboard)
+
     async def send_info(self, text: str):
         """Simple informational message (no buttons)."""
         await self.send_message(text)
@@ -230,12 +288,18 @@ class TelegramNotifier:
         on_skip: Callable[[int, int], Awaitable],
         on_kalshi_confirm: Optional[Callable[[int, int], Awaitable]] = None,
         on_kalshi_skip: Optional[Callable[[int, int], Awaitable]] = None,
+        on_kalshi_sell_all: Optional[Callable[[int, int], Awaitable]] = None,
+        on_kalshi_sell_half: Optional[Callable[[int, int], Awaitable]] = None,
+        on_kalshi_hold: Optional[Callable[[int, int], Awaitable]] = None,
     ):
         """Start background task to poll for button taps."""
         self._on_confirm = on_confirm
         self._on_skip = on_skip
         self._on_kalshi_confirm = on_kalshi_confirm
         self._on_kalshi_skip = on_kalshi_skip
+        self._on_kalshi_sell_all = on_kalshi_sell_all
+        self._on_kalshi_sell_half = on_kalshi_sell_half
+        self._on_kalshi_hold = on_kalshi_hold
         self._polling = True
         asyncio.create_task(self._poll_loop())
         logger.info("Telegram polling started")
@@ -281,6 +345,24 @@ class TelegramNotifier:
                 await self.answer_callback(cb_id, "Skipped")
                 if self._on_kalshi_skip:
                     await self._on_kalshi_skip(alert_id, msg_id)
+
+            elif data.startswith("ksell_all_"):
+                alert_id = int(data.split("_", 2)[2])
+                await self.answer_callback(cb_id, "Selling all contracts...")
+                if self._on_kalshi_sell_all:
+                    await self._on_kalshi_sell_all(alert_id, msg_id)
+
+            elif data.startswith("ksell_half_"):
+                alert_id = int(data.split("_", 2)[2])
+                await self.answer_callback(cb_id, "Selling half...")
+                if self._on_kalshi_sell_half:
+                    await self._on_kalshi_sell_half(alert_id, msg_id)
+
+            elif data.startswith("ksell_hold_"):
+                alert_id = int(data.split("_", 2)[2])
+                await self.answer_callback(cb_id, "Holding position 💎")
+                if self._on_kalshi_hold:
+                    await self._on_kalshi_hold(alert_id, msg_id)
 
             elif data.startswith("confirm_"):
                 trade_id = int(data.split("_", 1)[1])
