@@ -451,21 +451,41 @@ async def kalshi_position_monitor():
 
 
 async def iv_scanner_loop():
-    """Poll IV rank for watchlist tickers every 5 minutes."""
+    """Poll IV rank + earnings setup for watchlist tickers every 5 minutes."""
+    import time as _time
     from api.routes import _watchlist
+    from signals.earnings_scanner import scan_ticker as earnings_scan
     await asyncio.sleep(30)  # give server time to start
+
+    _earnings_last_run: dict[str, float] = {}  # ticker → epoch of last scan
+
     while True:
         for ticker in list(_watchlist):
             try:
+                # ── IV Rank (UW) ────────────────────────────────────────
                 iv_data = await uw_client.get_iv_rank(ticker)
                 iv_rank = float(iv_data.get("iv_rank", 0) or 0)
                 iv_pct  = float(iv_data.get("iv_percentile", 0) or 0)
                 signal  = engine.score_iv_rank(ticker, iv_rank, iv_pct)
                 if signal:
                     await handle_signal(signal)
+
+                # ── Earnings IV/RV setup (yfinance) — max once per 30 min ──
+                now = _time.time()
+                if now - _earnings_last_run.get(ticker, 0) >= 1800:
+                    _earnings_last_run[ticker] = now
+                    setup  = await earnings_scan(ticker)
+                    signal = engine.score_earnings_setup(setup)
+                    if signal:
+                        await handle_signal(signal)
+                        logger.info(
+                            f"Earnings setup {ticker}: {setup.recommendation} "
+                            f"IV/RV={setup.iv30_rv30:.2f}x score={signal.score}"
+                        )
+
             except Exception as e:
                 logger.warning(f"IV scanner error for {ticker}: {e}")
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)  # 2s between tickers
         await asyncio.sleep(300)  # 5 min between full scans
 
 

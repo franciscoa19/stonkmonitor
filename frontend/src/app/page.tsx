@@ -12,7 +12,7 @@ import { KalshiPanel } from '@/components/KalshiPanel'
 const API = process.env.NEXT_PUBLIC_API_URL
 const WS  = process.env.NEXT_PUBLIC_WS_URL
 
-const FILTER_TYPES = ['All', 'Sweeps', 'Dark Pool', 'Insider', 'Congress', 'IV']
+const FILTER_TYPES = ['All', 'Sweeps', 'Dark Pool', 'Insider', 'Congress', 'IV', 'Earnings']
 
 type FilterType = typeof FILTER_TYPES[number]
 
@@ -24,6 +24,7 @@ function filterSignals(signals: Signal[], filter: FilterType): Signal[] {
     'Insider':   ['insider_buy', 'insider_sell'],
     'Congress':  ['congress_trade'],
     'IV':        ['iv_high', 'iv_low'],
+    'Earnings':  ['earnings_setup'],
   }
   const types = map[filter] || []
   return signals.filter(s => types.includes(s.type))

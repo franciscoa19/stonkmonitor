@@ -17,6 +17,7 @@ const TYPE_ICONS: Record<string, string> = {
   congress_trade: '🏛️',
   iv_high:        '🔥',
   iv_low:         '❄️',
+  earnings_setup: '🎯',
 }
 
 function ScoreBar({ score }: { score: number }) {

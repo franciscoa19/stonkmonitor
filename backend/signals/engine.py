@@ -27,6 +27,7 @@ class SignalType(str, Enum):
     IV_LOW         = "iv_low"
     SWEEP          = "sweep"
     GOLDEN_SWEEP   = "golden_sweep"
+    EARNINGS_SETUP = "earnings_setup"
 
 
 class SignalSide(str, Enum):
@@ -427,6 +428,47 @@ class SignalEngine:
             )
 
         return None
+
+    def score_earnings_setup(self, setup) -> Optional[Signal]:
+        """
+        Convert an EarningsSetup from earnings_scanner into a Signal.
+        Only surfaces SELL_PREMIUM and CONSIDER recommendations.
+        """
+        if setup is None or setup.recommendation == "AVOID":
+            return None
+
+        rec   = setup.recommendation  # "SELL_PREMIUM" | "CONSIDER"
+        score = setup.score           # 8.0 or 6.0
+
+        # Boost score further when IV/RV ratio is extreme
+        if setup.iv30_rv30 >= 1.5:
+            score = min(score + 1.0, 9.5)
+        elif setup.iv30_rv30 >= 1.35:
+            score = min(score + 0.5, 9.0)
+
+        checks = (
+            f"Vol {'✅' if setup.vol_ok else '❌'} "
+            f"| IV/RV {'✅' if setup.iv_expensive else '❌'} {setup.iv30_rv30:.2f}x "
+            f"| TS {'✅' if setup.ts_inverted else '❌'}"
+        )
+        em = f" | Expected move: {setup.expected_move}" if setup.expected_move else ""
+
+        return Signal(
+            type=SignalType.EARNINGS_SETUP,
+            ticker=setup.ticker,
+            score=round(score, 1),
+            side=SignalSide.NEUTRAL,
+            title=(
+                f"{'🎯' if rec == 'SELL_PREMIUM' else '⚠️'} "
+                f"{setup.ticker} — {'SELL PREMIUM' if rec == 'SELL_PREMIUM' else 'CONSIDER PREMIUM SALE'}"
+            ),
+            description=(
+                f"IV30={setup.iv30*100:.0f}% vs RV30={setup.rv30*100:.0f}% "
+                f"({setup.iv30_rv30:.2f}x){em} | {checks} | "
+                f"Price ${setup.price:.2f} | Score {score:.1f}/10"
+            ),
+            raw=setup.to_dict(),
+        )
 
     # ------------------------------------------------------------------ #
     #  Master dispatch                                                     #
