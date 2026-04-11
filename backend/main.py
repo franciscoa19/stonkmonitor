@@ -172,8 +172,9 @@ async def kalshi_scan_loop():
     while True:
         try:
             balance_data = await kalshi_client.get_balance()
+            # balance field is in cents
             balance_usd  = balance_data.get("balance", 0) / 100
-            markets      = await kalshi_client.get_markets(limit=200)
+            markets      = await kalshi_client.get_markets(status="open", limit=200)
             opps         = kalshi_scanner.scan(markets, balance_usd)
 
             if opps:
@@ -192,19 +193,20 @@ async def kalshi_scan_loop():
                 best = top[0]
                 if best.score() >= 7.0 and _startup_complete:
                     await telegram.send_info(
-                        f"🎰 <b>KALSHI EDGE</b>\n"
+                        f"🎰 <b>KALSHI OPPORTUNITY</b>\n"
                         f"{'─'*28}\n"
                         f"<b>{best.title[:60]}</b>\n"
+                        f"Type: <b>{best.opportunity_type.upper()}</b>\n"
                         f"Side: <b>{best.side.upper()}</b> @ {best.market_price*100:.0f}¢\n"
-                        f"True prob: <b>{best.true_prob*100:.1f}%</b>  Edge: <b>{best.edge*100:.1f}%</b>\n"
                         f"Bet: <b>{best.bet_contracts}x</b> contracts = <b>${best.bet_cost_usd:.2f}</b>\n"
-                        f"Confidence: <b>{best.confidence.upper()}</b>  DTE: {best.dte:.1f}d\n"
+                        f"DTE: {best.dte:.1f}d  Vol: {int(best.volume):,}\n"
                         f"Score: <b>{best.score():.1f}/10</b>\n"
+                        f"<i>{best.rationale}</i>\n"
                         f"<i>Use dashboard Kalshi tab to execute</i>"
                     )
                     logger.info(
                         f"KALSHI: {best.ticker} {best.side.upper()} @ {best.market_price*100:.0f}¢ "
-                        f"edge={best.edge*100:.1f}% score={best.score()}"
+                        f"type={best.opportunity_type} score={best.score()}"
                     )
 
         except Exception as e:
