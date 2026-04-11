@@ -190,12 +190,29 @@ class TelegramNotifier:
             "high_vol_extreme": "🔥",
             "mover":            "📈",
             "active":           "⚖️",
+            "yield_farm":       "🌾",
+            "smart_money":      "🐋",
         }.get(opp.get("opportunity_type", ""), "🎰")
 
-        side  = (opp.get("side") or "yes").upper()
-        price = opp.get("market_price_cents", 0)
-        cost  = float(opp.get("bet_cost_usd", 0))
-        count = opp.get("bet_contracts", 1)
+        side        = (opp.get("side") or "yes").upper()
+        price       = opp.get("market_price_cents", 0)
+        maker_price = opp.get("maker_price_cents", price)
+        cost        = float(opp.get("bet_cost_usd", 0))
+        count       = opp.get("bet_contracts", 1)
+        ann_yld     = float(opp.get("annualized_yield_pct", 0))
+        vol_z       = float(opp.get("volume_zscore", 0))
+
+        # Optional extra rows
+        extra_rows = []
+        if ann_yld >= 50:
+            extra_rows.append(f"Annualized yield: <b>{ann_yld:.0f}%</b>")
+        if vol_z >= 2.0:
+            extra_rows.append(f"Vol Z-score: <b>{vol_z:.1f}σ</b>")
+        if maker_price and maker_price != price:
+            extra_rows.append(
+                f"Maker limit: <b>{maker_price:.0f}¢</b> (ask {price:.0f}¢)"
+            )
+        extra = ("\n".join(extra_rows) + "\n") if extra_rows else ""
 
         text = (
             f"<b>{type_emoji} KALSHI OPPORTUNITY</b>\n"
@@ -205,9 +222,10 @@ class TelegramNotifier:
             f"{'─' * 30}\n"
             f"Side:  <b>{side}</b> @ <b>{price:.0f}¢</b>\n"
             f"Order: <b>{count}x contracts</b> = <b>${cost:.2f}</b>\n"
-            f"DTE:   {opp.get('dte', 0):.0f}d  |  Vol: {int(opp.get('volume', 0)):,}\n"
+            f"DTE:   {opp.get('dte', 0):.1f}d  |  Vol: {int(opp.get('volume', 0)):,}\n"
+            f"{extra}"
             f"{'─' * 30}\n"
-            f"<i>{opp.get('rationale', '')[:150]}</i>\n"
+            f"<i>{opp.get('rationale', '')[:160]}</i>\n"
             f"⏳ <b>Offer expires in 10 min</b>"
         )
 

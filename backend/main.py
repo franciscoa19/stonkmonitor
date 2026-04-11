@@ -323,11 +323,15 @@ async def kalshi_scan_loop():
                         alert_id = _kalshi_alert_counter
                         opp_dict = opp.to_dict()
 
+                        # Maker pricing: use bid-side limit to earn the spread
+                        # instead of paying it. Falls back to ask if bid is 0.
+                        maker_cents = round((opp.maker_price or opp.market_price) * 100)
                         _kalshi_pending[alert_id] = {
                             "ticker":      ticker,
                             "side":        opp.side if opp.side != "watch" else "yes",
                             "count":       opp.bet_contracts,
-                            "price_cents": round(price_cents),
+                            "price_cents": maker_cents,          # maker-side limit
+                            "ask_cents":   round(price_cents),    # reference only
                             "title":       opp.title,
                             "opp_dict":    opp_dict,
                             "expires":     now + 600,

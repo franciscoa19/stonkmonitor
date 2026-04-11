@@ -24,6 +24,9 @@ interface KalshiOpp {
   bet_cost_usd: number
   rationale: string
   score: number
+  annualized_yield_pct?: number
+  volume_zscore?: number
+  maker_price_cents?: number
 }
 
 interface ScanResult {
@@ -38,6 +41,8 @@ const TYPE_COLORS: Record<string, string> = {
   high_vol_extreme:'text-purple-400 border-purple-400/40 bg-purple-400/10',
   mover:           'text-blue-400 border-blue-400/40 bg-blue-400/10',
   active:          'text-green-400 border-green-400/40 bg-green-400/10',
+  yield_farm:      'text-lime-400 border-lime-400/40 bg-lime-400/10',
+  smart_money:     'text-cyan-400 border-cyan-400/40 bg-cyan-400/10',
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -45,6 +50,8 @@ const TYPE_LABELS: Record<string, string> = {
   high_vol_extreme: '🔥 HIGH VOL',
   mover:            '📈 MOVER',
   active:           '⚖️ ACTIVE',
+  yield_farm:       '🌾 YIELD FARM',
+  smart_money:      '🐋 SMART MONEY',
 }
 
 function ScorePip({ score }: { score: number }) {
@@ -115,10 +122,19 @@ function OppCard({ opp, onExecute }: { opp: KalshiOpp; onExecute: (opp: KalshiOp
       </div>
 
       {/* Meta row */}
-      <div className="flex gap-3 text-xs text-muted">
-        <span>{opp.dte.toFixed(0)}d</span>
+      <div className="flex gap-3 text-xs text-muted flex-wrap">
+        <span>{opp.dte.toFixed(1)}d</span>
         <span>vol {(opp.volume / 1000).toFixed(0)}k</span>
         <span>spread {(opp.spread * 100).toFixed(1)}¢</span>
+        {!!opp.annualized_yield_pct && opp.annualized_yield_pct >= 50 && (
+          <span className="text-lime-400">ann {opp.annualized_yield_pct.toFixed(0)}%</span>
+        )}
+        {!!opp.volume_zscore && opp.volume_zscore >= 2 && (
+          <span className="text-cyan-400">Z {opp.volume_zscore.toFixed(1)}σ</span>
+        )}
+        {!!opp.maker_price_cents && opp.maker_price_cents !== opp.market_price_cents && (
+          <span className="text-accent">maker {opp.maker_price_cents.toFixed(0)}¢</span>
+        )}
         {opp.category && <span className="truncate">{opp.category}</span>}
       </div>
 
@@ -184,9 +200,10 @@ export function KalshiPanel({ wsData }: KalshiPanelProps) {
   async function executeOrder(opp: KalshiOpp) {
     setExecError('')
     try {
-      const priceInCents = Math.round(
-        opp.side === 'yes' ? opp.yes_ask * 100 : opp.no_ask * 100
-      )
+      // Prefer maker-side limit price to earn the spread; fall back to ask
+      const priceInCents = opp.maker_price_cents
+        ? Math.round(opp.maker_price_cents)
+        : Math.round(opp.side === 'yes' ? opp.yes_ask * 100 : opp.no_ask * 100)
       const res = await fetch(`${API}/api/kalshi/order`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -215,6 +232,8 @@ export function KalshiPanel({ wsData }: KalshiPanelProps) {
 
   const typeFilters = [
     { id: 'all',             label: 'All' },
+    { id: 'smart_money',     label: '🐋 Smart $' },
+    { id: 'yield_farm',      label: '🌾 Yield' },
     { id: 'near_certain',    label: '🔒 Certain' },
     { id: 'high_vol_extreme',label: '🔥 High Vol' },
     { id: 'mover',           label: '📈 Movers' },
