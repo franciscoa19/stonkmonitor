@@ -47,12 +47,17 @@ class UnusualWhalesClient:
             await self._session.close()
 
     async def _get(self, path: str, params: dict = None) -> dict | list:
-        """Shared GET helper with error logging."""
+        """Shared GET helper with error logging and 429 backoff."""
         session = await self._get_session()
         url = f"{UW_BASE}{path}"
         async with session.get(url, params=params or {}) as resp:
             if resp.status == 401:
                 logger.error(f"UW 401 Unauthorized — check your API key")
+                return {}
+            if resp.status == 429:
+                retry_after = int(resp.headers.get("Retry-After", 30))
+                logger.warning(f"UW 429 rate limit on {path} — backing off {retry_after}s")
+                await asyncio.sleep(retry_after)
                 return {}
             if resp.status != 200:
                 text = await resp.text()
@@ -175,30 +180,35 @@ class UnusualWhalesClient:
                 else:
                     on_event(event)
 
-        logger.info("UW feed starting (REST polling mode)...")
+        logger.info("UW feed starting (REST polling mode, staggered)...")
+
+        # Stagger channels so we never exceed 3 concurrent requests (UW limit)
+        # Each channel polls sequentially with a small gap between them
+        CHANNEL_FUNCS = {
+            "options-flow":   lambda: self.get_options_flow(limit=50),
+            "darkpool":       lambda: self.get_darkpool_flow(limit=50),
+            "insider-trades": lambda: self.get_insider_trades(limit=50),
+            "congress-trades":lambda: self.get_congress_trades(limit=50),
+        }
+        active_channels = [ch for ch in CHANNEL_FUNCS if ch in channels]
+
+        # Per-channel cooldown tracker for 429 backoff
+        backoff: dict[str, float] = {ch: 0.0 for ch in active_channels}
 
         while True:
-            try:
-                tasks = []
-                if "options-flow" in channels:
-                    tasks.append(("options-flow", self.get_options_flow(limit=50)))
-                if "darkpool" in channels:
-                    tasks.append(("darkpool", self.get_darkpool_flow(limit=50)))
-                if "insider-trades" in channels:
-                    tasks.append(("insider-trades", self.get_insider_trades(limit=50)))
-                if "congress-trades" in channels:
-                    tasks.append(("congress-trades", self.get_congress_trades(limit=50)))
-
-                results = await asyncio.gather(*[t for _, t in tasks], return_exceptions=True)
-
-                for (feed_type, _), result in zip(tasks, results):
-                    if isinstance(result, Exception):
-                        logger.warning(f"Poll error on {feed_type}: {result}")
-                        continue
+            for feed_type in active_channels:
+                # Respect per-channel backoff
+                if backoff[feed_type] > 0:
+                    backoff[feed_type] = max(0.0, backoff[feed_type] - poll_interval)
+                    continue
+                try:
+                    result = await CHANNEL_FUNCS[feed_type]()
                     if result:
                         await fetch_and_emit(feed_type, result)
+                except Exception as e:
+                    logger.warning(f"Poll error on {feed_type}: {e}")
 
-            except Exception as e:
-                logger.error(f"UW poll loop error: {e}")
+                # Stagger: 2s gap between each channel call
+                await asyncio.sleep(2)
 
             await asyncio.sleep(poll_interval)

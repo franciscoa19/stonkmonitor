@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: int = Field(0, env="TELEGRAM_CHAT_ID")
 
+    # --- Kalshi ---
+    kalshi_email: str = Field("", env="KALSHI_EMAIL")
+    kalshi_password: str = Field("", env="KALSHI_PASSWORD")
+    kalshi_demo: bool = Field(True, env="KALSHI_DEMO")
+    kalshi_scan_interval: int = Field(300, env="KALSHI_SCAN_INTERVAL")  # seconds
+    kalshi_min_edge: float = Field(0.05, env="KALSHI_MIN_EDGE")
+    kalshi_max_bet_usd: float = Field(500.0, env="KALSHI_MAX_BET_USD")
+    kalshi_auto_execute: bool = Field(False, env="KALSHI_AUTO_EXECUTE")  # require confirmation first
+
     # --- Auto-Trade ---
     auto_trade_enabled: bool = Field(True, env="AUTO_TRADE_ENABLED")
     auto_trade_max_risk_pct: float = Field(0.02, env="AUTO_TRADE_MAX_RISK_PCT")

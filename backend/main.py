@@ -20,6 +20,8 @@ from trading.alpaca_trader import AlpacaTrader
 from signals.engine import SignalEngine
 from signals.patterns import PatternEngine
 from signals.auto_trade import AutoTradeEngine
+from signals.kalshi_scanner import KalshiScanner
+from feeds.kalshi import KalshiClient
 from notifications.discord import DiscordNotifier
 from notifications.pushover import PushoverNotifier
 from notifications.telegram import TelegramNotifier
@@ -56,6 +58,16 @@ discord     = DiscordNotifier(settings.discord_webhook_url)
 pushover    = PushoverNotifier(settings.pushover_api_token, settings.pushover_user_key)
 telegram    = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
 auto_trade  = AutoTradeEngine(settings)
+
+# Kalshi — only init if credentials set
+kalshi_client  = None
+kalshi_scanner = KalshiScanner(settings)
+if settings.kalshi_email and not settings.kalshi_email.startswith("your_"):
+    kalshi_client = KalshiClient(
+        settings.kalshi_email,
+        settings.kalshi_password,
+        demo=settings.kalshi_demo,
+    )
 
 # In-memory signal store (last 500 signals)
 signal_store: list[dict] = []
@@ -154,6 +166,53 @@ async def start_uw_stream():
     )
 
 
+async def kalshi_scan_loop():
+    """Periodically scan Kalshi for edge opportunities and broadcast to frontend."""
+    await asyncio.sleep(15)  # wait for startup
+    while True:
+        try:
+            balance_data = await kalshi_client.get_balance()
+            balance_usd  = balance_data.get("balance", 0) / 100
+            markets      = await kalshi_client.get_markets(limit=200)
+            opps         = kalshi_scanner.scan(markets, balance_usd)
+
+            if opps:
+                top = opps[:10]
+                await manager.broadcast({
+                    "type": "kalshi_scan",
+                    "data": {
+                        "balance_usd": balance_usd,
+                        "markets_scanned": len(markets),
+                        "opportunities": [o.to_dict() for o in top],
+                        "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
+                    }
+                })
+
+                # Telegram alert for top opportunity if score >= 7
+                best = top[0]
+                if best.score() >= 7.0 and _startup_complete:
+                    await telegram.send_info(
+                        f"🎰 <b>KALSHI EDGE</b>\n"
+                        f"{'─'*28}\n"
+                        f"<b>{best.title[:60]}</b>\n"
+                        f"Side: <b>{best.side.upper()}</b> @ {best.market_price*100:.0f}¢\n"
+                        f"True prob: <b>{best.true_prob*100:.1f}%</b>  Edge: <b>{best.edge*100:.1f}%</b>\n"
+                        f"Bet: <b>{best.bet_contracts}x</b> contracts = <b>${best.bet_cost_usd:.2f}</b>\n"
+                        f"Confidence: <b>{best.confidence.upper()}</b>  DTE: {best.dte:.1f}d\n"
+                        f"Score: <b>{best.score():.1f}/10</b>\n"
+                        f"<i>Use dashboard Kalshi tab to execute</i>"
+                    )
+                    logger.info(
+                        f"KALSHI: {best.ticker} {best.side.upper()} @ {best.market_price*100:.0f}¢ "
+                        f"edge={best.edge*100:.1f}% score={best.score()}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Kalshi scan loop error: {e}")
+
+        await asyncio.sleep(settings.kalshi_scan_interval)
+
+
 async def iv_scanner_loop():
     """Poll IV rank for watchlist tickers every 5 minutes."""
     from api.routes import _watchlist
@@ -192,6 +251,14 @@ async def lifespan(app: FastAPI):
     uw_task = asyncio.create_task(start_uw_stream())
     iv_task = asyncio.create_task(iv_scanner_loop())
 
+    # Kalshi — login + start scan loop if configured
+    kalshi_task = None
+    if kalshi_client:
+        ok = await kalshi_client.login()
+        if ok:
+            kalshi_task = asyncio.create_task(kalshi_scan_loop())
+            logger.info("Kalshi scanner started")
+
     # Give the first poll cycle time to backfill, then open notifications
     async def enable_notifications():
         global _startup_complete
@@ -218,7 +285,11 @@ async def lifespan(app: FastAPI):
 
     uw_task.cancel()
     iv_task.cancel()
+    if kalshi_task:
+        kalshi_task.cancel()
     await uw_client.close()
+    if kalshi_client:
+        await kalshi_client.close()
     await telegram.close()
     await auto_trade.close()
     await db.close()

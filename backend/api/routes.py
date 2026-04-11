@@ -233,6 +233,76 @@ async def db_ticker_profile(ticker: str):
 
 
 # ------------------------------------------------------------------ #
+#  Kalshi Prediction Markets                                           #
+# ------------------------------------------------------------------ #
+class KalshiOrderRequest(BaseModel):
+    ticker: str
+    side: Literal["yes", "no"]
+    count: int
+    price: int    # cents (1-99)
+
+
+@router.get("/kalshi/scan")
+async def kalshi_scan():
+    """Run the edge scanner across all open Kalshi markets."""
+    from main import kalshi_client, kalshi_scanner, settings
+    if not kalshi_client:
+        raise HTTPException(503, "Kalshi not configured")
+    balance_data = await kalshi_client.get_balance()
+    balance_usd  = balance_data.get("balance", 0) / 100  # cents → dollars
+    markets = await kalshi_client.get_markets(limit=200)
+    opps    = kalshi_scanner.scan(markets, balance_usd)
+    return {
+        "balance_usd": balance_usd,
+        "markets_scanned": len(markets),
+        "opportunities": [o.to_dict() for o in opps[:50]],
+    }
+
+
+@router.get("/kalshi/positions")
+async def kalshi_positions():
+    from main import kalshi_client
+    if not kalshi_client:
+        raise HTTPException(503, "Kalshi not configured")
+    return await kalshi_client.get_positions()
+
+
+@router.get("/kalshi/balance")
+async def kalshi_balance():
+    from main import kalshi_client
+    if not kalshi_client:
+        raise HTTPException(503, "Kalshi not configured")
+    data = await kalshi_client.get_balance()
+    return {"balance_usd": data.get("balance", 0) / 100}
+
+
+@router.get("/kalshi/market/{ticker}")
+async def kalshi_market(ticker: str):
+    from main import kalshi_client
+    if not kalshi_client:
+        raise HTTPException(503, "Kalshi not configured")
+    return await kalshi_client.get_market(ticker)
+
+
+@router.post("/kalshi/order")
+async def kalshi_order(req: KalshiOrderRequest):
+    from main import kalshi_client
+    if not kalshi_client:
+        raise HTTPException(503, "Kalshi not configured")
+    result = await kalshi_client.place_order(
+        ticker=req.ticker,
+        side=req.side,
+        action="buy",
+        count=req.count,
+        order_type="limit",
+        price=req.price,
+    )
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+# ------------------------------------------------------------------ #
 #  Auto-Trade Queue                                                    #
 # ------------------------------------------------------------------ #
 @router.get("/trade/queue")
