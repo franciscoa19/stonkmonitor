@@ -60,7 +60,7 @@ Alpaca limit order placed instantly
 
 ### 🎰 Kalshi Prediction Market Scanner
 
-Scans **all open Kalshi markets** (paginated, 1000+ markets) every 60 seconds. Surfaces four types of opportunities for human evaluation — the scanner doesn't claim to beat efficiently priced markets, it finds the *interesting* ones:
+Scans **all open Kalshi markets** (paginated, 5000+ markets) every 5 minutes. Surfaces six types of opportunities for human evaluation — the scanner doesn't claim to beat efficiently priced markets, it finds the *interesting* ones:
 
 | Type | Criteria | Play |
 |------|----------|------|
@@ -277,7 +277,8 @@ All thresholds in `backend/.env` — no code changes needed:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KALSHI_DEMO` | false | Use demo sandbox |
-| `KALSHI_SCAN_INTERVAL` | 60 | Seconds between market scans |
+| `KALSHI_SCAN_INTERVAL` | 300 | Seconds between market scans |
+| `KALSHI_AUTO_EXECUTE` | false | Auto-execute Kalshi buys without Telegram confirmation |
 | `KALSHI_MIN_EDGE` | 0.05 | Minimum probability edge (5%) |
 | `KALSHI_MAX_BET_USD` | 500 | Hard cap $ per market |
 
@@ -310,6 +311,23 @@ All thresholds in `backend/.env` — no code changes needed:
 | Alpaca trade | ✅ EXECUTE / ❌ SKIP | Places Alpaca limit order |
 | Kalshi buy | ✅ EXECUTE / ❌ SKIP | Places Kalshi limit order |
 | Kalshi position spike | ✅ SELL ALL / ✂️ SELL HALF / 🚫 HOLD | Sells contracts at current bid |
+
+---
+
+## Running as a Windows Service
+
+The backend can run as a persistent background service that auto-starts on login and auto-restarts on crash:
+
+| File | Location | Role |
+|------|----------|------|
+| `start_service.bat` | `backend/` | Restart loop — if uvicorn exits, waits 10s and relaunches. Logs to `backend/logs/service.log` |
+| `StonkMonitor.vbs` | Windows `Startup` folder | Launches the bat file hidden (no CMD window) on every Windows login |
+
+**Manage:**
+- **Stop**: `taskkill /F /IM python.exe` or find the process in Task Manager → Details
+- **Disable auto-start**: delete `StonkMonitor.vbs` from `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\`
+- **View logs**: `type backend\logs\service.log`
+- **Health check**: `curl http://localhost:8000/api/uw/budget`
 
 ---
 

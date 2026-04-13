@@ -64,7 +64,8 @@ TELEGRAM_CHAT_ID=<your_chat_id>   # resolved automatically on startup from getUp
 KALSHI_KEY_ID=<your_kalshi_key_id>
 KALSHI_PRIVATE_KEY=<path_to_kalshi_private.pem>
 KALSHI_DEMO=false
-KALSHI_SCAN_INTERVAL=60
+KALSHI_SCAN_INTERVAL=300
+KALSHI_AUTO_EXECUTE=false
 # Optional — cross-platform Kalshi ↔ Polymarket arb (leave blank to disable)
 DOME_API_KEY=<your_dome_key>
 DOME_BASE_URL=https://api.domeapi.io
@@ -125,7 +126,7 @@ and place the RSA private key at the path in `KALSHI_PRIVATE_KEY`.
 ## Architecture: How Data Flows
 
 ```
-Unusual Whales WebSocket
+Unusual Whales REST polling (session-aware, budget-gated):
     → process_uw_event()
         → db.save_*()                    (persist raw event)
         → manager.broadcast_feed()       (→ frontend raw feed)
@@ -140,21 +141,29 @@ Unusual Whales WebSocket
         → pattern_engine.evaluate()     (cross-feed patterns)
             → auto_trade.evaluate_pattern()
 
-Kalshi scan loop (every 60s):
+Kalshi scan loop (every 5 min):
     → kalshi_client.get_markets()       (paginated, all categories)
-    → kalshi_scanner.scan()             (4 opportunity types)
+    → kalshi_scanner.scan()             (6 opportunity types)
     → manager.broadcast(kalshi_scan)    (→ frontend Kalshi tab)
     → telegram.send_kalshi_alert()      (score >= 7, 1hr cooldown per ticker)
+    → kalshi_arb_scanner.scan()         (monotonicity arb on threshold markets)
+    → cross_arb_scanner.scan()          (Kalshi ↔ Polymarket arb via Dome)
+    → manager.broadcast(kalshi_arb)     (→ frontend + Telegram if edge >= 3¢)
 
 Kalshi position monitor (every 2 min):
     → kalshi_client.get_market(ticker)  (for each tracked position)
     → if gain >= 3x/5x/10x → telegram.send_kalshi_position_alert()
 
-IV scanner loop (every 5 min per watchlist ticker):
+IV scanner loop (every 5 min RTH, 15 min extended, 30 min overnight, off weekends):
     → uw_client.get_iv_rank()           (UW IV rank)
     → engine.score_iv_rank()
     → earnings_scanner.scan_ticker()    (every 30 min, yfinance)
     → engine.score_earnings_setup()
+
+UW budget monitor (every 10 min):
+    → budget.status()                   (daily count, limit, usage %, session)
+    → manager.broadcast(uw_budget)      (→ frontend)
+    → telegram.send_info()              (warns at 80% / 95%)
 ```
 
 ---
