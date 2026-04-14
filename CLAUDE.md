@@ -160,6 +160,12 @@ IV scanner loop (every 5 min RTH, 15 min extended, 30 min overnight, off weekend
     → earnings_scanner.scan_ticker()    (every 30 min, yfinance)
     → engine.score_earnings_setup()
 
+Alpaca position monitor (every 2 min, RTH+extended only):
+    → trader.get_positions()            (all open positions)
+    → if pnl_pct >= +80% → sell 50% (TP), telegram.send_info()
+    → if pnl_pct <= -20% → sell 50% (trim), telegram.send_info()
+    → if pnl_pct <= -40% → close_position (SL), telegram.send_info()
+
 UW budget monitor (every 10 min):
     → budget.status()                   (daily count, limit, usage %, session)
     → manager.broadcast(uw_budget)      (→ frontend)
@@ -407,6 +413,8 @@ watchlist          -- tickers for IV + earnings scanning
 - ✅ Full market pagination — scans all categories (was capped at 200)
 - ✅ Earnings scanner integrated from trade calculator (Yang-Zhang, IV/RV, term structure)
 - ✅ KalshiPanel frontend tab with live WS updates and filter chips
+- ✅ **Alpaca position monitor (TP/SL/trim)** — `alpaca_position_monitor()` background loop checks positions every 2 min during RTH+extended. TP at +80% (sell 50%), trim at -20% (sell 50%), SL at -40% (liquidate). Auto-executes market orders, Telegram confirms after. All thresholds configurable via `.env`.
+- ✅ **Windows auto-start service** — `start_service.bat` restart loop + `StonkMonitor.vbs` in Startup folder. Backend survives reboots and crashes.
 
 ---
 
@@ -416,5 +424,4 @@ watchlist          -- tickers for IV + earnings scanning
 - More earnings scanner signal detail in dashboard (show pass/fail table inline)
 - Options chain viewer for earnings_setup signals (show the actual straddle to sell)
 - Backtest mode for earnings scanner signals
-- Alert when Kalshi position goes against you (stop-loss style)
 - Auto-execute Kalshi buys without confirmation (optional, flag in .env)

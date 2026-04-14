@@ -645,6 +645,159 @@ async def kalshi_position_monitor():
         await asyncio.sleep(120)  # check every 2 minutes
 
 
+# ── Alpaca position monitor (TP/SL) ──────────────────────────────────────────
+
+# Per-symbol state so we don't re-fire the same action twice.
+# Keys: symbol → {"trimmed": bool, "tp_fired": bool, "sl_fired": bool}
+_alpaca_pos_state: dict[str, dict] = {}
+
+
+async def alpaca_position_monitor():
+    """Every 2 min (configurable): check Alpaca positions for TP/trim/SL.
+
+    Thresholds (from .env, defaults in parentheses):
+        POS_TP_PCT       = +80%   → sell POS_TP_SELL_PCT (50%) of position
+        POS_TRIM_PCT     = -20%   → sell POS_TRIM_SELL_PCT (50%) of position
+        POS_SL_PCT       = -40%   → liquidate entire position
+
+    No confirmation required — executes immediately as market orders,
+    then sends a Telegram notification confirming what happened.
+
+    Only runs during market hours (RTH + extended). Positions can't move
+    when the market is closed, and market orders would reject anyway.
+    """
+    from feeds.uw_budget import current_session
+    await asyncio.sleep(45)  # let startup finish
+
+    tp_pct        = settings.pos_tp_pct          # +80
+    tp_sell_frac  = settings.pos_tp_sell_pct      # 0.5
+    trim_pct      = settings.pos_trim_pct         # -20
+    trim_sell_frac= settings.pos_trim_sell_pct    # 0.5
+    sl_pct        = settings.pos_sl_pct           # -40
+    interval      = settings.pos_monitor_interval # 120s
+
+    logger.info(
+        f"Alpaca position monitor started: TP={tp_pct:+.0f}% "
+        f"(sell {tp_sell_frac*100:.0f}%), "
+        f"trim={trim_pct:+.0f}% (sell {trim_sell_frac*100:.0f}%), "
+        f"SL={sl_pct:+.0f}% (liquidate)"
+    )
+
+    while True:
+        try:
+            sess = current_session()
+            if sess in ("overnight", "weekend"):
+                await asyncio.sleep(interval)
+                continue
+
+            positions = trader.get_positions()
+            if not positions:
+                await asyncio.sleep(interval)
+                continue
+
+            for pos in positions:
+                symbol  = pos["symbol"]
+                qty     = pos["qty"]
+                pnl_pct = pos["pnl_pct"]   # already in percent (e.g. -23.5)
+                pnl_usd = pos["pnl"]
+                avg     = pos["avg_price"]
+                cur     = pos["current"]
+
+                if qty <= 0:
+                    continue
+
+                # Initialize state for new positions
+                if symbol not in _alpaca_pos_state:
+                    _alpaca_pos_state[symbol] = {
+                        "trimmed": False,
+                        "tp_fired": False,
+                        "sl_fired": False,
+                    }
+                state = _alpaca_pos_state[symbol]
+
+                # ── STOP LOSS: -40% → liquidate everything ──
+                if pnl_pct <= sl_pct and not state["sl_fired"]:
+                    state["sl_fired"] = True
+                    result = trader.close_position(symbol)
+                    if "error" not in result:
+                        msg = (
+                            f"\U0001f6d1 <b>STOP LOSS</b> — {symbol}\n"
+                            f"Sold ALL {qty:.0f} shares/contracts\n"
+                            f"Entry: ${avg:.2f} → Exit: ${cur:.2f}\n"
+                            f"P&L: {pnl_pct:+.1f}% (${pnl_usd:+,.2f})"
+                        )
+                        logger.info(f"SL fired: {symbol} {pnl_pct:+.1f}% — closed {qty:.0f}")
+                    else:
+                        msg = (
+                            f"\U0001f6d1 <b>STOP LOSS FAILED</b> — {symbol}\n"
+                            f"Tried to close at {pnl_pct:+.1f}% but got error:\n"
+                            f"{result['error']}"
+                        )
+                        logger.error(f"SL failed: {symbol} — {result['error']}")
+                    if telegram.enabled:
+                        await telegram.send_info(msg)
+
+                # ── TRIM: -20% → sell half ──
+                elif pnl_pct <= trim_pct and not state["trimmed"] and not state["sl_fired"]:
+                    state["trimmed"] = True
+                    sell_qty = max(1, int(qty * trim_sell_frac))
+                    result = trader.market_order(symbol, sell_qty, "sell")
+                    if "error" not in result:
+                        msg = (
+                            f"\u2702\ufe0f <b>TRIM</b> — {symbol}\n"
+                            f"Sold {sell_qty} of {qty:.0f} shares/contracts\n"
+                            f"Entry: ${avg:.2f} → Now: ${cur:.2f}\n"
+                            f"P&L: {pnl_pct:+.1f}% (${pnl_usd:+,.2f})"
+                        )
+                        logger.info(f"Trim fired: {symbol} {pnl_pct:+.1f}% — sold {sell_qty}/{qty:.0f}")
+                    else:
+                        msg = (
+                            f"\u2702\ufe0f <b>TRIM FAILED</b> — {symbol}\n"
+                            f"Tried to sell {sell_qty} at {pnl_pct:+.1f}% but got error:\n"
+                            f"{result['error']}"
+                        )
+                        logger.error(f"Trim failed: {symbol} — {result['error']}")
+                    if telegram.enabled:
+                        await telegram.send_info(msg)
+
+                # ── TAKE PROFIT: +80% → sell half (or configured fraction) ──
+                elif pnl_pct >= tp_pct and not state["tp_fired"]:
+                    state["tp_fired"] = True
+                    sell_qty = max(1, int(qty * tp_sell_frac))
+                    if tp_sell_frac >= 1.0:
+                        result = trader.close_position(symbol)
+                    else:
+                        result = trader.market_order(symbol, sell_qty, "sell")
+                    if "error" not in result:
+                        msg = (
+                            f"\U0001f3af <b>TAKE PROFIT</b> — {symbol}\n"
+                            f"Sold {sell_qty} of {qty:.0f} shares/contracts\n"
+                            f"Entry: ${avg:.2f} → Now: ${cur:.2f}\n"
+                            f"P&L: {pnl_pct:+.1f}% (+${pnl_usd:,.2f})"
+                        )
+                        logger.info(f"TP fired: {symbol} {pnl_pct:+.1f}% — sold {sell_qty}/{qty:.0f}")
+                    else:
+                        msg = (
+                            f"\U0001f3af <b>TP FAILED</b> — {symbol}\n"
+                            f"Tried to sell {sell_qty} at {pnl_pct:+.1f}% but got error:\n"
+                            f"{result['error']}"
+                        )
+                        logger.error(f"TP failed: {symbol} — {result['error']}")
+                    if telegram.enabled:
+                        await telegram.send_info(msg)
+
+            # Clean up state for positions we no longer hold
+            current_symbols = {p["symbol"] for p in positions if p["qty"] > 0}
+            for sym in list(_alpaca_pos_state):
+                if sym not in current_symbols:
+                    _alpaca_pos_state.pop(sym, None)
+
+        except Exception as e:
+            logger.error(f"Alpaca position monitor error: {e}")
+
+        await asyncio.sleep(interval)
+
+
 async def iv_scanner_loop():
     """Poll IV rank + earnings setup for watchlist tickers every 5 minutes.
 
@@ -766,6 +919,7 @@ async def lifespan(app: FastAPI):
     uw_task = asyncio.create_task(start_uw_stream())
     iv_task = asyncio.create_task(iv_scanner_loop())
     uw_budget_task = asyncio.create_task(uw_budget_monitor_loop())
+    alpaca_monitor_task = asyncio.create_task(alpaca_position_monitor())
 
     # Kalshi — login + start scan loop if configured
     kalshi_task = None

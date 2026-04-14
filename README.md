@@ -56,6 +56,16 @@ Telegram card on your phone
 Alpaca limit order placed instantly
 ```
 
+**Position Monitor (TP/SL)** — runs every 2 min during market hours:
+
+| Trigger | Action | Notification |
+|---------|--------|--------------|
+| **+80% gain** | Sell 50% (market order) | 🎯 TAKE PROFIT → Telegram |
+| **-20% loss** | Sell 50% (trim) | ✂️ TRIM → Telegram |
+| **-40% loss** | Liquidate 100% | 🛑 STOP LOSS → Telegram |
+
+All thresholds configurable via `.env` (`POS_TP_PCT`, `POS_TRIM_PCT`, `POS_SL_PCT`, etc). Each action fires once per position — no double-triggers. Pauses overnight and weekends.
+
 ---
 
 ### 🎰 Kalshi Prediction Market Scanner

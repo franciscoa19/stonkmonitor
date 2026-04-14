@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     auto_trade_min_dte: int = Field(2, env="AUTO_TRADE_MIN_DTE")
     auto_trade_max_dte: int = Field(21, env="AUTO_TRADE_MAX_DTE")
 
+    # --- Position Monitor (TP/SL) ---
+    pos_monitor_interval: int = Field(120, env="POS_MONITOR_INTERVAL")       # seconds between checks
+    pos_tp_pct: float = Field(80.0, env="POS_TP_PCT")         # take profit at +80%
+    pos_tp_sell_pct: float = Field(0.5, env="POS_TP_SELL_PCT") # sell 50% at TP (0.5 = half, 1.0 = all)
+    pos_trim_pct: float = Field(-20.0, env="POS_TRIM_PCT")    # trim at -20%
+    pos_trim_sell_pct: float = Field(0.5, env="POS_TRIM_SELL_PCT")  # sell 50% at trim
+    pos_sl_pct: float = Field(-40.0, env="POS_SL_PCT")        # stop loss at -40%
+
     # --- Backend ---
     backend_host: str = Field("0.0.0.0", env="BACKEND_HOST")
     backend_port: int = Field(8000, env="BACKEND_PORT")
