@@ -59,9 +59,11 @@ class Settings(BaseSettings):
 
     # --- Position Monitor (TP/SL) ---
     pos_monitor_interval: int = Field(120, env="POS_MONITOR_INTERVAL")       # seconds between checks
-    pos_tp_pct: float = Field(80.0, env="POS_TP_PCT")         # take profit at +80%
-    pos_tp_sell_pct: float = Field(0.5, env="POS_TP_SELL_PCT") # sell 50% at TP (0.5 = half, 1.0 = all)
-    pos_trim_pct: float = Field(-20.0, env="POS_TRIM_PCT")    # trim at -20%
+    pos_tp_pct: float = Field(80.0, env="POS_TP_PCT")         # take profit tier 1 at +80%
+    pos_tp_sell_pct: float = Field(0.5, env="POS_TP_SELL_PCT") # sell 50% at TP1
+    pos_tp2_pct: float = Field(175.0, env="POS_TP2_PCT")      # take profit tier 2 at +175%
+    pos_tp2_sell_pct: float = Field(1.0, env="POS_TP2_SELL_PCT") # sell remaining 100% at TP2
+    pos_trim_pct: float = Field(-35.0, env="POS_TRIM_PCT")    # trim at -35%
     pos_trim_sell_pct: float = Field(0.5, env="POS_TRIM_SELL_PCT")  # sell 50% at trim
     pos_sl_pct: float = Field(-40.0, env="POS_SL_PCT")        # stop loss at -40%
 

@@ -336,6 +336,11 @@ Example: `SNDK260424C00840000`
 
 **Equity trades:** insider_buy / congress_trade → market buy, sized to min(2% equity, $2,500).
 
+**Bracket orders:** Every new trade is submitted as an `OrderClass.BRACKET` with server-side
+TP (limit) and SL (stop) legs attached to the entry. Prices computed from `TradeSuggestion.target_pct`
+and `stop_pct` (options: +80%/-40%, equity: +15%/-5%). If bracket submission fails (e.g. some
+options contracts), falls back to a plain limit order. Telegram confirmation shows TP/SL prices.
+
 **Expiry:** pending trades expire after 5 minutes if not confirmed.
 
 ---
@@ -415,6 +420,7 @@ watchlist          -- tickers for IV + earnings scanning
 - ✅ KalshiPanel frontend tab with live WS updates and filter chips
 - ✅ **Alpaca position monitor (TP/SL/trim)** — `alpaca_position_monitor()` background loop checks positions every 2 min during RTH+extended. TP at +80% (sell 50%), trim at -20% (sell 50%), SL at -40% (liquidate). Auto-executes market orders, Telegram confirms after. All thresholds configurable via `.env`.
 - ✅ **Windows auto-start service** — `start_service.bat` restart loop + `StonkMonitor.vbs` in Startup folder. Backend survives reboots and crashes.
+- ✅ **Alpaca bracket orders** — new trades submitted as `OrderClass.BRACKET` with server-side TP limit + SL stop. Options: +80%/-40%, equity: +15%/-5%. Falls back to plain limit if bracket not supported. Telegram confirmation shows TP/SL prices.
 
 ---
 

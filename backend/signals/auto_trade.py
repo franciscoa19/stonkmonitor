@@ -494,13 +494,28 @@ class AutoTradeEngine:
                 )
             return {"error": "not_found"}
 
+        # Compute bracket TP/SL prices from signal's target/stop percentages
+        tp_price = round(s.limit_price * (1 + s.target_pct / 100), 2)
+        sl_price = round(s.limit_price * (1 - s.stop_pct / 100), 2)
+
         try:
-            result = self._trader.limit_order(
+            result = self._trader.bracket_order(
                 ticker=s.symbol,
                 qty=s.qty,
                 side="buy",
                 limit_price=s.limit_price,
+                take_profit_price=tp_price,
+                stop_loss_price=sl_price,
             )
+            # If bracket fails (e.g. options don't support it), fall back to plain limit
+            if "error" in result:
+                logger.warning(f"Bracket order failed, falling back to limit: {result['error']}")
+                result = self._trader.limit_order(
+                    ticker=s.symbol,
+                    qty=s.qty,
+                    side="buy",
+                    limit_price=s.limit_price,
+                )
         except Exception as e:
             logger.error(f"Order execution error: {e}")
             result = {"error": str(e)}
@@ -529,9 +544,10 @@ class AutoTradeEngine:
         if self._telegram and msg_id:
             await self._telegram.edit_message(
                 msg_id,
-                f"✅ <b>ORDER PLACED</b>\n"
+                f"✅ <b>ORDER PLACED (BRACKET)</b>\n"
                 f"{s.ticker} {type_label}  {s.qty}x @ ${s.limit_price:.2f}\n"
-                f"Risk: ${s.risk_amount:,.0f}  |  Stop: -{s.stop_pct:.0f}%  Target: +{s.target_pct:.0f}%\n"
+                f"🎯 TP: ${tp_price:.2f} (+{s.target_pct:.0f}%)  |  🛑 SL: ${sl_price:.2f} (-{s.stop_pct:.0f}%)\n"
+                f"Risk: ${s.risk_amount:,.0f}\n"
                 f"Order ID: <code>{order_id[:12]}</code>"
             )
 

@@ -10,8 +10,10 @@ from alpaca.trading.requests import (
     LimitOrderRequest,
     StopLimitOrderRequest,
     TrailingStopOrderRequest,
+    TakeProfitRequest,
+    StopLossRequest,
 )
-from alpaca.trading.enums import OrderSide, TimeInForce, AssetClass
+from alpaca.trading.enums import OrderSide, TimeInForce, AssetClass, OrderClass
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +134,38 @@ class AlpacaTrader:
             return {"id": str(order.id), "status": order.status.value}
         except Exception as e:
             logger.error(f"limit_order error: {e}")
+            return {"error": str(e)}
+
+    def bracket_order(
+        self,
+        ticker: str,
+        qty: float,
+        side: Literal["buy", "sell"],
+        limit_price: float,
+        take_profit_price: float,
+        stop_loss_price: float,
+        tif: str = "day",
+    ) -> dict:
+        """Bracket order: entry limit + server-side TP limit + SL stop."""
+        try:
+            req = LimitOrderRequest(
+                symbol=ticker.upper(),
+                qty=qty,
+                side=OrderSide(side),
+                time_in_force=TimeInForce(tif),
+                limit_price=limit_price,
+                order_class=OrderClass.BRACKET,
+                take_profit=TakeProfitRequest(limit_price=round(take_profit_price, 2)),
+                stop_loss=StopLossRequest(stop_price=round(stop_loss_price, 2)),
+            )
+            order = self.client.submit_order(req)
+            logger.info(
+                f"Bracket order submitted: {side} {qty} {ticker} @ {limit_price} "
+                f"TP={take_profit_price:.2f} SL={stop_loss_price:.2f} | id={order.id}"
+            )
+            return {"id": str(order.id), "status": order.status.value}
+        except Exception as e:
+            logger.error(f"bracket_order error: {e}")
             return {"error": str(e)}
 
     def trailing_stop(
