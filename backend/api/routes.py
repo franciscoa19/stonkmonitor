@@ -345,6 +345,30 @@ async def skip_trade(trade_id: int):
 
 
 # ------------------------------------------------------------------ #
+#  Performance Tracking                                                #
+# ------------------------------------------------------------------ #
+@router.get("/performance")
+async def get_performance(ticker: Optional[str] = None, limit: int = 100):
+    """Get trade performance history."""
+    from main import db
+    return await db.get_trade_performance(limit=limit, ticker=ticker)
+
+
+@router.get("/performance/summary")
+async def get_performance_summary():
+    """Aggregate performance stats: win rate, P&L, profit factor."""
+    from main import db
+    return await db.get_performance_summary()
+
+
+@router.get("/performance/positions")
+async def get_current_positions_with_pnl():
+    """Get current Alpaca positions with real-time P&L."""
+    from main import trader as t
+    return t.get_positions()
+
+
+# ------------------------------------------------------------------ #
 #  Watchlist                                                           #
 # ------------------------------------------------------------------ #
 _watchlist: list[str] = []

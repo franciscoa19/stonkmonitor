@@ -648,7 +648,7 @@ async def kalshi_position_monitor():
 # ── Alpaca position monitor (TP/SL) ──────────────────────────────────────────
 
 # Per-symbol state so we don't re-fire the same action twice.
-# Keys: symbol → {"trimmed": bool, "tp_fired": bool, "tp2_fired": bool, "sl_fired": bool}
+# Keys: symbol → {"trimmed", "tp_fired", "tp2_fired", "sl_fired", "trailing", "high_watermark"}
 _alpaca_pos_state: dict[str, dict] = {}
 
 
@@ -676,15 +676,18 @@ async def alpaca_position_monitor():
     tp_sell_frac   = settings.pos_tp_sell_pct       # 0.5
     tp2_pct        = settings.pos_tp2_pct           # +175
     tp2_sell_frac  = settings.pos_tp2_sell_pct      # 1.0
+    trail_enabled  = settings.pos_trail_after_tp    # True
+    trail_pct      = settings.pos_trail_pct         # 20pp
     trim_pct       = settings.pos_trim_pct          # -35
     trim_sell_frac = settings.pos_trim_sell_pct     # 0.5
     sl_pct         = settings.pos_sl_pct            # -40
     interval       = settings.pos_monitor_interval  # 120s
 
+    trail_mode = f"trail {trail_pct:.0f}pp below HWM" if trail_enabled else f"T2={tp2_pct:+.0f}%"
     logger.info(
         f"Alpaca position monitor started: "
         f"TP1={tp_pct:+.0f}% (sell {tp_sell_frac*100:.0f}%), "
-        f"TP2={tp2_pct:+.0f}% (sell {tp2_sell_frac*100:.0f}%), "
+        f"after TP1: {trail_mode}, "
         f"trim={trim_pct:+.0f}% (sell {trim_sell_frac*100:.0f}%), "
         f"SL={sl_pct:+.0f}% (liquidate)"
     )
@@ -719,6 +722,8 @@ async def alpaca_position_monitor():
                         "tp_fired": False,
                         "tp2_fired": False,
                         "sl_fired": False,
+                        "trailing": False,      # trailing stop active after TP1
+                        "high_watermark": 0.0,  # peak P&L % since TP1
                     }
                 state = _alpaca_pos_state[symbol]
 
@@ -727,6 +732,7 @@ async def alpaca_position_monitor():
                     state["sl_fired"] = True
                     result = trader.close_position(symbol)
                     if "error" not in result:
+                        await db.record_exit(symbol, cur, "sl", pnl_usd, pnl_pct)
                         msg = (
                             f"\U0001f6d1 <b>STOP LOSS</b> — {symbol}\n"
                             f"Sold ALL {qty:.0f} shares/contracts\n"
@@ -767,31 +773,68 @@ async def alpaca_position_monitor():
                     if telegram.enabled:
                         await telegram.send_info(msg)
 
-                # ── TAKE PROFIT T2: +175% → sell remaining (runner exit) ──
-                elif pnl_pct >= tp2_pct and state["tp_fired"] and not state["tp2_fired"]:
-                    state["tp2_fired"] = True
-                    sell_qty = max(1, int(qty * tp2_sell_frac))
-                    if tp2_sell_frac >= 1.0:
+                # ── TRAILING STOP (after TP1) — ratcheting high watermark ──
+                elif state["tp_fired"] and not state["tp2_fired"] and trail_enabled and state["trailing"]:
+                    # Update high watermark
+                    if pnl_pct > state["high_watermark"]:
+                        state["high_watermark"] = pnl_pct
+
+                    trail_floor = state["high_watermark"] - trail_pct
+                    # Floor must be at least TP1 level (never give back below our first take)
+                    trail_floor = max(trail_floor, tp_pct * 0.75)
+
+                    if pnl_pct <= trail_floor:
+                        state["tp2_fired"] = True
                         result = trader.close_position(symbol)
-                    else:
-                        result = trader.market_order(symbol, sell_qty, "sell")
-                    if "error" not in result:
-                        msg = (
-                            f"\U0001f680 <b>TAKE PROFIT T2</b> — {symbol}\n"
-                            f"Sold {sell_qty} of {qty:.0f} shares/contracts\n"
-                            f"Entry: ${avg:.2f} → Now: ${cur:.2f}\n"
-                            f"P&L: {pnl_pct:+.1f}% (+${pnl_usd:,.2f})"
-                        )
-                        logger.info(f"TP2 fired: {symbol} {pnl_pct:+.1f}% — sold {sell_qty}/{qty:.0f}")
-                    else:
-                        msg = (
-                            f"\U0001f680 <b>TP2 FAILED</b> — {symbol}\n"
-                            f"Tried to sell {sell_qty} at {pnl_pct:+.1f}% but got error:\n"
-                            f"{result['error']}"
-                        )
-                        logger.error(f"TP2 failed: {symbol} — {result['error']}")
-                    if telegram.enabled:
-                        await telegram.send_info(msg)
+                        if "error" not in result:
+                            await db.record_exit(symbol, cur, "trailing_stop", pnl_usd, pnl_pct)
+                            msg = (
+                                f"\U0001f4c9 <b>TRAILING STOP</b> — {symbol}\n"
+                                f"High: {state['high_watermark']:+.1f}% → Fell to {pnl_pct:+.1f}% (floor: {trail_floor:+.1f}%)\n"
+                                f"Sold ALL remaining {qty:.0f} shares/contracts\n"
+                                f"Entry: ${avg:.2f} → Exit: ${cur:.2f}\n"
+                                f"P&L: {pnl_pct:+.1f}% (${pnl_usd:+,.2f})"
+                            )
+                            logger.info(
+                                f"Trailing stop fired: {symbol} HWM={state['high_watermark']:+.1f}% "
+                                f"now={pnl_pct:+.1f}% floor={trail_floor:+.1f}%"
+                            )
+                        else:
+                            msg = (
+                                f"\U0001f4c9 <b>TRAILING STOP FAILED</b> — {symbol}\n"
+                                f"{result['error']}"
+                            )
+                            logger.error(f"Trailing stop failed: {symbol} — {result['error']}")
+                        if telegram.enabled:
+                            await telegram.send_info(msg)
+
+                # ── TAKE PROFIT T2 (fallback if trailing disabled): +175% → sell remaining ──
+                elif state["tp_fired"] and not state["tp2_fired"] and not trail_enabled:
+                    if pnl_pct >= tp2_pct:
+                        state["tp2_fired"] = True
+                        sell_qty = max(1, int(qty * tp2_sell_frac))
+                        if tp2_sell_frac >= 1.0:
+                            result = trader.close_position(symbol)
+                        else:
+                            result = trader.market_order(symbol, sell_qty, "sell")
+                        if "error" not in result:
+                            await db.record_exit(symbol, cur, "tp2", pnl_usd, pnl_pct)
+                            msg = (
+                                f"\U0001f680 <b>TAKE PROFIT T2</b> — {symbol}\n"
+                                f"Sold {sell_qty} of {qty:.0f} shares/contracts\n"
+                                f"Entry: ${avg:.2f} → Now: ${cur:.2f}\n"
+                                f"P&L: {pnl_pct:+.1f}% (+${pnl_usd:,.2f})"
+                            )
+                            logger.info(f"TP2 fired: {symbol} {pnl_pct:+.1f}% — sold {sell_qty}/{qty:.0f}")
+                        else:
+                            msg = (
+                                f"\U0001f680 <b>TP2 FAILED</b> — {symbol}\n"
+                                f"Tried to sell {sell_qty} at {pnl_pct:+.1f}% but got error:\n"
+                                f"{result['error']}"
+                            )
+                            logger.error(f"TP2 failed: {symbol} — {result['error']}")
+                        if telegram.enabled:
+                            await telegram.send_info(msg)
 
                 # ── TAKE PROFIT T1: +80% → sell half (lock in gains) ──
                 elif pnl_pct >= tp_pct and not state["tp_fired"]:
@@ -802,11 +845,19 @@ async def alpaca_position_monitor():
                     else:
                         result = trader.market_order(symbol, sell_qty, "sell")
                     if "error" not in result:
+                        # Activate trailing stop for the remaining half
+                        if trail_enabled:
+                            state["trailing"] = True
+                            state["high_watermark"] = pnl_pct
+                            trail_info = f"\nTrailing stop active: {trail_pct:.0f}pp below peak"
+                        else:
+                            trail_info = f"\nT2 target: +{tp2_pct:.0f}%"
                         msg = (
                             f"\U0001f3af <b>TAKE PROFIT</b> — {symbol}\n"
                             f"Sold {sell_qty} of {qty:.0f} shares/contracts\n"
                             f"Entry: ${avg:.2f} → Now: ${cur:.2f}\n"
                             f"P&L: {pnl_pct:+.1f}% (+${pnl_usd:,.2f})"
+                            f"{trail_info}"
                         )
                         logger.info(f"TP fired: {symbol} {pnl_pct:+.1f}% — sold {sell_qty}/{qty:.0f}")
                     else:
@@ -829,6 +880,46 @@ async def alpaca_position_monitor():
             logger.error(f"Alpaca position monitor error: {e}")
 
         await asyncio.sleep(interval)
+
+
+async def performance_sync_loop():
+    """Sync Alpaca order history into trade_performance table every 15 min.
+
+    Pulls closed orders from Alpaca and upserts them into the DB so we have
+    a complete record of all fills for performance evaluation.
+    """
+    await asyncio.sleep(60)  # let startup finish
+
+    while True:
+        try:
+            orders = trader.get_order_history(days=90, limit=500)
+            for o in orders:
+                # Extract underlying ticker from OCC symbol or use symbol directly
+                sym = o["symbol"]
+                # OCC options symbols are long (e.g. AAPL260424C00150000)
+                ticker = sym[:6].rstrip("0123456789") if len(sym) > 10 else sym
+                is_option = len(sym) > 10
+
+                await db.upsert_trade_performance(
+                    alpaca_order_id=o["id"],
+                    symbol=sym,
+                    ticker=ticker,
+                    side=o["side"],
+                    qty=o["qty"],
+                    filled_qty=o["filled_qty"],
+                    filled_avg_price=o["filled_avg"] or 0,
+                    order_type=o["type"],
+                    order_status=o["status"],
+                    submitted_at=o["created_at"],
+                    filled_at=o.get("filled_at"),
+                    trade_type="option" if is_option else "equity",
+                )
+            if orders:
+                logger.debug(f"Performance sync: upserted {len(orders)} orders")
+        except Exception as e:
+            logger.error(f"Performance sync error: {e}")
+
+        await asyncio.sleep(900)  # every 15 minutes
 
 
 async def iv_scanner_loop():
@@ -953,6 +1044,7 @@ async def lifespan(app: FastAPI):
     iv_task = asyncio.create_task(iv_scanner_loop())
     uw_budget_task = asyncio.create_task(uw_budget_monitor_loop())
     alpaca_monitor_task = asyncio.create_task(alpaca_position_monitor())
+    perf_sync_task = asyncio.create_task(performance_sync_loop())
 
     # Kalshi — login + start scan loop if configured
     kalshi_task = None

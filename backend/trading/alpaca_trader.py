@@ -89,6 +89,41 @@ class AlpacaTrader:
             logger.error(f"get_orders error: {e}")
             return []
 
+    def get_order_history(self, days: int = 30, limit: int = 500) -> list[dict]:
+        """Fetch closed/filled orders for performance tracking."""
+        try:
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums import QueryOrderStatus
+            from datetime import datetime, timedelta
+            after = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
+            req = GetOrdersRequest(
+                status=QueryOrderStatus.CLOSED,
+                after=after,
+                limit=limit,
+            )
+            orders = self.client.get_orders(filter=req)
+            return [
+                {
+                    "id":         str(o.id),
+                    "symbol":     o.symbol,
+                    "qty":        float(o.qty or 0),
+                    "side":       o.side.value,
+                    "type":       o.order_type.value,
+                    "status":     o.status.value,
+                    "limit":      float(o.limit_price) if o.limit_price else None,
+                    "stop":       float(o.stop_price) if o.stop_price else None,
+                    "filled_qty": float(o.filled_qty or 0),
+                    "filled_avg": float(o.filled_avg_price) if o.filled_avg_price else None,
+                    "created_at": o.created_at.isoformat() if o.created_at else None,
+                    "filled_at":  o.filled_at.isoformat() if o.filled_at else None,
+                    "updated_at": o.updated_at.isoformat() if o.updated_at else None,
+                }
+                for o in orders
+            ]
+        except Exception as e:
+            logger.error(f"get_order_history error: {e}")
+            return []
+
     # ------------------------------------------------------------------ #
     #  Stock Orders                                                        #
     # ------------------------------------------------------------------ #

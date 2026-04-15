@@ -152,6 +152,36 @@ CREATE INDEX IF NOT EXISTS idx_pt_status    ON pending_trades(status);
 CREATE INDEX IF NOT EXISTS idx_pt_ticker    ON pending_trades(ticker);
 CREATE INDEX IF NOT EXISTS idx_pt_created   ON pending_trades(created_at DESC);
 
+-- ── Trade performance (closed + open position tracking) ─────────────
+CREATE TABLE IF NOT EXISTS trade_performance (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    alpaca_order_id TEXT UNIQUE,                   -- Alpaca order UUID (dedup key)
+    symbol          TEXT NOT NULL,
+    ticker          TEXT NOT NULL,                  -- underlying ticker
+    side            TEXT NOT NULL,                  -- buy/sell
+    qty             REAL NOT NULL,
+    filled_qty      REAL DEFAULT 0,
+    filled_avg_price REAL DEFAULT 0,
+    order_type      TEXT,                           -- market/limit/stop/trailing_stop
+    order_status    TEXT,                           -- filled/canceled/expired/etc
+    submitted_at    TEXT,
+    filled_at       TEXT,
+    -- Position-level P&L (filled in by position monitor actions)
+    exit_price      REAL,
+    exit_reason     TEXT,                           -- tp1/trailing_stop/tp2/trim/sl/manual
+    realized_pnl    REAL,
+    realized_pnl_pct REAL,
+    -- Metadata
+    signal_score    REAL,                           -- original signal score if auto-trade
+    trade_type      TEXT,                           -- option/equity
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tp_symbol    ON trade_performance(symbol);
+CREATE INDEX IF NOT EXISTS idx_tp_ticker    ON trade_performance(ticker);
+CREATE INDEX IF NOT EXISTS idx_tp_status    ON trade_performance(order_status);
+CREATE INDEX IF NOT EXISTS idx_tp_created   ON trade_performance(created_at DESC);
+
 -- ── Indexes ───────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_of_ticker    ON options_flow(ticker);
 CREATE INDEX IF NOT EXISTS idx_of_created   ON options_flow(created_at DESC);
@@ -454,6 +484,122 @@ class Database:
             "SELECT * FROM pending_trades ORDER BY created_at DESC LIMIT ?",
             (limit,),
         )
+
+    # ── Write/Read: Trade Performance ──────────────────────────────────────
+    async def upsert_trade_performance(self, **kwargs):
+        """Insert or update a trade performance record by alpaca_order_id."""
+        order_id = kwargs.get("alpaca_order_id")
+        if not order_id:
+            return
+        now = datetime.utcnow().isoformat()
+        # Check if exists
+        existing = await self._query(
+            "SELECT id FROM trade_performance WHERE alpaca_order_id=?", (order_id,)
+        )
+        if existing:
+            # Update mutable fields
+            updatable = {
+                "filled_qty", "filled_avg_price", "order_status", "filled_at",
+                "exit_price", "exit_reason", "realized_pnl", "realized_pnl_pct",
+            }
+            cols = {k: v for k, v in kwargs.items() if k in updatable and v is not None}
+            if cols:
+                cols["updated_at"] = now
+                set_clause = ", ".join(f"{k}=?" for k in cols)
+                params = list(cols.values()) + [order_id]
+                await self._exec(
+                    f"UPDATE trade_performance SET {set_clause} WHERE alpaca_order_id=?",
+                    params
+                )
+        else:
+            await self._exec(
+                """INSERT OR IGNORE INTO trade_performance
+                   (alpaca_order_id, symbol, ticker, side, qty, filled_qty,
+                    filled_avg_price, order_type, order_status, submitted_at,
+                    filled_at, signal_score, trade_type, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    order_id,
+                    kwargs.get("symbol", ""),
+                    kwargs.get("ticker", ""),
+                    kwargs.get("side", ""),
+                    kwargs.get("qty", 0),
+                    kwargs.get("filled_qty", 0),
+                    kwargs.get("filled_avg_price", 0),
+                    kwargs.get("order_type", ""),
+                    kwargs.get("order_status", ""),
+                    kwargs.get("submitted_at", ""),
+                    kwargs.get("filled_at", ""),
+                    kwargs.get("signal_score"),
+                    kwargs.get("trade_type", ""),
+                    now, now,
+                ),
+            )
+
+    async def record_exit(self, symbol: str, exit_price: float, exit_reason: str,
+                          realized_pnl: float, realized_pnl_pct: float):
+        """Record exit info on the most recent open entry for this symbol."""
+        now = datetime.utcnow().isoformat()
+        # Find most recent entry without an exit
+        rows = await self._query(
+            """SELECT id FROM trade_performance
+               WHERE (symbol=? OR ticker=?) AND side='buy' AND exit_reason IS NULL
+               ORDER BY created_at DESC LIMIT 1""",
+            (symbol, symbol),
+        )
+        if rows:
+            await self._exec(
+                """UPDATE trade_performance
+                   SET exit_price=?, exit_reason=?, realized_pnl=?,
+                       realized_pnl_pct=?, updated_at=?
+                   WHERE id=?""",
+                (exit_price, exit_reason, realized_pnl, realized_pnl_pct, now, rows[0]["id"]),
+            )
+
+    async def get_trade_performance(self, limit: int = 100, ticker: str = None,
+                                     status: str = None) -> list[dict]:
+        conds, params = ["1=1"], []
+        if ticker:
+            conds.append("ticker=?")
+            params.append(ticker.upper())
+        if status:
+            conds.append("order_status=?")
+            params.append(status)
+        params.append(limit)
+        return await self._query(
+            f"""SELECT * FROM trade_performance
+                WHERE {' AND '.join(conds)}
+                ORDER BY created_at DESC LIMIT ?""",
+            params,
+        )
+
+    async def get_performance_summary(self) -> dict:
+        """Aggregate performance stats across all closed trades."""
+        summary = await self._scalar(
+            """SELECT
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winners,
+                SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losers,
+                SUM(CASE WHEN realized_pnl IS NULL THEN 1 ELSE 0 END) as open_trades,
+                SUM(realized_pnl) as total_pnl,
+                AVG(realized_pnl) as avg_pnl,
+                AVG(realized_pnl_pct) as avg_pnl_pct,
+                MAX(realized_pnl) as best_trade,
+                MIN(realized_pnl) as worst_trade,
+                AVG(CASE WHEN realized_pnl > 0 THEN realized_pnl END) as avg_win,
+                AVG(CASE WHEN realized_pnl < 0 THEN realized_pnl END) as avg_loss
+               FROM trade_performance WHERE side='buy'"""
+        )
+        # Win rate
+        winners = summary.get("winners") or 0
+        losers = summary.get("losers") or 0
+        total_closed = winners + losers
+        summary["win_rate"] = round(winners / total_closed * 100, 1) if total_closed > 0 else 0
+        # Profit factor
+        avg_win = abs(summary.get("avg_win") or 0)
+        avg_loss = abs(summary.get("avg_loss") or 1)
+        summary["profit_factor"] = round(avg_win / avg_loss, 2) if avg_loss > 0 else 0
+        return summary
 
     # ── Read: Per-feed queries ───────────────────────────────────────────
     async def get_options_flow(

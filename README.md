@@ -59,15 +59,20 @@ Alpaca **bracket order** placed instantly
   • Falls back to plain limit if bracket not supported
 ```
 
-**Position Monitor (TP/SL)** — runs every 2 min during market hours:
+**Position Monitor (TP/SL/Trailing)** — runs every 2 min during market hours:
 
 | Trigger | Action | Notification |
 |---------|--------|--------------|
-| **+80% gain** | Sell 50% (market order) | 🎯 TAKE PROFIT → Telegram |
-| **-20% loss** | Sell 50% (trim) | ✂️ TRIM → Telegram |
+| **+80% gain** | Sell 50% (TP1), activate trailing stop | 🎯 TAKE PROFIT → Telegram |
+| **Peak - 20pp** | Trailing stop: sell remaining runner | 📉 TRAILING STOP → Telegram |
+| **-35% loss** | Sell 50% (trim) | ✂️ TRIM → Telegram |
 | **-40% loss** | Liquidate 100% | 🛑 STOP LOSS → Telegram |
 
-All thresholds configurable via `.env` (`POS_TP_PCT`, `POS_TRIM_PCT`, `POS_SL_PCT`, etc). Each action fires once per position — no double-triggers. Pauses overnight and weekends.
+After TP1 sells half, the remaining "runner" is managed by a **ratcheting trailing stop** that tracks the high watermark of P&L% and sells when it drops 20pp below the peak (floor never goes below +60%). Example: if position peaks at +150%, the floor ratchets to +130%. If it drops to +129%, runner is closed.
+
+All thresholds configurable via `.env` (`POS_TP_PCT`, `POS_TRAIL_PCT`, `POS_SL_PCT`, etc). Each action fires once per position — no double-triggers. Pauses overnight and weekends.
+
+**Performance Tracking** — Alpaca order history synced to `trade_performance` table every 15 min. Position monitor records exit reason and realized P&L on every TP/trailing/trim/SL action. API: `/api/performance/summary` returns win rate, profit factor, avg win/loss.
 
 ---
 

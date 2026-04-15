@@ -162,9 +162,15 @@ IV scanner loop (every 5 min RTH, 15 min extended, 30 min overnight, off weekend
 
 Alpaca position monitor (every 2 min, RTH+extended only):
     → trader.get_positions()            (all open positions)
-    → if pnl_pct >= +80% → sell 50% (TP), telegram.send_info()
-    → if pnl_pct <= -20% → sell 50% (trim), telegram.send_info()
+    → if pnl_pct >= +80% → sell 50% (TP1), activate trailing stop
+    → trailing stop: track high watermark, sell remaining when pnl drops 20pp below peak
+    → if pnl_pct <= -35% → sell 50% (trim), telegram.send_info()
     → if pnl_pct <= -40% → close_position (SL), telegram.send_info()
+    → db.record_exit() on every TP/trail/trim/SL action
+
+Performance sync (every 15 min):
+    → trader.get_order_history()        (closed orders, last 90 days)
+    → db.upsert_trade_performance()     (dedup by alpaca_order_id)
 
 UW budget monitor (every 10 min):
     → budget.status()                   (daily count, limit, usage %, session)
@@ -370,6 +376,7 @@ dark_pool_prints   -- raw UW dark pool events
 insider_trades     -- raw UW insider trade events
 congress_trades    -- raw UW congress trade events
 pending_trades     -- Alpaca auto-trade queue (status: pending/confirmed/skipped/expired/failed)
+trade_performance  -- closed/open Alpaca orders + exit reason/P&L (synced every 15 min)
 watchlist          -- tickers for IV + earnings scanning
 ```
 
@@ -421,6 +428,8 @@ watchlist          -- tickers for IV + earnings scanning
 - ✅ **Alpaca position monitor (TP/SL/trim)** — `alpaca_position_monitor()` background loop checks positions every 2 min during RTH+extended. TP at +80% (sell 50%), trim at -20% (sell 50%), SL at -40% (liquidate). Auto-executes market orders, Telegram confirms after. All thresholds configurable via `.env`.
 - ✅ **Windows auto-start service** — `start_service.bat` restart loop + `StonkMonitor.vbs` in Startup folder. Backend survives reboots and crashes.
 - ✅ **Alpaca bracket orders** — new trades submitted as `OrderClass.BRACKET` with server-side TP limit + SL stop. Options: +80%/-40%, equity: +15%/-5%. Falls back to plain limit if bracket not supported. Telegram confirmation shows TP/SL prices.
+- ✅ **Ratcheting trailing stop** — after TP1 sells half, remaining position tracked with high-watermark trailing stop (default 20pp below peak, floor at 60% gain minimum). Replaces fixed T2. Configurable via `POS_TRAIL_AFTER_TP` and `POS_TRAIL_PCT`.
+- ✅ **Performance tracking** — `trade_performance` table syncs Alpaca closed orders every 15 min. Position monitor records exit reason (tp1/trailing_stop/sl/trim) and realized P&L. API endpoints: `/api/performance`, `/api/performance/summary` (win rate, profit factor, avg win/loss).
 
 ---
 
