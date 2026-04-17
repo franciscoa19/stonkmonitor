@@ -86,9 +86,9 @@ and place the RSA private key at the path in `KALSHI_PRIVATE_KEY`.
 |------|---------|
 | `main.py` | FastAPI app, lifespan, all background tasks, WebSocket broadcast |
 | `config.py` | Pydantic settings loaded from `.env` |
-| `db.py` | aiosqlite wrapper — 7 tables (signals, options_flow, dark_pool, insider_trades, congress_trades, pending_trades, watchlist) |
+| `db.py` | aiosqlite wrapper — 8 tables (signals, options_flow, dark_pool, insider_trades, congress_trades, pending_trades, trade_performance, watchlist) |
 | `feeds/unusual_whales.py` | UW REST polling — **session-aware per-channel scheduler**, budget-gated |
-| `feeds/uw_budget.py` | UW daily call budget tracker + US/Eastern session classifier (rth/extended/overnight/weekend) |
+| `feeds/uw_budget.py` | UW daily call budget tracker + session classifier (rth/extended/overnight/weekend) + `market_subphase()` for open/close noise gating |
 | `feeds/kalshi.py` | Kalshi REST client with RSA-PSS signing |
 | `feeds/dome.py` | Dome API client (Polymarket + Kalshi metadata search, `/v1/polymarket/markets`, `/v1/kalshi/markets`) |
 | `feeds/polymarket.py` | Polymarket CLOB client (public, no auth) — `/midpoint`, `/price`, YES-side price helper |
@@ -133,13 +133,18 @@ Unusual Whales REST polling (session-aware, budget-gated):
         → engine.process_event()         (score 1-10)
             → handle_signal()
                 → signal_store (ring buffer 500)
-                → manager.broadcast_signal()   (→ frontend signal feed)
+                → manager.broadcast_signal()   (→ frontend signal feed — always)
                 → db.save_signal()             (if score >= 7)
-                → discord/pushover alert       (if score >= threshold)
-                → auto_trade.evaluate_signal() (if score >= 8.5)
+                → market_subphase() noise gate:
+                    open_first_5 (09:30-09:35) +2.0 bump → need ≥9.0 to notify
+                    open         (09:35-10:00) +1.5 bump → need ≥8.5 to notify
+                    close        (15:45-16:00) +0.5 bump → need ≥7.5 to notify
+                    options/darkpool outside RTH → suppressed entirely
+                → discord/pushover alert       (if score >= threshold + bump)
+                → auto_trade.evaluate_signal() (if score >= 8.5 + bump)
                     → _queue() → DB + Telegram card + WS
         → pattern_engine.evaluate()     (cross-feed patterns)
-            → auto_trade.evaluate_pattern()
+            → auto_trade.evaluate_pattern() (if score >= 9.0 + bump)
 
 Kalshi scan loop (every 5 min):
     → kalshi_client.get_markets()       (paginated, all categories)
@@ -430,6 +435,7 @@ watchlist          -- tickers for IV + earnings scanning
 - ✅ **Alpaca bracket orders** — new trades submitted as `OrderClass.BRACKET` with server-side TP limit + SL stop. Options: +80%/-40%, equity: +15%/-5%. Falls back to plain limit if bracket not supported. Telegram confirmation shows TP/SL prices.
 - ✅ **Ratcheting trailing stop** — after TP1 sells half, remaining position tracked with high-watermark trailing stop (default 20pp below peak, floor at 60% gain minimum). Replaces fixed T2. Configurable via `POS_TRAIL_AFTER_TP` and `POS_TRAIL_PCT`.
 - ✅ **Performance tracking** — `trade_performance` table syncs Alpaca closed orders every 15 min. Position monitor records exit reason (tp1/trailing_stop/sl/trim) and realized P&L. API endpoints: `/api/performance`, `/api/performance/summary` (win rate, profit factor, avg win/loss).
+- ✅ **Market open/close noise filter** — `market_subphase()` in `feeds/uw_budget.py` classifies open_first_5/open/close/normal. Score bumps applied to notification + auto-trade thresholds (+2.0/+1.5/+0.5). Options/darkpool suppressed outside RTH. All bumps configurable via `OPEN_FIRST5_BUMP`, `OPEN_BUMP`, `CLOSE_BUMP`.
 
 ---
 

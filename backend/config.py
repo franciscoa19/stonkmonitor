@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     iv_rank_low_threshold: float = Field(20.0, env="IV_RANK_LOW_THRESHOLD")
     sweep_score_threshold: float = Field(7.0, env="SWEEP_SCORE_THRESHOLD")
 
+    # --- Market Open/Close Noise Filter ---
+    # Extra score required above base thresholds during noisy sub-phases.
+    # Set to 0 to disable a particular bump.
+    open_first5_bump: float = Field(2.0, env="OPEN_FIRST5_BUMP")   # 09:30–09:35 chaos
+    open_bump: float = Field(1.5, env="OPEN_BUMP")                  # 09:35–10:00 settling
+    close_bump: float = Field(0.5, env="CLOSE_BUMP")                # 15:45–16:00 MOC noise
+
     class Config:
         env_file = ".env"
         case_sensitive = False

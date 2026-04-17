@@ -93,6 +93,68 @@ def current_session(now: Optional[datetime] = None) -> str:
     return "overnight"
 
 
+# ── Sub-phases within RTH for noise-aware signal filtering ──────────────────
+# Returned as a string tag + a score_bump (extra points a signal must clear
+# on top of the base threshold before it triggers a notification/auto-trade).
+#
+#  open_first_5   09:30–09:35  +2.0  — pure chaos, barely usable
+#  open           09:35–10:00  +1.5  — still noisy, require strong confirmation
+#  close          15:45–16:00  +0.5  — MOC/imbalance noise
+#  normal         all other RTH  0.0 — baseline
+#  extended         outside RTH  0.0 — score already adjusted by session
+SUBPHASE_BUMPS: dict[str, float] = {
+    "open_first_5": 2.0,
+    "open":         1.5,
+    "close":        0.5,
+    "normal":       0.0,
+    "extended":     0.0,
+    "overnight":    0.0,
+    "weekend":      0.0,
+}
+
+
+def market_subphase(now: Optional[datetime] = None) -> str:
+    """Return a fine-grained market sub-phase tag for noise filtering."""
+    if now is None:
+        now = datetime.now(_NY)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=_NY)
+    else:
+        now = now.astimezone(_NY)
+
+    wd = now.weekday()
+    if wd >= 5:
+        return "weekend"
+
+    hm = now.hour * 60 + now.minute
+
+    # Regular trading hours sub-phases
+    if 9 * 60 + 30 <= hm < 16 * 60:
+        if hm < 9 * 60 + 35:
+            return "open_first_5"   # 09:30–09:35
+        if hm < 10 * 60:
+            return "open"           # 09:35–10:00
+        if hm >= 15 * 60 + 45:
+            return "close"          # 15:45–16:00
+        return "normal"
+
+    if 4 * 60 <= hm < 20 * 60:
+        return "extended"
+    return "overnight"
+
+
+def score_bump_for_subphase(subphase: str, bumps: Optional[dict] = None) -> float:
+    """Extra score points required above the base threshold for this sub-phase.
+
+    Pass a `bumps` dict to override defaults, e.g.:
+        {"open_first_5": 2.0, "open": 1.5, "close": 0.5}
+    Falls back to SUBPHASE_BUMPS for any missing key.
+    """
+    if bumps:
+        return bumps.get(subphase, SUBPHASE_BUMPS.get(subphase, 0.0))
+    return SUBPHASE_BUMPS.get(subphase, 0.0)
+
+
 @dataclass
 class UWBudget:
     """Singleton-ish tracker of UW daily call budget."""

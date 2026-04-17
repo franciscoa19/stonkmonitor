@@ -163,9 +163,20 @@ def _is_stale(signal) -> bool:
 
 
 async def handle_signal(signal):
-    """Score → store → broadcast → notify."""
+    """Score → store → broadcast → notify.
+
+    Notification and auto-trade are gated by a time-of-day score bump:
+      open_first_5 (09:30–09:35)  +2.0 — pure chaos, only exceptional signals
+      open         (09:35–10:00)  +1.5 — still noisy
+      close        (15:45–16:00)  +0.5 — MOC noise
+      normal RTH                  +0.0 — baseline
+    Extended-hours option flow is shown on the dashboard but never notified
+    (options don't actually trade; the alerts are stale or erroneous).
+    """
     if signal is None:
         return
+
+    from feeds.uw_budget import market_subphase, score_bump_for_subphase
 
     sig_dict = signal.to_dict()
 
@@ -174,24 +185,62 @@ async def handle_signal(signal):
     if len(signal_store) > 500:
         signal_store.pop(0)
 
-    # Broadcast to all frontend WS clients
+    # Always broadcast to frontend (dashboard shows everything)
     await manager.broadcast_signal(sig_dict)
 
     # Persist to DB if score >= 7
     await db.save_signal(signal, min_score=7.0)
 
-    # Only notify + auto-trade after startup backfill is done
-    if _startup_complete and not _is_stale(signal):
-        await discord.send_signal(signal, score_threshold=settings.sweep_score_threshold)
-        await pushover.send_signal(signal, score_threshold=settings.sweep_score_threshold)
-        # Auto-trade evaluation (non-blocking — don't let it crash the pipeline)
+    if not _startup_complete or _is_stale(signal):
+        return
+
+    # ── Time-of-day noise gate ─────────────────────────────────────────────
+    _cfg_bumps = {
+        "open_first_5": settings.open_first5_bump,
+        "open":         settings.open_bump,
+        "close":        settings.close_bump,
+    }
+    subphase = market_subphase()
+    bump     = score_bump_for_subphase(subphase, _cfg_bumps)
+
+    # Options/darkpool notifications are meaningless outside RTH
+    is_options_type = signal.type.value in ("options_flow", "dark_pool")
+    if subphase in ("extended", "overnight", "weekend") and is_options_type:
+        logger.debug(
+            f"Suppressed {signal.type.value} notification outside RTH "
+            f"(score={signal.score:.1f}, subphase={subphase})"
+        )
+        return
+
+    # Effective threshold = base + time-of-day bump
+    base_threshold   = settings.sweep_score_threshold          # default 7.0
+    notify_threshold = base_threshold + bump
+    auto_threshold   = settings.auto_trade_score_threshold + bump  # default 8.5
+
+    if bump > 0:
+        logger.debug(
+            f"Market open/close noise guard ({subphase}): "
+            f"notify≥{notify_threshold:.1f} auto≥{auto_threshold:.1f} "
+            f"(score={signal.score:.1f})"
+        )
+
+    # Notifications (Discord / Pushover) — only above bumped threshold
+    if signal.score >= notify_threshold:
+        await discord.send_signal(signal, score_threshold=notify_threshold)
+        await pushover.send_signal(signal, score_threshold=notify_threshold)
+
+    # Auto-trade — only above bumped auto threshold
+    if signal.score >= auto_threshold:
         try:
             account = trader.get_account()
             await auto_trade.evaluate_signal(signal, account)
         except Exception as e:
             logger.warning(f"Auto-trade eval error: {e}")
 
-    logger.info(f"Signal: {signal.title} | Score {signal.score:.1f}")
+    logger.info(
+        f"Signal: {signal.title} | Score {signal.score:.1f}"
+        + (f" | {subphase} bump +{bump:.1f}" if bump > 0 else "")
+    )
 
 
 async def process_uw_event(raw: dict):
@@ -223,14 +272,24 @@ async def process_uw_event(raw: dict):
         fired_patterns = await pattern_engine.evaluate(ticker, channel, db)
 
         # Auto-trade evaluation for any high-score pattern hits
+        # Apply the same time-of-day bump so open-hour patterns also need a higher bar
         if _startup_complete and fired_patterns:
             try:
+                from feeds.uw_budget import market_subphase, score_bump_for_subphase
+                _cfg_bumps = {
+                    "open_first_5": settings.open_first5_bump,
+                    "open":         settings.open_bump,
+                    "close":        settings.close_bump,
+                }
+                _bump = score_bump_for_subphase(market_subphase(), _cfg_bumps)
+                _pat_threshold = settings.auto_trade_pattern_threshold + _bump
                 account = trader.get_account()
                 for pat in fired_patterns:
-                    await auto_trade.evaluate_pattern(
-                        pat.pattern_name, pat.ticker,
-                        pat.score, pat.evidence, account,
-                    )
+                    if pat.score >= _pat_threshold:
+                        await auto_trade.evaluate_pattern(
+                            pat.pattern_name, pat.ticker,
+                            pat.score, pat.evidence, account,
+                        )
             except Exception as e:
                 logger.warning(f"Auto-trade pattern eval error: {e}")
 
