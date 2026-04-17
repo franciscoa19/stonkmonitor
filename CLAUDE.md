@@ -343,9 +343,19 @@ correctly handles overnight gaps. The original calculator used it; we kept it ve
 **OCC symbol format:** `TICKER YYMMDD C/P STRIKE*1000 (8-digit zero-padded)`
 Example: `SNDK260424C00840000`
 
-**DTE guard:** rejects < 2d or > 21d expiries.
+**DTE guard:** rejects < 3d or > 10d expiries (data showed 3-7d is only profitable window).
 
 **Equity trades:** insider_buy / congress_trade → market buy, sized to min(2% equity, $2,500).
+
+**Quality filters** (all configurable, all log their block reason):
+1. **Put threshold** — puts require score ≥ 9.5 (data: puts had 4% WR vs 41% for calls)
+2. **Regime filter** — fetches SPY daily bars, caches 5 min; blocks bearish trades if SPY >+1.5% today or +3% over 5d; blocks bullish if SPY <-2% today
+3. **DTE window** — MIN_DTE=3, MAX_DTE=10
+4. **Price cap** — rejects options with ask > $8 (data: $5-25 options had 17-32% WR)
+5. **Ticker cooldown** — skips ticker for 72h after any confirmed losing exit
+6. **Circuit breaker** — halts all auto-trading for the day if realized P&L < -$2,000
+
+`GET /api/trade/filters` returns live filter state (circuit breaker, cooldowns, regime readings).
 
 **Bracket orders:** Every new trade is submitted as an `OrderClass.BRACKET` with server-side
 TP (limit) and SL (stop) legs attached to the entry. Prices computed from `TradeSuggestion.target_pct`
@@ -436,6 +446,7 @@ watchlist          -- tickers for IV + earnings scanning
 - ✅ **Ratcheting trailing stop** — after TP1 sells half, remaining position tracked with high-watermark trailing stop (default 20pp below peak, floor at 60% gain minimum). Replaces fixed T2. Configurable via `POS_TRAIL_AFTER_TP` and `POS_TRAIL_PCT`.
 - ✅ **Performance tracking** — `trade_performance` table syncs Alpaca closed orders every 15 min. Position monitor records exit reason (tp1/trailing_stop/sl/trim) and realized P&L. API endpoints: `/api/performance`, `/api/performance/summary` (win rate, profit factor, avg win/loss).
 - ✅ **Market open/close noise filter** — `market_subphase()` in `feeds/uw_budget.py` classifies open_first_5/open/close/normal. Score bumps applied to notification + auto-trade thresholds (+2.0/+1.5/+0.5). Options/darkpool suppressed outside RTH. All bumps configurable via `OPEN_FIRST5_BUMP`, `OPEN_BUMP`, `CLOSE_BUMP`.
+- ✅ **6 data-driven auto-trade quality filters** — put threshold (score ≥9.5), market regime (SPY day/trend check), DTE 3-10d, price cap $8, per-ticker 72h loss cooldown, daily -$2k circuit breaker. All configurable. `GET /api/trade/filters` shows live state.
 
 ---
 

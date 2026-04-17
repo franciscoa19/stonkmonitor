@@ -792,6 +792,7 @@ async def alpaca_position_monitor():
                     result = trader.close_position(symbol)
                     if "error" not in result:
                         await db.record_exit(symbol, cur, "sl", pnl_usd, pnl_pct)
+                        auto_trade.record_loss(pos["symbol"][:6].rstrip(), pnl_usd)
                         msg = (
                             f"\U0001f6d1 <b>STOP LOSS</b> — {symbol}\n"
                             f"Sold ALL {qty:.0f} shares/contracts\n"
@@ -815,6 +816,7 @@ async def alpaca_position_monitor():
                     sell_qty = max(1, int(qty * trim_sell_frac))
                     result = trader.market_order(symbol, sell_qty, "sell")
                     if "error" not in result:
+                        auto_trade.record_loss(pos["symbol"][:6].rstrip(), pnl_usd * trim_sell_frac)
                         msg = (
                             f"\u2702\ufe0f <b>TRIM</b> — {symbol}\n"
                             f"Sold {sell_qty} of {qty:.0f} shares/contracts\n"
@@ -847,6 +849,10 @@ async def alpaca_position_monitor():
                         result = trader.close_position(symbol)
                         if "error" not in result:
                             await db.record_exit(symbol, cur, "trailing_stop", pnl_usd, pnl_pct)
+                            if pnl_usd >= 0:
+                                auto_trade.record_win(pos["symbol"][:6].rstrip(), pnl_usd)
+                            else:
+                                auto_trade.record_loss(pos["symbol"][:6].rstrip(), pnl_usd)
                             msg = (
                                 f"\U0001f4c9 <b>TRAILING STOP</b> — {symbol}\n"
                                 f"High: {state['high_watermark']:+.1f}% → Fell to {pnl_pct:+.1f}% (floor: {trail_floor:+.1f}%)\n"
@@ -878,6 +884,7 @@ async def alpaca_position_monitor():
                             result = trader.market_order(symbol, sell_qty, "sell")
                         if "error" not in result:
                             await db.record_exit(symbol, cur, "tp2", pnl_usd, pnl_pct)
+                            auto_trade.record_win(pos["symbol"][:6].rstrip(), pnl_usd)
                             msg = (
                                 f"\U0001f680 <b>TAKE PROFIT T2</b> — {symbol}\n"
                                 f"Sold {sell_qty} of {qty:.0f} shares/contracts\n"
@@ -904,6 +911,8 @@ async def alpaca_position_monitor():
                     else:
                         result = trader.market_order(symbol, sell_qty, "sell")
                     if "error" not in result:
+                        await db.record_exit(symbol, cur, "tp1", pnl_usd * tp_sell_frac, pnl_pct)
+                        auto_trade.record_win(pos["symbol"][:6].rstrip(), pnl_usd * tp_sell_frac)
                         # Activate trailing stop for the remaining half
                         if trail_enabled:
                             state["trailing"] = True

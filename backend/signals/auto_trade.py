@@ -13,25 +13,24 @@ Trigger logic:
     AND pattern in AUTO_TRADE_PATTERNS set
     → options trade if options evidence exists, else equity
 
+Quality filters (all configurable via .env):
+  1. Puts require AUTO_TRADE_PUT_MIN_SCORE (default 9.5) — data showed 4% win rate on puts
+  2. Market regime: skip bearish if SPY day +1.5%+, skip bullish if SPY day -2.0%+ crash
+  3. DTE window: MIN_DTE=3, MAX_DTE=10 — 3-7d is the only profitable bucket historically
+  4. Options price cap: skip if ask > AUTO_TRADE_MAX_OPTION_PRICE ($8) — $5-25 entries lose badly
+  5. Ticker cooldown: skip if same ticker lost within AUTO_TRADE_TICKER_COOLDOWN_HOURS (72h)
+  6. Circuit breaker: halt if day's realized P&L < AUTO_TRADE_DAILY_LOSS_LIMIT (-$2000)
+
 Position sizing:
   • max_risk = min(equity * max_risk_pct, max_risk_usd)
   • options: contracts = floor(max_risk / (limit_price * 100)), min 1
   • equity:  shares    = floor(max_risk / price), min 1
-
-Options contract selection:
-  • Uses strike + expiry from the UW signal (already market-selected)
-  • Constructs OCC symbol: TICKER YYMMDD C/P STRIKE*1000 (8-digit)
-  • Gets live bid/ask from Alpaca data API
-  • Limit price = ask (or bid*1.15 if spread is extreme)
-
-DTE guard:
-  • Rejects < MIN_DTE days (default 2) unless score >= 9.5
-  • Rejects > MAX_DTE days (default 21) — no LEAPS chasing
 """
 import asyncio
 import aiohttp
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -80,6 +79,18 @@ class AutoTradeEngine:
         self._trader = None
         self._pending: dict[int, TradeSuggestion] = {}
 
+        # ── Filter state ───────────────────────────────────────────────────
+        # Regime cache: (spy_change_pct, spy_trend_pct, timestamp)
+        self._regime_cache: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self._regime_ttl: float = 300.0  # refresh every 5 min
+
+        # Circuit breaker: tracks today's realized P&L (reset at midnight ET)
+        self._daily_pnl: float = 0.0
+        self._daily_pnl_date: str = ""  # "YYYY-MM-DD" of last reset
+
+        # Ticker cooldown: ticker → timestamp of last confirmed loss
+        self._ticker_loss_ts: dict[str, float] = {}
+
     def set_dependencies(self, telegram, db, trader):
         self._telegram = telegram
         self._db = db
@@ -93,6 +104,117 @@ class AutoTradeEngine:
         if not self._session or self._session.closed:
             self._session = aiohttp.ClientSession()
         return self._session
+
+    # ── Quality filters ─────────────────────────────────────────────────────
+
+    def record_loss(self, ticker: str, pnl: float):
+        """Called by position monitor when a losing exit fires. Updates cooldown + circuit breaker."""
+        if pnl < 0:
+            self._ticker_loss_ts[ticker.upper()] = time.time()
+            self._refresh_daily_pnl_date()
+            self._daily_pnl += pnl
+            logger.info(
+                f"AutoTrade filters: loss recorded {ticker} ${pnl:+,.0f} | "
+                f"daily_pnl=${self._daily_pnl:+,.0f} | "
+                f"circuit_breaker={'OPEN' if self._circuit_breaker_active() else 'closed'}"
+            )
+
+    def record_win(self, ticker: str, pnl: float):
+        """Called by position monitor when a winning exit fires. Updates circuit breaker only."""
+        if pnl > 0:
+            self._refresh_daily_pnl_date()
+            self._daily_pnl += pnl
+
+    def _refresh_daily_pnl_date(self):
+        """Reset daily P&L counter at midnight ET."""
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        if today != self._daily_pnl_date:
+            self._daily_pnl = 0.0
+            self._daily_pnl_date = today
+
+    def _circuit_breaker_active(self) -> bool:
+        """True if today's realized losses exceed the daily limit."""
+        self._refresh_daily_pnl_date()
+        limit = self.settings.auto_trade_daily_loss_limit  # e.g. -2000
+        return self._daily_pnl <= limit
+
+    def _ticker_in_cooldown(self, ticker: str) -> bool:
+        """True if ticker had a confirmed loss within the cooldown window."""
+        ts = self._ticker_loss_ts.get(ticker.upper())
+        if ts is None:
+            return False
+        hours = self.settings.auto_trade_ticker_cooldown_hours
+        return (time.time() - ts) < hours * 3600
+
+    async def _get_regime(self) -> tuple[float, float]:
+        """Return (today_change_pct, trend_change_pct) for SPY.
+        Cached for 5 minutes. today = (last/prev_close - 1)*100.
+        trend = (last/close_N_days_ago - 1)*100.
+        Returns (0, 0) on any fetch failure so we never block a trade due to data error.
+        """
+        now = time.time()
+        day_chg, trend_chg, cached_at = self._regime_cache
+        if now - cached_at < self._regime_ttl:
+            return day_chg, trend_chg
+
+        try:
+            spy = self.settings.auto_trade_regime_spy_ticker
+            trend_days = self.settings.auto_trade_regime_trend_days + 1  # +1 for today
+            session = await self._session_get()
+            headers = {
+                "APCA-API-KEY-ID":     self.settings.alpaca_api_key,
+                "APCA-API-SECRET-KEY": self.settings.alpaca_secret_key,
+            }
+            # Fetch daily bars for SPY (need trend_days + a buffer for weekends)
+            start = (datetime.utcnow() - timedelta(days=trend_days + 5)).strftime("%Y-%m-%d")
+            url = f"https://data.alpaca.markets/v2/stocks/{spy}/bars"
+            async with session.get(
+                url, headers=headers,
+                params={"timeframe": "1Day", "start": start, "limit": trend_days + 5, "feed": "sip"},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug(f"Regime fetch HTTP {resp.status}")
+                    return 0.0, 0.0
+                data = await resp.json()
+                bars = data.get("bars", [])
+                if len(bars) < 2:
+                    return 0.0, 0.0
+
+                last_close = float(bars[-1]["c"])
+                prev_close = float(bars[-2]["c"])
+                old_close  = float(bars[0]["c"])
+
+                day_chg   = (last_close / prev_close - 1) * 100
+                trend_chg = (last_close / old_close - 1) * 100
+
+                self._regime_cache = (day_chg, trend_chg, now)
+                logger.debug(
+                    f"Regime: SPY day={day_chg:+.2f}% trend({trend_days}d)={trend_chg:+.2f}%"
+                )
+                return day_chg, trend_chg
+        except Exception as e:
+            logger.debug(f"Regime fetch error (non-blocking): {e}")
+            return 0.0, 0.0
+
+    async def _regime_allows(self, side: str) -> tuple[bool, str]:
+        """Returns (allowed, reason). side = 'bullish' or 'bearish'."""
+        day_chg, trend_chg = await self._get_regime()
+
+        bear_skip = self.settings.auto_trade_regime_bear_skip_pct   # default +1.5
+        bull_skip = self.settings.auto_trade_regime_bull_skip_pct   # default -2.0
+
+        if side == "bearish":
+            if day_chg >= bear_skip:
+                return False, f"Regime block: SPY +{day_chg:.1f}% today — no bearish trades in a rip"
+            if trend_chg >= bear_skip * 2:
+                return False, f"Regime block: SPY +{trend_chg:.1f}% over {self.settings.auto_trade_regime_trend_days}d — bull trend"
+        elif side == "bullish":
+            if day_chg <= bull_skip:
+                return False, f"Regime block: SPY {day_chg:.1f}% today — no bullish trades in a crash"
+
+        return True, ""
 
     # ── Symbol helpers ───────────────────────────────────────────────────────
 
@@ -210,6 +332,26 @@ class AutoTradeEngine:
 
     # ── Evaluation entry points ──────────────────────────────────────────────
 
+    async def _pre_flight(self, ticker: str, side: str, trade_type: str = "option") -> tuple[bool, str]:
+        """Run all quality filters before queuing any trade.
+        Returns (ok, reason_if_blocked).
+        """
+        # 6. Circuit breaker
+        if self._circuit_breaker_active():
+            return False, f"Circuit breaker: daily P&L ${self._daily_pnl:+,.0f} ≤ limit ${self.settings.auto_trade_daily_loss_limit:,.0f}"
+
+        # 5. Ticker cooldown
+        if self._ticker_in_cooldown(ticker):
+            hrs = self.settings.auto_trade_ticker_cooldown_hours
+            return False, f"Cooldown: {ticker} lost within last {hrs}h"
+
+        # 2. Market regime
+        ok, reason = await self._regime_allows(side)
+        if not ok:
+            return False, reason
+
+        return True, ""
+
     async def evaluate_signal(self, signal, account: dict):
         """Called after every scored signal. Routes qualifying signals to trade builders."""
         if not self.settings.auto_trade_enabled:
@@ -219,15 +361,21 @@ class AutoTradeEngine:
         if signal.score < self.settings.auto_trade_score_threshold:
             return
 
+        side = signal.side.value
+        ok, reason = await self._pre_flight(signal.ticker, side)
+        if not ok:
+            logger.info(f"Auto-trade blocked [{signal.ticker}]: {reason}")
+            return
+
         sig_type = signal.type.value
         if sig_type in ("sweep", "golden_sweep", "options_flow"):
             await self._build_options_trade(signal, account)
         elif sig_type == "insider_buy":
             await self._build_equity_trade(
-                signal.ticker, signal.side.value, signal.score, account,
+                signal.ticker, side, signal.score, account,
                 rationale=f"Insider open-market purchase | {signal.description[:80]}",
             )
-        elif sig_type == "congress_trade" and signal.side.value == "bullish":
+        elif sig_type == "congress_trade" and side == "bullish":
             await self._build_equity_trade(
                 signal.ticker, "bullish", signal.score, account,
                 rationale=f"Congressional buy | {signal.description[:80]}",
@@ -243,6 +391,16 @@ class AutoTradeEngine:
         if score < self.settings.auto_trade_pattern_threshold:
             return
 
+        # Determine side from evidence
+        side = "bullish"
+        if any("put" in e.lower() or "bearish" in e.lower() for e in evidence):
+            side = "bearish"
+
+        ok, reason = await self._pre_flight(ticker, side)
+        if not ok:
+            logger.info(f"Auto-trade pattern blocked [{ticker}]: {reason}")
+            return
+
         # Check if pattern evidence includes options data → options trade
         options_ev = [e for e in evidence if any(
             kw in e.lower() for kw in ("sweep", "call", "put", "flow", "golden")
@@ -252,7 +410,7 @@ class AutoTradeEngine:
             await self._build_options_trade_from_db(ticker, score, evidence, account)
         else:
             await self._build_equity_trade(
-                ticker, "bullish", score, account,
+                ticker, side, score, account,
                 rationale=f"Pattern: {pattern_name} | {'; '.join(evidence[:2])}",
             )
 
@@ -263,21 +421,34 @@ class AutoTradeEngine:
         if not signal.strike or not signal.expiry:
             return
 
+        opt_type = (signal.option_type or "call").lower()
+
+        # ── Filter 1: Puts require a higher score bar ─────────────────────
+        if "put" in opt_type and signal.score < self.settings.auto_trade_put_min_score:
+            logger.info(
+                f"Auto-trade: {signal.ticker} PUT blocked — score {signal.score:.1f} "
+                f"< put_min {self.settings.auto_trade_put_min_score:.1f}"
+            )
+            return
+
         dte = self._calc_dte(signal.expiry)
         if dte is None:
             return
 
-        # DTE guard
-        min_dte = self.settings.auto_trade_min_dte
-        max_dte = self.settings.auto_trade_max_dte
+        # ── Filter 3: DTE window (3–10 days is the profitable zone) ──────
+        min_dte = self.settings.auto_trade_min_dte   # 3
+        max_dte = self.settings.auto_trade_max_dte   # 10
         if dte < min_dte and signal.score < ZERO_DTE_MIN_SCORE:
-            logger.debug(f"Auto-trade: {signal.ticker} DTE={dte} < {min_dte}, score {signal.score} < {ZERO_DTE_MIN_SCORE}")
+            logger.debug(
+                f"Auto-trade: {signal.ticker} DTE={dte} < {min_dte}, "
+                f"score {signal.score:.1f} < {ZERO_DTE_MIN_SCORE}"
+            )
             return
         if dte > max_dte:
-            logger.debug(f"Auto-trade: {signal.ticker} DTE={dte} > {max_dte}, skipping LEAPS")
+            logger.debug(f"Auto-trade: {signal.ticker} DTE={dte} > {max_dte}, skipping")
             return
 
-        occ = self._occ_symbol(signal.ticker, signal.expiry, signal.option_type or "call", signal.strike)
+        occ = self._occ_symbol(signal.ticker, signal.expiry, opt_type, signal.strike)
         if not occ:
             return
 
@@ -296,6 +467,14 @@ class AutoTradeEngine:
         else:
             limit_price = round(bid * 1.10, 2)
 
+        # ── Filter 4: Options price cap ────────────────────────────────────
+        max_price = self.settings.auto_trade_max_option_price  # $8
+        if limit_price > max_price:
+            logger.info(
+                f"Auto-trade: {occ} blocked — price ${limit_price:.2f} > cap ${max_price:.2f}"
+            )
+            return
+
         equity = float(account.get("equity", 100_000))
         qty, risk = self._size_options(equity, limit_price)
         if qty == 0:
@@ -306,7 +485,7 @@ class AutoTradeEngine:
             trade_type="option",
             symbol=occ,
             side=signal.side.value,
-            option_type=signal.option_type or "call",
+            option_type=opt_type,
             strike=signal.strike,
             expiry=signal.expiry,
             dte=dte,

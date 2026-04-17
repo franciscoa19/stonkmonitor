@@ -368,6 +368,44 @@ async def get_current_positions_with_pnl():
     return t.get_positions()
 
 
+@router.get("/trade/filters")
+async def get_filter_status():
+    """Current state of all 6 auto-trade quality filters."""
+    from main import auto_trade as at, settings as s
+    at._refresh_daily_pnl_date()
+    spy_day, spy_trend = at._regime_cache[0], at._regime_cache[1]
+    cooldown_tickers = [
+        {"ticker": t, "hours_remaining": round(
+            (s.auto_trade_ticker_cooldown_hours * 3600 - (__import__("time").time() - ts)) / 3600, 1
+        )}
+        for t, ts in at._ticker_loss_ts.items()
+        if at._ticker_in_cooldown(t)
+    ]
+    return {
+        "circuit_breaker": {
+            "active": at._circuit_breaker_active(),
+            "daily_pnl": round(at._daily_pnl, 2),
+            "limit": s.auto_trade_daily_loss_limit,
+            "date": at._daily_pnl_date,
+        },
+        "regime": {
+            "spy_day_chg_pct": round(spy_day, 2),
+            "spy_trend_chg_pct": round(spy_trend, 2),
+            "bear_skip_threshold": s.auto_trade_regime_bear_skip_pct,
+            "bull_skip_threshold": s.auto_trade_regime_bull_skip_pct,
+        },
+        "ticker_cooldowns": cooldown_tickers,
+        "settings": {
+            "put_min_score": s.auto_trade_put_min_score,
+            "min_dte": s.auto_trade_min_dte,
+            "max_dte": s.auto_trade_max_dte,
+            "max_option_price": s.auto_trade_max_option_price,
+            "ticker_cooldown_hours": s.auto_trade_ticker_cooldown_hours,
+            "daily_loss_limit": s.auto_trade_daily_loss_limit,
+        }
+    }
+
+
 # ------------------------------------------------------------------ #
 #  Watchlist                                                           #
 # ------------------------------------------------------------------ #

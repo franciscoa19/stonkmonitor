@@ -54,8 +54,23 @@ class Settings(BaseSettings):
     auto_trade_max_risk_usd: float = Field(2500.0, env="AUTO_TRADE_MAX_RISK_USD")
     auto_trade_score_threshold: float = Field(8.5, env="AUTO_TRADE_SCORE_THRESHOLD")
     auto_trade_pattern_threshold: float = Field(9.0, env="AUTO_TRADE_PATTERN_THRESHOLD")
-    auto_trade_min_dte: int = Field(2, env="AUTO_TRADE_MIN_DTE")
-    auto_trade_max_dte: int = Field(21, env="AUTO_TRADE_MAX_DTE")
+    auto_trade_min_dte: int = Field(3, env="AUTO_TRADE_MIN_DTE")    # was 2 — data shows 3-7d is sweet spot
+    auto_trade_max_dte: int = Field(10, env="AUTO_TRADE_MAX_DTE")   # was 21 — 7-14d+ underperforms badly
+
+    # --- Auto-Trade Quality Filters (data-driven, see performance analysis) ---
+    # 1. Puts need an exceptional signal — default requires score ≥10 (near-impossible without a pattern)
+    auto_trade_put_min_score: float = Field(9.5, env="AUTO_TRADE_PUT_MIN_SCORE")
+    # 2. Market regime: skip bearish trades when SPY is ripping, skip bullish when crashing
+    auto_trade_regime_spy_ticker: str = Field("SPY", env="AUTO_TRADE_REGIME_SPY_TICKER")
+    auto_trade_regime_bear_skip_pct: float = Field(1.5, env="AUTO_TRADE_REGIME_BEAR_SKIP_PCT")   # skip puts if SPY day-chg > +1.5%
+    auto_trade_regime_bull_skip_pct: float = Field(-2.0, env="AUTO_TRADE_REGIME_BULL_SKIP_PCT")  # skip calls if SPY day-chg < -2.0%
+    auto_trade_regime_trend_days: int = Field(5, env="AUTO_TRADE_REGIME_TREND_DAYS")              # look-back for 5-day trend
+    # 4. Options price cap — $5-25 options have 17-32% WR; cheap options outperform
+    auto_trade_max_option_price: float = Field(8.0, env="AUTO_TRADE_MAX_OPTION_PRICE")
+    # 5. Per-ticker loss cooldown — don't re-trade a ticker that lost recently
+    auto_trade_ticker_cooldown_hours: int = Field(72, env="AUTO_TRADE_TICKER_COOLDOWN_HOURS")
+    # 6. Daily P&L circuit breaker — halt auto-trading if day loss exceeds this
+    auto_trade_daily_loss_limit: float = Field(-2000.0, env="AUTO_TRADE_DAILY_LOSS_LIMIT")
 
     # --- Position Monitor (TP/SL) ---
     pos_monitor_interval: int = Field(120, env="POS_MONITOR_INTERVAL")       # seconds between checks
