@@ -370,13 +370,16 @@ async def get_current_positions_with_pnl():
 
 @router.get("/trade/filters")
 async def get_filter_status():
-    """Current state of all 6 auto-trade quality filters."""
+    """Current state of all 8 auto-trade quality filters."""
+    import time as _time
     from main import auto_trade as at, settings as s
     at._refresh_daily_pnl_date()
     spy_day, spy_trend = at._regime_cache[0], at._regime_cache[1]
+    equity = at._cached_equity
+    equity_loss_pct = round((at._daily_pnl / equity * 100) if equity > 0 else 0, 2)
     cooldown_tickers = [
         {"ticker": t, "hours_remaining": round(
-            (s.auto_trade_ticker_cooldown_hours * 3600 - (__import__("time").time() - ts)) / 3600, 1
+            (s.auto_trade_ticker_cooldown_hours * 3600 - (_time.time() - ts)) / 3600, 1
         )}
         for t, ts in at._ticker_loss_ts.items()
         if at._ticker_in_cooldown(t)
@@ -385,8 +388,15 @@ async def get_filter_status():
         "circuit_breaker": {
             "active": at._circuit_breaker_active(),
             "daily_pnl": round(at._daily_pnl, 2),
-            "limit": s.auto_trade_daily_loss_limit,
+            "daily_pnl_pct": equity_loss_pct,
+            "pct_limit": s.auto_trade_daily_loss_pct,
+            "dollar_limit": s.auto_trade_daily_loss_limit,
+            "cached_equity": round(equity, 2),
             "date": at._daily_pnl_date,
+        },
+        "volume_controls": {
+            "max_trades_per_day": s.auto_trade_max_trades_per_day,
+            "max_open_positions": s.auto_trade_max_open_positions,
         },
         "regime": {
             "spy_day_chg_pct": round(spy_day, 2),
@@ -396,12 +406,15 @@ async def get_filter_status():
         },
         "ticker_cooldowns": cooldown_tickers,
         "settings": {
+            "score_threshold": s.auto_trade_score_threshold,
+            "pattern_threshold": s.auto_trade_pattern_threshold,
             "put_min_score": s.auto_trade_put_min_score,
             "min_dte": s.auto_trade_min_dte,
             "max_dte": s.auto_trade_max_dte,
             "max_option_price": s.auto_trade_max_option_price,
+            "max_otm_pct": s.auto_trade_max_otm_pct,
             "ticker_cooldown_hours": s.auto_trade_ticker_cooldown_hours,
-            "daily_loss_limit": s.auto_trade_daily_loss_limit,
+            "equity_long_risk_pct": s.equity_long_risk_pct,
         }
     }
 

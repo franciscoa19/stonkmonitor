@@ -485,6 +485,16 @@ class Database:
             (limit,),
         )
 
+    async def count_confirmed_today(self, date_str: str) -> int:
+        """Count confirmed trades on a given date (YYYY-MM-DD, ET).
+        Used by the max-trades-per-day circuit breaker.
+        """
+        result = await self._scalar(
+            "SELECT COUNT(*) FROM pending_trades WHERE status='confirmed' AND created_at LIKE ?",
+            (f"{date_str}%",),
+        )
+        return int(result or 0)
+
     # ── Write/Read: Trade Performance ──────────────────────────────────────
     async def upsert_trade_performance(self, **kwargs):
         """Insert or update a trade performance record by alpaca_order_id."""

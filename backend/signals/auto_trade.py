@@ -5,26 +5,32 @@ sizes positions based on portfolio equity, and queues them for
 1-tap Telegram execution with a 5-minute expiry window.
 
 Trigger logic:
-  • Signal score >= AUTO_TRADE_SCORE_THRESHOLD  (default 8.5)
+  • Signal score >= AUTO_TRADE_SCORE_THRESHOLD  (default 9.0)
     → options sweep/golden_sweep → options trade
-    → insider_buy / congress_trade bullish → equity trade
+    → insider_buy / congress_trade bullish → short-term equity trade
 
-  • Pattern score >= AUTO_TRADE_PATTERN_THRESHOLD (default 9.0)
+  • Pattern score >= AUTO_TRADE_PATTERN_THRESHOLD (default 9.5)
     AND pattern in AUTO_TRADE_PATTERNS set
     → options trade if options evidence exists, else equity
+
+  • Patterns insider_cluster_buy / congress_plus_sweep
+    → long-term equity trade (5% sizing, +30%/-10% bracket)
 
 Quality filters (all configurable via .env):
   1. Puts require AUTO_TRADE_PUT_MIN_SCORE (default 9.5) — data showed 4% win rate on puts
   2. Market regime: skip bearish if SPY day +1.5%+, skip bullish if SPY day -2.0%+ crash
   3. DTE window: MIN_DTE=3, MAX_DTE=10 — 3-7d is the only profitable bucket historically
   4. Options price cap: skip if ask > AUTO_TRADE_MAX_OPTION_PRICE ($8) — $5-25 entries lose badly
+  4b. Moneyness: skip if option is >20% OTM vs underlying price
   5. Ticker cooldown: skip if same ticker lost within AUTO_TRADE_TICKER_COOLDOWN_HOURS (72h)
-  6. Circuit breaker: halt if day's realized P&L < AUTO_TRADE_DAILY_LOSS_LIMIT (-$2000)
+  6. Circuit breaker: halt if day's realized P&L < -5% of account equity
+  7. Max trades/day: halt if confirmed trade count >= AUTO_TRADE_MAX_TRADES_PER_DAY (3)
+  8. Max open positions: halt if open positions >= AUTO_TRADE_MAX_OPEN_POSITIONS (4)
 
 Position sizing:
-  • max_risk = min(equity * max_risk_pct, max_risk_usd)
-  • options: contracts = floor(max_risk / (limit_price * 100)), min 1
-  • equity:  shares    = floor(max_risk / price), min 1
+  • options / short equity: equity * 2% (max_risk_pct)
+  • long-term equity holds:  equity * 5% (equity_long_risk_pct)
+  • no hard dollar cap — % governs everything
 """
 import asyncio
 import aiohttp
@@ -36,13 +42,19 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Patterns that qualify for auto-trade queue
+# Patterns that qualify for auto-trade queue (options or short equity)
 AUTO_TRADE_PATTERNS = {
     "triple_confluence",
     "insider_buy_plus_sweep",
     "sweep_plus_darkpool",
     "golden_sweep_cluster",
     "congress_plus_sweep",
+}
+
+# Patterns that trigger long-term equity holds (5% sizing, +30%/-10%)
+EQUITY_LONG_PATTERNS = {
+    "insider_cluster_buy",
+    "congress_plus_sweep",    # also in AUTO_TRADE_PATTERNS — long equity preferred
 }
 
 ZERO_DTE_MIN_SCORE = 9.5   # allow 0-1 DTE only if this confident
@@ -91,6 +103,10 @@ class AutoTradeEngine:
         # Ticker cooldown: ticker → timestamp of last confirmed loss
         self._ticker_loss_ts: dict[str, float] = {}
 
+        # Cached account equity — updated every evaluate_signal() call
+        # Used for % based circuit breaker and position sizing
+        self._cached_equity: float = 100_000.0
+
     def set_dependencies(self, telegram, db, trader):
         self._telegram = telegram
         self._db = db
@@ -134,10 +150,21 @@ class AutoTradeEngine:
             self._daily_pnl_date = today
 
     def _circuit_breaker_active(self) -> bool:
-        """True if today's realized losses exceed the daily limit."""
+        """True if today's realized losses exceed the daily limit.
+
+        Uses % of equity when equity is cached (preferred), falls back
+        to the absolute dollar limit as a safety net.
+        """
         self._refresh_daily_pnl_date()
-        limit = self.settings.auto_trade_daily_loss_limit  # e.g. -2000
-        return self._daily_pnl <= limit
+        # % based: -5% of account equity by default
+        if self._cached_equity > 0:
+            loss_pct = self._daily_pnl / self._cached_equity  # e.g. -0.04
+            pct_limit = self.settings.auto_trade_daily_loss_pct  # e.g. -0.05
+            if loss_pct <= pct_limit:
+                return True
+        # Absolute dollar fallback
+        dollar_limit = self.settings.auto_trade_daily_loss_limit  # e.g. -2000
+        return self._daily_pnl <= dollar_limit
 
     def _ticker_in_cooldown(self, ticker: str) -> bool:
         """True if ticker had a confirmed loss within the cooldown window."""
@@ -214,6 +241,32 @@ class AutoTradeEngine:
             if day_chg <= bull_skip:
                 return False, f"Regime block: SPY {day_chg:.1f}% today — no bullish trades in a crash"
 
+        return True, ""
+
+    async def _max_trades_today_check(self) -> tuple[bool, str]:
+        """Returns (ok, reason). Blocks if confirmed trades today >= daily cap."""
+        try:
+            limit = self.settings.auto_trade_max_trades_per_day
+            from zoneinfo import ZoneInfo
+            today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            # Count rows confirmed today in pending_trades
+            count = await self._db.count_confirmed_today(today)
+            if count >= limit:
+                return False, f"Daily trade cap: {count}/{limit} trades already confirmed today"
+        except Exception as e:
+            logger.debug(f"Max trades check error (non-blocking): {e}")
+        return True, ""
+
+    async def _max_positions_check(self) -> tuple[bool, str]:
+        """Returns (ok, reason). Blocks if open Alpaca positions >= max."""
+        try:
+            limit = self.settings.auto_trade_max_open_positions
+            positions = self._trader.get_positions()
+            open_count = len([p for p in positions if p.get("qty", 0) > 0])
+            if open_count >= limit:
+                return False, f"Position cap: {open_count}/{limit} positions already open"
+        except Exception as e:
+            logger.debug(f"Max positions check error (non-blocking): {e}")
         return True, ""
 
     # ── Symbol helpers ───────────────────────────────────────────────────────
@@ -319,11 +372,15 @@ class AutoTradeEngine:
         risk = qty * cost_per
         return qty, round(risk, 2)
 
-    def _size_equity(self, equity: float, price: float) -> tuple[int, float]:
-        """Returns (shares, risk_amount)."""
+    def _size_equity(self, equity: float, price: float,
+                     risk_pct: Optional[float] = None) -> tuple[int, float]:
+        """Returns (shares, risk_amount).
+        risk_pct: override default auto_trade_max_risk_pct (used for long-term trades).
+        """
+        pct = risk_pct if risk_pct is not None else self.settings.auto_trade_max_risk_pct
         max_risk = min(
-            equity * self.settings.auto_trade_max_risk_pct,
-            self.settings.auto_trade_max_risk_usd,
+            equity * pct,
+            self.settings.auto_trade_max_risk_usd,  # very high cap — % dominates
         )
         if price <= 0:
             return 0, 0.0
@@ -336,14 +393,28 @@ class AutoTradeEngine:
         """Run all quality filters before queuing any trade.
         Returns (ok, reason_if_blocked).
         """
-        # 6. Circuit breaker
+        # 6. Circuit breaker (% based)
         if self._circuit_breaker_active():
-            return False, f"Circuit breaker: daily P&L ${self._daily_pnl:+,.0f} ≤ limit ${self.settings.auto_trade_daily_loss_limit:,.0f}"
+            equity_pct = (self._daily_pnl / self._cached_equity * 100) if self._cached_equity else 0
+            return False, (
+                f"Circuit breaker: daily P&L ${self._daily_pnl:+,.0f} "
+                f"({equity_pct:+.1f}% of ${self._cached_equity:,.0f} equity)"
+            )
 
         # 5. Ticker cooldown
         if self._ticker_in_cooldown(ticker):
             hrs = self.settings.auto_trade_ticker_cooldown_hours
             return False, f"Cooldown: {ticker} lost within last {hrs}h"
+
+        # 7. Max trades per day
+        ok, reason = await self._max_trades_today_check()
+        if not ok:
+            return False, reason
+
+        # 8. Max open positions
+        ok, reason = await self._max_positions_check()
+        if not ok:
+            return False, reason
 
         # 2. Market regime
         ok, reason = await self._regime_allows(side)
@@ -360,6 +431,11 @@ class AutoTradeEngine:
             return
         if signal.score < self.settings.auto_trade_score_threshold:
             return
+
+        # Update cached equity for % based sizing / circuit breaker
+        equity = float(account.get("equity", 0) or 0)
+        if equity > 0:
+            self._cached_equity = equity
 
         side = signal.side.value
         ok, reason = await self._pre_flight(signal.ticker, side)
@@ -386,6 +462,25 @@ class AutoTradeEngine:
         """Called when a pattern fires. High-score qualifying patterns queue trades."""
         if not self.settings.auto_trade_enabled:
             return
+
+        # Update cached equity for % based sizing / circuit breaker
+        equity = float(account.get("equity", 0) or 0)
+        if equity > 0:
+            self._cached_equity = equity
+
+        # Long-term equity patterns — different sizing and brackets, lower threshold ok
+        if pattern_name in EQUITY_LONG_PATTERNS:
+            if score >= self.settings.auto_trade_pattern_threshold - 0.5:
+                ok, reason = await self._pre_flight(ticker, "bullish", "equity_long")
+                if not ok:
+                    logger.info(f"Auto-trade equity-long blocked [{ticker}]: {reason}")
+                    return
+                await self._build_longterm_equity_trade(
+                    ticker, score, account,
+                    rationale=f"Pattern: {pattern_name} | {'; '.join(evidence[:2])}",
+                )
+            return
+
         if pattern_name not in AUTO_TRADE_PATTERNS:
             return
         if score < self.settings.auto_trade_pattern_threshold:
@@ -458,6 +553,26 @@ class AutoTradeEngine:
         if ask <= 0 and bid <= 0:
             logger.warning(f"Auto-trade: no quote for {occ}")
             return
+
+        # ── Filter 4b: Liquidity check — bid must be meaningful ───────────
+        if bid < 0.05:
+            logger.info(
+                f"Auto-trade: {occ} blocked — bid ${bid:.2f} < $0.05 (no liquidity)"
+            )
+            return
+
+        # ── Filter 4b: Moneyness — reject deep OTM options ────────────────
+        underlying_price = await self._get_equity_price(signal.ticker)
+        if underlying_price > 0 and signal.strike:
+            otm_pct = abs(signal.strike - underlying_price) / underlying_price
+            max_otm = self.settings.auto_trade_max_otm_pct  # 0.20 = 20%
+            if otm_pct > max_otm:
+                logger.info(
+                    f"Auto-trade: {occ} blocked — {otm_pct*100:.1f}% OTM "
+                    f"(strike ${signal.strike:.2f} vs underlying ${underlying_price:.2f}, "
+                    f"cap {max_otm*100:.0f}%)"
+                )
+                return
 
         # Limit price logic: pay ask but not if spread is > 2.5x bid
         if ask > 0 and bid > 0 and ask > bid * 2.5:
@@ -561,6 +676,51 @@ class AutoTradeEngine:
             target_pct=15.0,
             score=score,
             rationale=rationale[:120],
+        )
+
+    async def _build_longterm_equity_trade(self, ticker: str, score: float,
+                                           account: dict, rationale: str = ""):
+        """Build a long-term equity hold (insider cluster / congress + sweep patterns).
+
+        Sized at equity_long_risk_pct (5% vs 2% for options) with a wider bracket:
+        TP +30%, SL -10% — designed to ride multi-week institutional moves.
+        """
+        price = await self._get_equity_price(ticker)
+        if price <= 0:
+            logger.warning(f"Auto-trade (equity-long): no price for {ticker}")
+            return
+
+        limit_price = round(price * 1.005, 2)  # 0.5% above mid
+        equity = float(account.get("equity", self._cached_equity))
+        long_risk_pct = self.settings.equity_long_risk_pct   # 0.05
+        qty, risk = self._size_equity(equity, limit_price, risk_pct=long_risk_pct)
+        if qty == 0:
+            return
+
+        tp_pct   = self.settings.equity_long_target_pct   # 30.0
+        sl_pct   = self.settings.equity_long_stop_pct     # 10.0
+
+        await self._queue(
+            ticker=ticker,
+            trade_type="equity_long",
+            symbol=ticker,
+            side="bullish",
+            option_type=None,
+            strike=None,
+            expiry=None,
+            dte=None,
+            qty=qty,
+            limit_price=limit_price,
+            risk_amount=risk,
+            stop_pct=sl_pct,
+            target_pct=tp_pct,
+            score=score,
+            rationale=rationale[:120],
+        )
+        logger.info(
+            f"EQUITY-LONG QUEUED: {ticker} x{qty} @ ${limit_price:.2f} "
+            f"| risk=${risk:,.0f} ({long_risk_pct*100:.0f}% equity) "
+            f"| TP +{tp_pct:.0f}% SL -{sl_pct:.0f}% | score={score:.1f}"
         )
 
     # ── Queue management ─────────────────────────────────────────────────────
@@ -719,7 +879,15 @@ class AutoTradeEngine:
             executed_at=datetime.utcnow().isoformat(),
         )
 
-        type_label = "CALL" if s.option_type == "call" else "PUT" if s.option_type == "put" else ""
+        if s.trade_type == "equity_long":
+            type_label = "📈 LONG-TERM EQUITY"
+        elif s.option_type == "call":
+            type_label = "CALL"
+        elif s.option_type == "put":
+            type_label = "PUT"
+        else:
+            type_label = ""
+
         if self._telegram and msg_id:
             await self._telegram.edit_message(
                 msg_id,

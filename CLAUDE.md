@@ -13,7 +13,7 @@ Two markets: traditional equities/options via **Alpaca** + prediction markets vi
 - Ingests Unusual Whales live feed (options flow, dark pool, insider, congress trades)
 - Scores every event 1–10 and broadcasts to a Next.js dashboard via WebSocket
 - Detects cross-feed patterns (e.g. sweep + dark pool + insider on same ticker)
-- Auto-trade engine: signal ≥ 8.5 → Telegram card → one-tap Alpaca execution
+- Auto-trade engine: signal ≥ 9.0 → Telegram card → one-tap Alpaca execution
 - Kalshi scanner: surfaces prediction market opportunities → Telegram → one-tap buy
 - Position monitor: watches Kalshi holdings, alerts at 3x/5x/10x gain with sell buttons
 - Earnings scanner: Yang-Zhang IV/RV analysis identifies premium-selling setups
@@ -66,6 +66,14 @@ KALSHI_PRIVATE_KEY=<path_to_kalshi_private.pem>
 KALSHI_DEMO=false
 KALSHI_SCAN_INTERVAL=300
 KALSHI_AUTO_EXECUTE=false
+# Auto-trade thresholds and risk controls
+AUTO_TRADE_SCORE_THRESHOLD=9.0
+AUTO_TRADE_PATTERN_THRESHOLD=9.5
+AUTO_TRADE_DAILY_LOSS_PCT=-0.05     # % of equity (e.g. -0.05 = -5%)
+AUTO_TRADE_MAX_TRADES_PER_DAY=3
+AUTO_TRADE_MAX_OPEN_POSITIONS=4
+AUTO_TRADE_MAX_OTM_PCT=0.20         # reject options >20% OTM vs underlying
+EQUITY_LONG_RISK_PCT=0.05           # 5% of equity for equity_long positions
 # Optional — cross-platform Kalshi ↔ Polymarket arb (leave blank to disable)
 DOME_API_KEY=<your_dome_key>
 DOME_BASE_URL=https://api.domeapi.io
@@ -86,7 +94,7 @@ and place the RSA private key at the path in `KALSHI_PRIVATE_KEY`.
 |------|---------|
 | `main.py` | FastAPI app, lifespan, all background tasks, WebSocket broadcast |
 | `config.py` | Pydantic settings loaded from `.env` |
-| `db.py` | aiosqlite wrapper — 8 tables (signals, options_flow, dark_pool, insider_trades, congress_trades, pending_trades, trade_performance, watchlist) |
+| `db.py` | aiosqlite wrapper — 8 tables (signals, options_flow, dark_pool, insider_trades, congress_trades, pending_trades, trade_performance, watchlist); `count_confirmed_today(date_str)` for max-trades-per-day filter |
 | `feeds/unusual_whales.py` | UW REST polling — **session-aware per-channel scheduler**, budget-gated |
 | `feeds/uw_budget.py` | UW daily call budget tracker + session classifier (rth/extended/overnight/weekend) + `market_subphase()` for open/close noise gating |
 | `feeds/kalshi.py` | Kalshi REST client with RSA-PSS signing |
@@ -141,10 +149,10 @@ Unusual Whales REST polling (session-aware, budget-gated):
                     close        (15:45-16:00) +0.5 bump → need ≥7.5 to notify
                     options/darkpool outside RTH → suppressed entirely
                 → discord/pushover alert       (if score >= threshold + bump)
-                → auto_trade.evaluate_signal() (if score >= 8.5 + bump)
+                → auto_trade.evaluate_signal() (if score >= 9.0 + bump)
                     → _queue() → DB + Telegram card + WS
         → pattern_engine.evaluate()     (cross-feed patterns)
-            → auto_trade.evaluate_pattern() (if score >= 9.0 + bump)
+            → auto_trade.evaluate_pattern() (if score >= 9.5 + bump)
 
 Kalshi scan loop (every 5 min):
     → kalshi_client.get_markets()       (paginated, all categories)
@@ -335,7 +343,7 @@ correctly handles overnight gaps. The original calculator used it; we kept it ve
 
 ## Auto-Trade Engine (Alpaca)
 
-**Triggers:** signal score ≥ 8.5 OR pattern score ≥ 9.0
+**Triggers:** signal score ≥ 9.0 OR pattern score ≥ 9.5
 
 **Options flow:** Builds OCC symbol, fetches live bid/ask from Alpaca data API
 (`/v1beta1/options/snapshots`), sizes to min(2% equity, $2,500 cap).
@@ -347,15 +355,19 @@ Example: `SNDK260424C00840000`
 
 **Equity trades:** insider_buy / congress_trade → market buy, sized to min(2% equity, $2,500).
 
+**Equity long trades:** `insider_cluster_buy` / `congress_plus_sweep` patterns trigger `_build_longterm_equity_trade()` — trade_type=`equity_long`, sized to min(5% equity, $5,000), TP +30%, SL -10%. Controlled by `EQUITY_LONG_PATTERNS` set in `auto_trade.py`.
+
 **Quality filters** (all configurable, all log their block reason):
 1. **Put threshold** — puts require score ≥ 9.5 (data: puts had 4% WR vs 41% for calls)
 2. **Regime filter** — fetches SPY daily bars, caches 5 min; blocks bearish trades if SPY >+1.5% today or +3% over 5d; blocks bullish if SPY <-2% today
 3. **DTE window** — MIN_DTE=3, MAX_DTE=10
 4. **Price cap** — rejects options with ask > $8 (data: $5-25 options had 17-32% WR)
 5. **Ticker cooldown** — skips ticker for 72h after any confirmed losing exit
-6. **Circuit breaker** — halts all auto-trading for the day if realized P&L < -$2,000
+6. **Circuit breaker** — halts all auto-trading for the day if realized P&L < `AUTO_TRADE_DAILY_LOSS_PCT` × account equity (default -5%). `_cached_equity` in `AutoTradeEngine` holds last-fetched equity to avoid repeated API calls.
+7. **Volume controls** — `AUTO_TRADE_MAX_TRADES_PER_DAY=3` (checked via `db.count_confirmed_today()`); `AUTO_TRADE_MAX_OPEN_POSITIONS=4` (checked against live Alpaca positions). Prevents the 27-35 trades/day that were bleeding the account.
+8. **Strike quality** — option bid must be ≥ $0.05; strike must be ≤ `AUTO_TRADE_MAX_OTM_PCT` (20%) OTM vs underlying mid-price. Blocks deep-OTM lotto entries explicitly.
 
-`GET /api/trade/filters` returns live filter state (circuit breaker, cooldowns, regime readings).
+`GET /api/trade/filters` returns live filter state for all 8 filters: circuit breaker, cooldowns, regime readings, volume controls, score thresholds, max_otm_pct, equity_long_risk_pct.
 
 **Bracket orders:** Every new trade is submitted as an `OrderClass.BRACKET` with server-side
 TP (limit) and SL (stop) legs attached to the entry. Prices computed from `TradeSuggestion.target_pct`
@@ -447,6 +459,12 @@ watchlist          -- tickers for IV + earnings scanning
 - ✅ **Performance tracking** — `trade_performance` table syncs Alpaca closed orders every 15 min. Position monitor records exit reason (tp1/trailing_stop/sl/trim) and realized P&L. API endpoints: `/api/performance`, `/api/performance/summary` (win rate, profit factor, avg win/loss).
 - ✅ **Market open/close noise filter** — `market_subphase()` in `feeds/uw_budget.py` classifies open_first_5/open/close/normal. Score bumps applied to notification + auto-trade thresholds (+2.0/+1.5/+0.5). Options/darkpool suppressed outside RTH. All bumps configurable via `OPEN_FIRST5_BUMP`, `OPEN_BUMP`, `CLOSE_BUMP`.
 - ✅ **6 data-driven auto-trade quality filters** — put threshold (score ≥9.5), market regime (SPY day/trend check), DTE 3-10d, price cap $8, per-ticker 72h loss cooldown, daily -$2k circuit breaker. All configurable. `GET /api/trade/filters` shows live state.
+- ✅ **Raised score thresholds** — `AUTO_TRADE_SCORE_THRESHOLD` 8.5→9.0, `AUTO_TRADE_PATTERN_THRESHOLD` 9.0→9.5. Reduces noise-triggered entries.
+- ✅ **%-based circuit breaker** — `AUTO_TRADE_DAILY_LOSS_PCT=-0.05` (5% of account equity) replaces flat -$2,000 limit. `_cached_equity` in `AutoTradeEngine` avoids repeated Alpaca equity fetches.
+- ✅ **Volume controls** — `AUTO_TRADE_MAX_TRADES_PER_DAY=3`, `AUTO_TRADE_MAX_OPEN_POSITIONS=4`. `db.count_confirmed_today()` tracks daily confirmed trades. Was trading 27-35x/day; now capped.
+- ✅ **Equity long positions** — `insider_cluster_buy` + `congress_plus_sweep` patterns route to `_build_longterm_equity_trade()` (trade_type=`equity_long`): sized at 5% equity, TP +30%, SL -10%. Configured via `EQUITY_LONG_PATTERNS` set and `EQUITY_LONG_RISK_PCT`.
+- ✅ **Strike quality validation** — bid ≥ $0.05 guard + `AUTO_TRADE_MAX_OTM_PCT=0.20` (≤20% OTM vs underlying). Deep-OTM rejections are now explicit with logged reason.
+- ✅ **`/api/trade/filters` expanded** — now returns all 8 filter states including volume_controls, pct-based circuit breaker, score thresholds, max_otm_pct, equity_long_risk_pct.
 
 ---
 

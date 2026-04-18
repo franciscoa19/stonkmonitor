@@ -50,12 +50,21 @@ class Settings(BaseSettings):
 
     # --- Auto-Trade ---
     auto_trade_enabled: bool = Field(True, env="AUTO_TRADE_ENABLED")
-    auto_trade_max_risk_pct: float = Field(0.02, env="AUTO_TRADE_MAX_RISK_PCT")
-    auto_trade_max_risk_usd: float = Field(2500.0, env="AUTO_TRADE_MAX_RISK_USD")
-    auto_trade_score_threshold: float = Field(8.5, env="AUTO_TRADE_SCORE_THRESHOLD")
-    auto_trade_pattern_threshold: float = Field(9.0, env="AUTO_TRADE_PATTERN_THRESHOLD")
+    auto_trade_max_risk_pct: float = Field(0.02, env="AUTO_TRADE_MAX_RISK_PCT")      # 2% of equity per options trade
+    auto_trade_max_risk_usd: float = Field(50000.0, env="AUTO_TRADE_MAX_RISK_USD")   # very high — % is the real cap
+    auto_trade_score_threshold: float = Field(9.0, env="AUTO_TRADE_SCORE_THRESHOLD")    # raised from 8.5
+    auto_trade_pattern_threshold: float = Field(9.5, env="AUTO_TRADE_PATTERN_THRESHOLD") # raised from 9.0
     auto_trade_min_dte: int = Field(3, env="AUTO_TRADE_MIN_DTE")    # was 2 — data shows 3-7d is sweet spot
     auto_trade_max_dte: int = Field(10, env="AUTO_TRADE_MAX_DTE")   # was 21 — 7-14d+ underperforms badly
+
+    # --- Auto-Trade Volume Controls (prevent over-trading) ---
+    auto_trade_max_trades_per_day: int = Field(3, env="AUTO_TRADE_MAX_TRADES_PER_DAY")     # max confirmed trades per day
+    auto_trade_max_open_positions: int = Field(4, env="AUTO_TRADE_MAX_OPEN_POSITIONS")     # max concurrent Alpaca positions
+
+    # --- Long-Term Equity Trades (insider cluster / congress + sweep patterns) ---
+    equity_long_risk_pct: float = Field(0.05, env="EQUITY_LONG_RISK_PCT")   # 5% of equity for conviction stock holds
+    equity_long_target_pct: float = Field(30.0, env="EQUITY_LONG_TARGET_PCT")  # TP at +30%
+    equity_long_stop_pct: float = Field(10.0, env="EQUITY_LONG_STOP_PCT")      # SL at -10%
 
     # --- Auto-Trade Quality Filters (data-driven, see performance analysis) ---
     # 1. Puts need an exceptional signal — default requires score ≥10 (near-impossible without a pattern)
@@ -67,10 +76,13 @@ class Settings(BaseSettings):
     auto_trade_regime_trend_days: int = Field(5, env="AUTO_TRADE_REGIME_TREND_DAYS")              # look-back for 5-day trend
     # 4. Options price cap — $5-25 options have 17-32% WR; cheap options outperform
     auto_trade_max_option_price: float = Field(8.0, env="AUTO_TRADE_MAX_OPTION_PRICE")
+    # 4b. Moneyness cap — reject options more than this % OTM (deep OTM has ~0% win rate)
+    auto_trade_max_otm_pct: float = Field(0.20, env="AUTO_TRADE_MAX_OTM_PCT")   # 20% OTM hard cap
     # 5. Per-ticker loss cooldown — don't re-trade a ticker that lost recently
     auto_trade_ticker_cooldown_hours: int = Field(72, env="AUTO_TRADE_TICKER_COOLDOWN_HOURS")
-    # 6. Daily P&L circuit breaker — halt auto-trading if day loss exceeds this
-    auto_trade_daily_loss_limit: float = Field(-2000.0, env="AUTO_TRADE_DAILY_LOSS_LIMIT")
+    # 6. Daily P&L circuit breaker — halt if day loss exceeds X% of account equity
+    auto_trade_daily_loss_pct: float = Field(-0.05, env="AUTO_TRADE_DAILY_LOSS_PCT")    # -5% of equity
+    auto_trade_daily_loss_limit: float = Field(-2000.0, env="AUTO_TRADE_DAILY_LOSS_LIMIT")  # fallback absolute cap
 
     # --- Position Monitor (TP/SL) ---
     pos_monitor_interval: int = Field(120, env="POS_MONITOR_INTERVAL")       # seconds between checks
