@@ -397,6 +397,21 @@ async def get_filter_status():
         "volume_controls": {
             "max_trades_per_day": s.auto_trade_max_trades_per_day,
             "max_open_positions": s.auto_trade_max_open_positions,
+            "max_pending_alerts": s.auto_trade_max_pending,
+            "pending_now": len(at._pending),
+            "burst_limit": s.auto_trade_burst_limit,
+            "burst_window_sec": s.auto_trade_burst_window,
+            "alerts_in_window": len([t for t in at._alert_timestamps
+                                     if __import__("time").time() - t < s.auto_trade_burst_window]),
+        },
+        "volatility_gate": {
+            "spy_day_chg_pct": round(at._regime_cache[0], 2),
+            "threshold_pct": s.intraday_vol_threshold,
+            "bump": s.intraday_vol_bump,
+            "active": abs(at._regime_cache[0]) >= s.intraday_vol_threshold,
+            "effective_min_score": (s.auto_trade_score_threshold + s.intraday_vol_bump
+                                    if abs(at._regime_cache[0]) >= s.intraday_vol_threshold
+                                    else s.auto_trade_score_threshold),
         },
         "regime": {
             "spy_day_chg_pct": round(spy_day, 2),

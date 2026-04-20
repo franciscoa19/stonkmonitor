@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     # --- Auto-Trade Volume Controls (prevent over-trading) ---
     auto_trade_max_trades_per_day: int = Field(3, env="AUTO_TRADE_MAX_TRADES_PER_DAY")     # max confirmed trades per day
     auto_trade_max_open_positions: int = Field(4, env="AUTO_TRADE_MAX_OPEN_POSITIONS")     # max concurrent Alpaca positions
+    auto_trade_max_pending: int = Field(3, env="AUTO_TRADE_MAX_PENDING")                   # max unactioned Telegram alerts at once
+    auto_trade_burst_limit: int = Field(4, env="AUTO_TRADE_BURST_LIMIT")                  # max alerts per burst window
+    auto_trade_burst_window: int = Field(600, env="AUTO_TRADE_BURST_WINDOW")              # burst window in seconds (10 min)
+
+    # --- Intraday Volatility Gate ---
+    # When SPY moves more than this % intraday, raise the score bar to filter noise.
+    # Reuses cached regime data — zero extra API calls.
+    intraday_vol_threshold: float = Field(1.5, env="INTRADAY_VOL_THRESHOLD")  # SPY ±1.5% today triggers gate
+    intraday_vol_bump: float = Field(1.5, env="INTRADAY_VOL_BUMP")            # need score ≥ threshold + 1.5 during vol
 
     # --- Long-Term Equity Trades (insider cluster / congress + sweep patterns) ---
     equity_long_risk_pct: float = Field(0.05, env="EQUITY_LONG_RISK_PCT")   # 5% of equity for conviction stock holds

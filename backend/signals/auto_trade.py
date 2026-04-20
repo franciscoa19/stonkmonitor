@@ -107,6 +107,10 @@ class AutoTradeEngine:
         # Used for % based circuit breaker and position sizing
         self._cached_equity: float = 100_000.0
 
+        # ── Alert rate controls ────────────────────────────────────────────
+        # Timestamps of every Telegram trade alert sent (pruned to rolling window)
+        self._alert_timestamps: list[float] = []
+
     def set_dependencies(self, telegram, db, trader):
         self._telegram = telegram
         self._db = db
@@ -389,10 +393,13 @@ class AutoTradeEngine:
 
     # ── Evaluation entry points ──────────────────────────────────────────────
 
-    async def _pre_flight(self, ticker: str, side: str, trade_type: str = "option") -> tuple[bool, str]:
+    async def _pre_flight(self, ticker: str, side: str, score: float = 0.0,
+                          trade_type: str = "option") -> tuple[bool, str]:
         """Run all quality filters before queuing any trade.
         Returns (ok, reason_if_blocked).
         """
+        now = time.time()
+
         # 6. Circuit breaker (% based)
         if self._circuit_breaker_active():
             equity_pct = (self._daily_pnl / self._cached_equity * 100) if self._cached_equity else 0
@@ -416,6 +423,40 @@ class AutoTradeEngine:
         if not ok:
             return False, reason
 
+        # 9. Max pending (unactioned) alerts — don't pile up if user isn't clicking
+        max_pending = self.settings.auto_trade_max_pending
+        if len(self._pending) >= max_pending:
+            return False, (
+                f"Pending cap: {len(self._pending)} unactioned alerts already live "
+                f"(max {max_pending}) — waiting for confirms/skips"
+            )
+
+        # 10. Burst limiter — max N alerts per rolling window
+        burst_window = self.settings.auto_trade_burst_window   # seconds, default 600
+        burst_limit  = self.settings.auto_trade_burst_limit    # default 4
+        # Prune stale timestamps
+        self._alert_timestamps = [t for t in self._alert_timestamps if now - t < burst_window]
+        if len(self._alert_timestamps) >= burst_limit:
+            oldest = self._alert_timestamps[0]
+            wait_s = int(burst_window - (now - oldest))
+            return False, (
+                f"Burst limit: {burst_limit} alerts sent in last "
+                f"{burst_window//60:.0f} min — cooling down {wait_s}s"
+            )
+
+        # 11. Intraday volatility gate — reuses cached SPY day-change, zero extra calls
+        if score > 0:
+            day_chg = self._regime_cache[0]   # SPY % change today (cached, 5-min TTL)
+            vol_threshold = self.settings.intraday_vol_threshold   # default 1.5%
+            vol_bump      = self.settings.intraday_vol_bump        # default 1.5 score pts
+            if abs(day_chg) >= vol_threshold:
+                effective_min = self.settings.auto_trade_score_threshold + vol_bump
+                if score < effective_min:
+                    return False, (
+                        f"Vol gate: SPY {day_chg:+.1f}% today — need score ≥ {effective_min:.1f} "
+                        f"(got {score:.1f}); bump={vol_bump:+.1f} for volatility"
+                    )
+
         # 2. Market regime
         ok, reason = await self._regime_allows(side)
         if not ok:
@@ -438,7 +479,7 @@ class AutoTradeEngine:
             self._cached_equity = equity
 
         side = signal.side.value
-        ok, reason = await self._pre_flight(signal.ticker, side)
+        ok, reason = await self._pre_flight(signal.ticker, side, score=signal.score)
         if not ok:
             logger.info(f"Auto-trade blocked [{signal.ticker}]: {reason}")
             return
@@ -471,7 +512,7 @@ class AutoTradeEngine:
         # Long-term equity patterns — different sizing and brackets, lower threshold ok
         if pattern_name in EQUITY_LONG_PATTERNS:
             if score >= self.settings.auto_trade_pattern_threshold - 0.5:
-                ok, reason = await self._pre_flight(ticker, "bullish", "equity_long")
+                ok, reason = await self._pre_flight(ticker, "bullish", score=score, trade_type="equity_long")
                 if not ok:
                     logger.info(f"Auto-trade equity-long blocked [{ticker}]: {reason}")
                     return
@@ -491,7 +532,7 @@ class AutoTradeEngine:
         if any("put" in e.lower() or "bearish" in e.lower() for e in evidence):
             side = "bearish"
 
-        ok, reason = await self._pre_flight(ticker, side)
+        ok, reason = await self._pre_flight(ticker, side, score=score)
         if not ok:
             logger.info(f"Auto-trade pattern blocked [{ticker}]: {reason}")
             return
@@ -762,6 +803,9 @@ class AutoTradeEngine:
             expires_at=expires_at,
         )
         self._pending[trade_id] = suggestion
+
+        # Record timestamp for burst limiter
+        self._alert_timestamps.append(time.time())
 
         # Fire Telegram alert
         if self._telegram and self._telegram.enabled:
