@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     min_darkpool_size: int = Field(100000, env="MIN_DARKPOOL_SIZE")
     iv_rank_threshold: float = Field(80.0, env="IV_RANK_THRESHOLD")
     iv_rank_low_threshold: float = Field(20.0, env="IV_RANK_LOW_THRESHOLD")
-    sweep_score_threshold: float = Field(7.0, env="SWEEP_SCORE_THRESHOLD")
+    sweep_score_threshold: float = Field(8.0, env="SWEEP_SCORE_THRESHOLD")  # raised from 7.0 — too noisy
 
     # --- Market Open/Close Noise Filter ---
     # Extra score required above base thresholds during noisy sub-phases.

@@ -247,6 +247,16 @@ class AutoTradeEngine:
 
         return True, ""
 
+    def effective_vol_bump(self) -> float:
+        """Return the extra score points required due to intraday volatility.
+        Uses the cached SPY day-change — 0.0 if cache is cold or market is calm.
+        Called by handle_signal() in main.py to gate Discord/Pushover too.
+        """
+        day_chg = self._regime_cache[0]
+        if abs(day_chg) >= self.settings.intraday_vol_threshold:
+            return self.settings.intraday_vol_bump
+        return 0.0
+
     async def _max_trades_today_check(self) -> tuple[bool, str]:
         """Returns (ok, reason). Blocks if confirmed trades today >= daily cap."""
         try:
@@ -444,9 +454,14 @@ class AutoTradeEngine:
                 f"{burst_window//60:.0f} min — cooling down {wait_s}s"
             )
 
-        # 11. Intraday volatility gate — reuses cached SPY day-change, zero extra calls
+        # 2. Market regime — fetch first so cache is warm for the vol gate below
+        ok, reason = await self._regime_allows(side)
+        if not ok:
+            return False, reason
+
+        # 11. Intraday volatility gate — uses freshly-warmed regime cache
         if score > 0:
-            day_chg = self._regime_cache[0]   # SPY % change today (cached, 5-min TTL)
+            day_chg = self._regime_cache[0]   # SPY % change today (now guaranteed fresh)
             vol_threshold = self.settings.intraday_vol_threshold   # default 1.5%
             vol_bump      = self.settings.intraday_vol_bump        # default 1.5 score pts
             if abs(day_chg) >= vol_threshold:
@@ -454,13 +469,8 @@ class AutoTradeEngine:
                 if score < effective_min:
                     return False, (
                         f"Vol gate: SPY {day_chg:+.1f}% today — need score ≥ {effective_min:.1f} "
-                        f"(got {score:.1f}); bump={vol_bump:+.1f} for volatility"
+                        f"(got {score:.1f}); bump={vol_bump:+.1f} for high volatility"
                     )
-
-        # 2. Market regime
-        ok, reason = await self._regime_allows(side)
-        if not ok:
-            return False, reason
 
         return True, ""
 

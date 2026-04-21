@@ -212,24 +212,29 @@ async def handle_signal(signal):
         )
         return
 
-    # Effective threshold = base + time-of-day bump
-    base_threshold   = settings.sweep_score_threshold          # default 7.0
-    notify_threshold = base_threshold + bump
-    auto_threshold   = settings.auto_trade_score_threshold + bump  # default 8.5
+    # Intraday volatility bump — raises bar when market is moving hard.
+    # Reuses auto_trade's cached SPY regime data (0 extra API calls).
+    vol_bump = auto_trade.effective_vol_bump()
 
-    if bump > 0:
+    # Effective thresholds = base + time-of-day bump + intraday vol bump
+    base_threshold   = settings.sweep_score_threshold          # default 7.0
+    notify_threshold = base_threshold + bump + vol_bump        # covers Discord/Pushover too
+    auto_threshold   = settings.auto_trade_score_threshold + bump  # auto_trade._pre_flight handles vol internally
+
+    if bump > 0 or vol_bump > 0:
         logger.debug(
-            f"Market open/close noise guard ({subphase}): "
-            f"notify≥{notify_threshold:.1f} auto≥{auto_threshold:.1f} "
+            f"Score gates ({subphase}): notify≥{notify_threshold:.1f} "
+            f"auto≥{auto_threshold:.1f} "
+            f"[tod_bump={bump:+.1f} vol_bump={vol_bump:+.1f}] "
             f"(score={signal.score:.1f})"
         )
 
-    # Notifications (Discord / Pushover) — only above bumped threshold
+    # Notifications (Discord / Pushover) — gated by time-of-day + vol bump
     if signal.score >= notify_threshold:
         await discord.send_signal(signal, score_threshold=notify_threshold)
         await pushover.send_signal(signal, score_threshold=notify_threshold)
 
-    # Auto-trade — only above bumped auto threshold
+    # Auto-trade — vol gate handled inside _pre_flight with fresh regime data
     if signal.score >= auto_threshold:
         try:
             account = trader.get_account()
@@ -239,7 +244,8 @@ async def handle_signal(signal):
 
     logger.info(
         f"Signal: {signal.title} | Score {signal.score:.1f}"
-        + (f" | {subphase} bump +{bump:.1f}" if bump > 0 else "")
+        + (f" | {subphase}+{bump:.1f}" if bump > 0 else "")
+        + (f" | vol+{vol_bump:.1f}" if vol_bump > 0 else "")
     )
 
 
