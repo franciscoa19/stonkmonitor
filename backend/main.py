@@ -1143,6 +1143,16 @@ async def lifespan(app: FastAPI):
     # Wire auto-trade dependencies
     auto_trade.set_dependencies(telegram, db, trader)
 
+    # Seed cached equity immediately so circuit breaker % is correct from the start
+    try:
+        _startup_account = trader.get_account()
+        _startup_equity = float(_startup_account.get("equity", 0) or 0)
+        if _startup_equity > 0:
+            auto_trade._cached_equity = _startup_equity
+            logger.info(f"Auto-trade equity seeded: ${_startup_equity:,.2f}")
+    except Exception as _e:
+        logger.warning(f"Could not seed startup equity: {_e}")
+
     # Resolve Telegram chat_id (user must have sent /start to the bot)
     if telegram.enabled:
         await telegram.resolve_chat_id()

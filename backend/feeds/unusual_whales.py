@@ -197,16 +197,44 @@ class UnusualWhalesClient:
 
         async def fetch_and_emit(feed_type: str, items: list):
             for item in items:
-                uid = (
-                    item.get("id") or
-                    item.get("trade_id") or
-                    item.get("filing_id") or
-                    f"{item.get('ticker','')}-{item.get('date','')}-{item.get('premium','')}"
-                )
-                if uid in seen_ids:
+                # Channel-specific dedup keys MUST match how db.save_*() builds row IDs,
+                # so seed_seen_ids (loaded from DB on startup) actually matches what the
+                # feed sees. Bug fixed 2026-04-22: congress trades had no `id`/`trade_id`
+                # so the fallback `{ticker}-{date}-{premium}` was hit (date+premium absent
+                # for congress data) → produced 73k duplicate signals/day after restart.
+                if feed_type == "congress-trades":
+                    # Mirrors db.save_congress_trade composite key
+                    uid = (
+                        f"{item.get('politician_id','')}_"
+                        f"{item.get('transaction_date','')}_"
+                        f"{(item.get('ticker','') or '').upper()}"
+                    )
+                elif feed_type == "insider-trades":
+                    # insider has a real `id` (UUID) — use it; fallback if ever missing
+                    uid = item.get("id") or (
+                        f"{item.get('ticker','')}_"
+                        f"{item.get('owner_name','')}_"
+                        f"{item.get('transaction_date','')}_"
+                        f"{item.get('shares','')}"
+                    )
+                else:
+                    # options-flow / darkpool — UW returns reliable `id`/`trade_id`
+                    uid = (
+                        item.get("id") or
+                        item.get("trade_id") or
+                        item.get("filing_id") or
+                        f"{item.get('ticker','')}-{item.get('date','')}-{item.get('premium','')}"
+                    )
+
+                if not uid or uid in seen_ids:
                     continue
                 seen_ids.add(uid)
-                if len(seen_ids) > 5000:
+                # Cap memory growth. Old code cleared at 5000 → on the next poll
+                # all 50 items per channel looked "new" again and re-fired through
+                # the engine. Bumping to 50k means a clear is extremely rare under
+                # normal flow; if it does happen, the seed_seen_ids reload on next
+                # startup pulls slow-moving channels (congress, insider) from DB.
+                if len(seen_ids) > 50000:
                     seen_ids.clear()
 
                 event = {"channel": feed_type, "data": item}

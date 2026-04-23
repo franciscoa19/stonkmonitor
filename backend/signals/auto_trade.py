@@ -379,9 +379,14 @@ class AutoTradeEngine:
         if cost_per <= 0:
             return 0, 0.0
         qty = max(1, int(max_risk / cost_per))
-        # If even 1 contract exceeds 1.5x max_risk, skip
+        # If even 1 contract exceeds 1.5x max_risk, skip — prevents busting
+        # the per-trade risk budget on small accounts.
         if cost_per > max_risk * 1.5:
-            logger.debug(f"1 contract @ ${limit_price:.2f} = ${cost_per:.0f} > max ${max_risk:.0f}, skipping")
+            logger.info(
+                f"Auto-trade sizing: 1 option @ ${limit_price:.2f} costs ${cost_per:.0f} "
+                f"> 1.5× risk budget ${max_risk:.0f} (equity ${equity:,.0f} × "
+                f"{self.settings.auto_trade_max_risk_pct*100:.0f}%) — skipping"
+            )
             return 0, 0.0
         risk = qty * cost_per
         return qty, round(risk, 2)
@@ -390,6 +395,7 @@ class AutoTradeEngine:
                      risk_pct: Optional[float] = None) -> tuple[int, float]:
         """Returns (shares, risk_amount).
         risk_pct: override default auto_trade_max_risk_pct (used for long-term trades).
+        Same 1.5x guard as options sizing — refuses to bust risk budget on a single share.
         """
         pct = risk_pct if risk_pct is not None else self.settings.auto_trade_max_risk_pct
         max_risk = min(
@@ -397,6 +403,12 @@ class AutoTradeEngine:
             self.settings.auto_trade_max_risk_usd,  # very high cap — % dominates
         )
         if price <= 0:
+            return 0, 0.0
+        if price > max_risk * 1.5:
+            logger.info(
+                f"Auto-trade sizing: 1 share @ ${price:.2f} > 1.5× risk budget "
+                f"${max_risk:.0f} (equity ${equity:,.0f} × {pct*100:.1f}%) — skipping"
+            )
             return 0, 0.0
         qty = max(1, int(max_risk / price))
         return qty, round(qty * price, 2)
@@ -585,24 +597,25 @@ class AutoTradeEngine:
         min_dte = self.settings.auto_trade_min_dte   # 3
         max_dte = self.settings.auto_trade_max_dte   # 10
         if dte < min_dte and signal.score < ZERO_DTE_MIN_SCORE:
-            logger.debug(
-                f"Auto-trade: {signal.ticker} DTE={dte} < {min_dte}, "
-                f"score {signal.score:.1f} < {ZERO_DTE_MIN_SCORE}"
+            logger.info(
+                f"Auto-trade blocked [{signal.ticker}]: DTE={dte} < {min_dte}d "
+                f"(0DTE override needs score ≥ {ZERO_DTE_MIN_SCORE}, got {signal.score:.1f})"
             )
             return
         if dte > max_dte:
-            logger.debug(f"Auto-trade: {signal.ticker} DTE={dte} > {max_dte}, skipping")
+            logger.info(f"Auto-trade blocked [{signal.ticker}]: DTE={dte} > {max_dte}d")
             return
 
         occ = self._occ_symbol(signal.ticker, signal.expiry, opt_type, signal.strike)
         if not occ:
+            logger.warning(f"Auto-trade blocked [{signal.ticker}]: failed to build OCC symbol")
             return
 
         quote = await self._get_option_quote(occ)
         ask, bid = quote.get("ask", 0), quote.get("bid", 0)
 
         if ask <= 0 and bid <= 0:
-            logger.warning(f"Auto-trade: no quote for {occ}")
+            logger.info(f"Auto-trade blocked [{signal.ticker}]: no quote for {occ}")
             return
 
         # ── Filter 4b: Liquidity check — bid must be meaningful ───────────

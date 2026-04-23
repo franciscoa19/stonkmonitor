@@ -489,11 +489,14 @@ class Database:
         """Count confirmed trades on a given date (YYYY-MM-DD, ET).
         Used by the max-trades-per-day circuit breaker.
         """
+        # _scalar returns a dict ({"n": N}) or {} — extract the count safely.
         result = await self._scalar(
-            "SELECT COUNT(*) FROM pending_trades WHERE status='confirmed' AND created_at LIKE ?",
+            "SELECT COUNT(*) AS n FROM pending_trades WHERE status='confirmed' AND created_at LIKE ?",
             (f"{date_str}%",),
         )
-        return int(result or 0)
+        if not result:
+            return 0
+        return int(result.get("n") or 0)
 
     # ── Write/Read: Trade Performance ──────────────────────────────────────
     async def upsert_trade_performance(self, **kwargs):
