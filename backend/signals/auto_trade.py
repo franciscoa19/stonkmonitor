@@ -679,36 +679,79 @@ class AutoTradeEngine:
 
     async def _build_options_trade_from_db(self, ticker: str, score: float,
                                            evidence: list, account: dict):
-        """For pattern-triggered trades: pull the best recent options signal from DB."""
+        """
+        For pattern-triggered trades: pull recent options signals from DB and
+        iterate through them to find one that passes the DTE window (3-10d).
+
+        Bug fixed 2026-04-24: previous version did `LIMIT 1` and took the most
+        recent row. If that row's expiry was 21d or 266d out (common), the
+        downstream DTE filter rejected it silently — AMD had 171 qualifying
+        sweeps today but only the most recent was tried, and it was DTE=21.
+        Now we fetch up to 30 candidates, pre-filter by DTE, and try them in
+        order until one builds a trade.
+        """
         rows = await self._db.get_options_flow(
-            ticker=ticker, min_premium=100_000, has_sweep=True, limit=1,
+            ticker=ticker, min_premium=100_000, has_sweep=True, limit=30,
         )
         if not rows:
             rows = await self._db.get_options_flow(
-                ticker=ticker, min_premium=50_000, limit=1,
+                ticker=ticker, min_premium=50_000, limit=30,
             )
         if not rows:
             logger.debug(f"Auto-trade pattern: no recent options for {ticker}")
             return
 
-        row = rows[0]
+        # Pre-filter by DTE window — drops 21d and 266d expiries early
+        min_dte = self.settings.auto_trade_min_dte
+        max_dte = self.settings.auto_trade_max_dte
+        candidates = []
+        for row in rows:
+            expiry = row.get("expiry")
+            if not expiry or not row.get("strike"):
+                continue
+            dte = self._calc_dte(expiry)
+            if dte is None:
+                continue
+            if dte < min_dte or dte > max_dte:
+                continue
+            candidates.append(row)
 
-        # Build a minimal signal-like namespace
-        class _S:
-            pass
-        s = _S()
-        s.ticker      = ticker
-        s.strike      = row.get("strike")
-        s.expiry      = row.get("expiry")
-        s.option_type = row.get("opt_type", "call")
-        s.score       = score
-        s.description = f"Pattern | {'; '.join(evidence[:2])}"
+        if not candidates:
+            logger.info(
+                f"Auto-trade pattern [{ticker}]: none of {len(rows)} recent options "
+                f"fall in DTE window {min_dte}-{max_dte}d — skipping"
+            )
+            return
+
+        logger.info(
+            f"Auto-trade pattern [{ticker}]: {len(candidates)}/{len(rows)} options "
+            f"in DTE window — trying in order"
+        )
 
         class _Side:
             def __init__(self, v): self.value = v
-        s.side = _Side("bullish" if s.option_type == "call" else "bearish")
 
-        await self._build_options_trade(s, account)
+        class _S:
+            pass
+
+        # Snapshot pending queue length so we can detect success
+        queued_before = len(self._pending)
+
+        for row in candidates:
+            s = _S()
+            s.ticker      = ticker
+            s.strike      = row.get("strike")
+            s.expiry      = row.get("expiry")
+            s.option_type = row.get("opt_type", "call")
+            s.score       = score
+            s.description = f"Pattern | {'; '.join(evidence[:2])}"
+            s.side = _Side("bullish" if s.option_type == "call" else "bearish")
+
+            await self._build_options_trade(s, account)
+
+            # If a trade was queued, stop trying
+            if len(self._pending) > queued_before:
+                return
 
     async def _build_equity_trade(self, ticker: str, side: str, score: float,
                                   account: dict, rationale: str = ""):
