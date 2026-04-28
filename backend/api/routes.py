@@ -427,6 +427,7 @@ async def get_filter_status():
             "min_dte": s.auto_trade_min_dte,
             "max_dte": s.auto_trade_max_dte,
             "max_option_price": s.auto_trade_max_option_price,
+            "min_option_price": s.auto_trade_min_option_price,
             "max_otm_pct": s.auto_trade_max_otm_pct,
             "ticker_cooldown_hours": s.auto_trade_ticker_cooldown_hours,
             "equity_long_risk_pct": s.equity_long_risk_pct,

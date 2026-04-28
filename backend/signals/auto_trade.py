@@ -495,6 +495,17 @@ class AutoTradeEngine:
         if signal.score < self.settings.auto_trade_score_threshold:
             return
 
+        # Trading-window gate — refuse to queue cards on stale after-hours quotes.
+        # CHTR 2026-04-28 was queued at 20:20 ET on a $0.12 book mark — almost
+        # certainly not real liquidity. Window: weekdays 04:00–18:00 ET.
+        from feeds.uw_budget import is_auto_trade_window
+        if not is_auto_trade_window():
+            logger.info(
+                f"Auto-trade blocked [{signal.ticker}]: outside trading window "
+                f"(04:00–18:00 ET); after-hours options quotes unreliable"
+            )
+            return
+
         # Update cached equity for % based sizing / circuit breaker
         equity = float(account.get("equity", 0) or 0)
         if equity > 0:
@@ -524,6 +535,15 @@ class AutoTradeEngine:
                                score: float, evidence: list, account: dict):
         """Called when a pattern fires. High-score qualifying patterns queue trades."""
         if not self.settings.auto_trade_enabled:
+            return
+
+        # Same trading-window gate as evaluate_signal — see note there.
+        from feeds.uw_budget import is_auto_trade_window
+        if not is_auto_trade_window():
+            logger.info(
+                f"Auto-trade pattern blocked [{ticker}]: outside trading window "
+                f"(04:00–18:00 ET); after-hours options quotes unreliable"
+            )
             return
 
         # Update cached equity for % based sizing / circuit breaker
@@ -651,6 +671,20 @@ class AutoTradeEngine:
         if limit_price > max_price:
             logger.info(
                 f"Auto-trade: {occ} blocked — price ${limit_price:.2f} > cap ${max_price:.2f}"
+            )
+            return
+
+        # ── Filter 4a: Options price floor ────────────────────────────────
+        # Sub-$1 contracts need 5x+ moves to hit our 80% TP target. They're
+        # the cheap-OTM "lottery tickets" that smart money buys in size for
+        # pure gamma exposure — but we have 1-8 contracts, not 5,000, so the
+        # asymmetric payoff math doesn't translate. CHTR 2026-04-28 trade was
+        # $0.12 × 8 contracts = $96 risk to chase a $864 win that's a 7x move.
+        min_price = self.settings.auto_trade_min_option_price  # $1.00
+        if limit_price < min_price:
+            logger.info(
+                f"Auto-trade: {occ} blocked — price ${limit_price:.2f} < floor ${min_price:.2f} "
+                f"(too cheap, 80% TP requires unrealistic move)"
             )
             return
 

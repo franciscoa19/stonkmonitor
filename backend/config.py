@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     auto_trade_regime_trend_days: int = Field(5, env="AUTO_TRADE_REGIME_TREND_DAYS")              # look-back for 5-day trend
     # 4. Options price cap — $5-25 options have 17-32% WR; cheap options outperform
     auto_trade_max_option_price: float = Field(8.0, env="AUTO_TRADE_MAX_OPTION_PRICE")
+    # 4a. Min option price — sub-$1 contracts need 5x+ moves to hit TP, mostly junk
+    auto_trade_min_option_price: float = Field(1.0, env="AUTO_TRADE_MIN_OPTION_PRICE")
     # 4b. Moneyness cap — reject options more than this % OTM (deep OTM has ~0% win rate)
     auto_trade_max_otm_pct: float = Field(0.20, env="AUTO_TRADE_MAX_OTM_PCT")   # 20% OTM hard cap
     # 5. Per-ticker loss cooldown — don't re-trade a ticker that lost recently

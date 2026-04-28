@@ -113,6 +113,27 @@ SUBPHASE_BUMPS: dict[str, float] = {
 }
 
 
+def is_auto_trade_window(now: Optional[datetime] = None) -> bool:
+    """
+    Return True if it's safe to queue auto-trades right now.
+
+    Window: weekdays 04:00 ET — 18:00 ET. Outside this, bid/ask spreads on
+    options are wide and stale (post-close marks rather than real liquidity)
+    and overnight fills are unpredictable. CHTR 2026-04-28 was queued at
+    20:20 ET on a $0.12 ask that was almost certainly a stale book mark.
+    """
+    if now is None:
+        now = datetime.now(_NY)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=_NY)
+    else:
+        now = now.astimezone(_NY)
+    if now.weekday() >= 5:
+        return False
+    hm = now.hour * 60 + now.minute
+    return 4 * 60 <= hm < 18 * 60
+
+
 def market_subphase(now: Optional[datetime] = None) -> str:
     """Return a fine-grained market sub-phase tag for noise filtering."""
     if now is None:
