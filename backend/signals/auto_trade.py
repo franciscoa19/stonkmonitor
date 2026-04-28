@@ -680,15 +680,21 @@ class AutoTradeEngine:
     async def _build_options_trade_from_db(self, ticker: str, score: float,
                                            evidence: list, account: dict):
         """
-        For pattern-triggered trades: pull recent options signals from DB and
-        iterate through them to find one that passes the DTE window (3-10d).
+        For pattern-triggered trades: pull recent options signals from DB,
+        pre-filter by DTE window, then try candidates in **descending premium
+        order** so we follow smart money's biggest bet first.
 
-        Bug fixed 2026-04-24: previous version did `LIMIT 1` and took the most
-        recent row. If that row's expiry was 21d or 266d out (common), the
-        downstream DTE filter rejected it silently — AMD had 171 qualifying
-        sweeps today but only the most recent was tried, and it was DTE=21.
-        Now we fetch up to 30 candidates, pre-filter by DTE, and try them in
-        order until one builds a trade.
+        Bug fixed 2026-04-24: previous LIMIT 1 took the most recent row even if
+        its DTE was outside 3-10d → silent skip. Now we fetch 30 candidates and
+        pre-filter by DTE.
+
+        Refined 2026-04-27: previously iterated in DB-order (most recent first).
+        Result: when smart money's $500k sweep was on a $40 contract (blocked by
+        $15 price cap), we'd fall back to a $0.27 micro-sweep on the same
+        ticker — buying noise, not conviction. Now we sort candidates by sweep
+        premium DESC so the largest bet is tried first; if it blocks on price/
+        OTM, we walk down the conviction ladder. Often the right answer is to
+        skip the ticker entirely rather than trade junk.
         """
         rows = await self._db.get_options_flow(
             ticker=ticker, min_premium=100_000, has_sweep=True, limit=30,
@@ -723,9 +729,13 @@ class AutoTradeEngine:
             )
             return
 
+        # Sort by premium DESC — biggest smart-money bet tried first
+        candidates.sort(key=lambda r: r.get("premium") or 0, reverse=True)
+
+        top_prem = candidates[0].get("premium") or 0
         logger.info(
             f"Auto-trade pattern [{ticker}]: {len(candidates)}/{len(rows)} options "
-            f"in DTE window — trying in order"
+            f"in DTE window — trying by premium DESC (top: ${top_prem:,.0f})"
         )
 
         class _Side:

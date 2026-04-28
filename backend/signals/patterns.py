@@ -89,9 +89,13 @@ PATTERNS: list[PatternConfig] = [
         name="triple_confluence",
         description="Options sweep + dark pool + insider activity all on same ticker — highest conviction",
         score=10.0,
-        min_sweep_premium=100_000,
-        min_darkpool_premium=500_000,
-        min_insider_value=25_000,
+        # Raised 2026-04-27 — old thresholds fired 84 hits/day on a normal day,
+        # making this pattern statistical noise rather than conviction signal.
+        # Real triple-confluence on quality names (e.g. AMD, JPM, MS) clears these
+        # easily; mid-cap noise (FITB, MKC, ASO) does not. Target: <15 hits/day.
+        min_sweep_premium=500_000,        # was 100_000
+        min_darkpool_premium=2_000_000,   # was 500_000
+        min_insider_value=50_000,         # was 25_000
         lookback_days=14,
         cooldown_hours=24,
     ),
