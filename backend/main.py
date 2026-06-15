@@ -1105,6 +1105,16 @@ async def uw_budget_monitor_loop():
 async def lifespan(app: FastAPI):
     await db.connect()
 
+    # Sweep stale pending trades whose 5-min window elapsed while the process
+    # was down. The per-trade expiry is an in-memory task lost on restart, so
+    # without this rows can stay 'pending' indefinitely.
+    try:
+        expired = await db.expire_stale_pending_trades()
+        if expired:
+            logger.info(f"Startup sweep: expired {expired} stale pending trade(s)")
+    except Exception as e:
+        logger.error(f"Startup pending-trade sweep failed: {e}")
+
     logger.info("=" * 60)
     logger.info("  StonkMonitor starting up")
     logger.info(f"  Mode: {'PAPER' if settings.alpaca_paper else 'LIVE'} trading")

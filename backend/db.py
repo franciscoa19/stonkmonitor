@@ -479,6 +479,30 @@ class Database:
             (status,),
         )
 
+    async def expire_stale_pending_trades(self) -> int:
+        """Mark any still-'pending' trades whose expires_at is in the past as 'expired'.
+
+        The per-trade expiry is an in-memory asyncio task (see auto_trade._expire),
+        which is lost on process restart. Without this startup sweep, trades that
+        were pending when the backend restarted stay 'pending' in the DB forever
+        (observed: rows from 2026-04-21 still pending in June). Compares against
+        UTC now since expires_at is stored as UTC isoformat.
+        """
+        now_iso = datetime.utcnow().isoformat()
+        stale = await self._scalar(
+            "SELECT COUNT(*) AS n FROM pending_trades "
+            "WHERE status='pending' AND expires_at < ?",
+            (now_iso,),
+        )
+        n = int(stale.get("n") or 0) if stale else 0
+        if n:
+            await self._exec(
+                "UPDATE pending_trades SET status='expired' "
+                "WHERE status='pending' AND expires_at < ?",
+                (now_iso,),
+            )
+        return n
+
     async def get_trade_history(self, limit: int = 50) -> list[dict]:
         return await self._query(
             "SELECT * FROM pending_trades ORDER BY created_at DESC LIMIT ?",
