@@ -23,6 +23,7 @@ export interface Signal {
   strike: number | null
   option_type: string | null
   timestamp: string
+  _rx?: number   // client receive time (ms) — set on arrival, used for retention/age
 }
 
 interface UseWebSocketOptions {

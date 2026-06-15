@@ -52,7 +52,13 @@ export default function Dashboard() {
   const [kalshiScan, setKalshiScan] = useState<Record<string, unknown> | null>(null)
 
   const onSignal = useCallback((signal: Signal) => {
-    setSignals(prev => [signal, ...prev].slice(0, 500))
+    const stamped = { ...signal, _rx: Date.now() }
+    setSignals(prev => {
+      const cutoff = Date.now() - 90 * 60 * 1000   // keep last 90 minutes
+      return [stamped, ...prev]
+        .filter(s => (s._rx ?? Date.now()) >= cutoff)
+        .slice(0, 2000)
+    })
   }, [])
 
   const onKalshiScan = useCallback((data: Record<string, unknown>) => {
