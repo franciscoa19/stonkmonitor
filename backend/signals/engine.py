@@ -17,6 +17,27 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 
+def _parse_event_date(s: Optional[str]) -> Optional[datetime]:
+    """Parse a UW date string ('2026-06-17' or an ISO datetime) to a naive
+    datetime. Returns None if empty/unparseable."""
+    if not s:
+        return None
+    s = str(s).strip()
+    try:
+        if len(s) == 10:                       # date-only 'YYYY-MM-DD'
+            return datetime.strptime(s, "%Y-%m-%d")
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
+    except (ValueError, TypeError):
+        return None
+
+
+def _age_days(dt: Optional[datetime]) -> Optional[float]:
+    """Age of `dt` in days vs now (UTC). None if dt is None."""
+    if dt is None:
+        return None
+    return (datetime.utcnow() - dt).total_seconds() / 86400.0
+
+
 class SignalType(str, Enum):
     OPTIONS_FLOW   = "options_flow"
     DARK_POOL      = "dark_pool"
@@ -250,11 +271,22 @@ class SignalEngine:
             title  = event.get("officer_title") or ""
             code   = (event.get("transaction_code") or "").upper()
             is_10b = bool(event.get("is_10b5_1", False))
+            filed_date = event.get("filing_date") or ""
+            txn_date   = event.get("transaction_date") or ""
 
             # Only care about actual open-market buys and sells
             # Skip awards (A), exercises (M), tax withholding (F), transfers (J/G)
             SKIP_CODES = {"A", "M", "F", "J", "G", "C", "X"}
             if code in SKIP_CODES:
+                return None
+
+            # Freshness gate on FILING date — drops stale Form 4s and prevents a
+            # post-downtime restart from replaying UW's recent window as live.
+            event_dt = _parse_event_date(filed_date) or _parse_event_date(txn_date)
+            max_age  = self.settings.insider_max_age_days
+            age      = _age_days(event_dt)
+            if max_age and age is not None and age > max_age:
+                logger.debug(f"Insider {ticker} dropped — filed {age:.0f}d ago (> {max_age}d)")
                 return None
 
             is_buy  = code == "P"
@@ -311,9 +343,10 @@ class SignalEngine:
             pre_planned = " (10b5-1)" if is_10b else ""
 
             signal_title = f"{emoji} {ticker} — Insider {action}"
+            filed_label  = f"filed {filed_date}" if filed_date else f"txn {txn_date}"
             desc = (
                 f"{name} | {role_label}{pre_planned} | "
-                f"${value:,.0f} | Score: {score:.1f}/10"
+                f"${value:,.0f} | {filed_label} | Score: {score:.1f}/10"
             )
 
             return Signal(
@@ -325,6 +358,8 @@ class SignalEngine:
                 description=desc,
                 raw=event,
                 premium=value,
+                # Stamp with filing date, not ingest time (see score_congress).
+                timestamp=event_dt or datetime.utcnow(),
             )
 
         except Exception as e:
@@ -348,9 +383,21 @@ class SignalEngine:
             amounts     = event.get("amounts") or ""               # "$15,001 - $50,000"
             chamber     = (event.get("member_type") or "").title() # "House" | "Senate"
             txn_date    = event.get("transaction_date") or ""
+            filed_date  = event.get("filed_at_date") or ""
 
             # Skip if no ticker (e.g. T-bills, mutual funds)
             if not ticker:
+                return None
+
+            # Freshness gate on FILING date (when the trade became public). A PTR
+            # can be filed weeks after the transaction and still be fresh news, but
+            # a filing that's itself weeks old is stale — dropping it also stops a
+            # post-downtime restart from replaying UW's whole recent window as live.
+            event_dt = _parse_event_date(filed_date) or _parse_event_date(txn_date)
+            max_age  = self.settings.congress_max_age_days
+            age      = _age_days(event_dt)
+            if max_age and age is not None and age > max_age:
+                logger.debug(f"Congress {ticker} dropped — filed {age:.0f}d ago (> {max_age}d)")
                 return None
 
             is_buy  = "buy" in txn_type or "purchase" in txn_type
@@ -370,10 +417,11 @@ class SignalEngine:
             verb  = "Bought" if is_buy else "Sold" if is_sell else txn_type.title()
 
             signal_title = f"{emoji} {ticker} — {chamber} {verb}"
+            filed_label = f"filed {filed_date}" if filed_date else f"txn {txn_date}"
             desc = (
                 f"{member} | "
                 f"{verb} {amounts} | "
-                f"{txn_date} | Score: {score:.1f}/10"
+                f"{filed_label} | Score: {score:.1f}/10"
             )
 
             return Signal(
@@ -384,6 +432,9 @@ class SignalEngine:
                 title=signal_title,
                 description=desc,
                 raw=event,
+                # Stamp with when it became public (filing date), not ingest time,
+                # so the feed shows real recency instead of "just now".
+                timestamp=event_dt or datetime.utcnow(),
             )
 
         except Exception as e:

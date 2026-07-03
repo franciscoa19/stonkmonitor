@@ -119,6 +119,14 @@ class Settings(BaseSettings):
     iv_rank_low_threshold: float = Field(20.0, env="IV_RANK_LOW_THRESHOLD")
     sweep_score_threshold: float = Field(8.0, env="SWEEP_SCORE_THRESHOLD")  # raised from 7.0 — too noisy
 
+    # --- Signal Freshness (drop stale filings) ---
+    # Congress PTRs / insider Form 4s are gated on FILING date (when the info
+    # became public), not transaction date. A filing older than this is dropped
+    # so a post-downtime restart doesn't flood the feed with the whole "recent"
+    # window as if it were live. Set 0 to disable the age gate.
+    congress_max_age_days: int = Field(10, env="CONGRESS_MAX_AGE_DAYS")
+    insider_max_age_days: int = Field(5, env="INSIDER_MAX_AGE_DAYS")
+
     # --- Market Open/Close Noise Filter ---
     # Extra score required above base thresholds during noisy sub-phases.
     # Set to 0 to disable a particular bump.

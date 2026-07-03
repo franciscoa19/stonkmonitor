@@ -23,3 +23,4 @@ requests>=2.34.0
 idna>=3.15
 protobuf>=6.33.5
 curl-cffi>=0.15.0
+msgpack>=1.2.1   # GHSA-6v7p-g79w-8964 (added 2026-07-03)

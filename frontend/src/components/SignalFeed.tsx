@@ -96,6 +96,19 @@ function ageLabel(ms: number): string {
   return `${h}h${m % 60 ? ` ${m % 60}m` : ''} ago`
 }
 
+// Event recency from the signal's own timestamp (filing/transaction date for
+// congress & insider, set server-side). Distinct from `_rx` (browser receive
+// time), so a weeks-old filing reads as old instead of "now". Null when it's
+// same-day (live intraday flow), so only genuinely-dated events get flagged.
+function eventAge(iso: string): { label: string; days: number } | null {
+  const t = Date.parse(iso)
+  if (isNaN(t)) return null
+  const days = Math.floor((Date.now() - t) / 86_400_000)
+  if (days < 1) return null
+  const d = new Date(t)
+  return { label: `${MONTHS[d.getMonth()]} ${d.getDate()}`, days }
+}
+
 function aggregate(signals: Signal[]): TickerCard[] {
   const map = new Map<string, Signal[]>()
   for (const s of signals) {
@@ -158,6 +171,7 @@ function Tile({ card }: { card: TickerCard }) {
   const exp = fmtExpiry(card.contract?.expiry ?? null)
   const ageMin = (Date.now() - card.rx) / 60000
   const stale = ageMin > 20   // dim tiles older than 20 min
+  const evt = eventAge(card.latest)   // filing/txn recency, if dated & >1d old
 
   return (
     <div
@@ -198,8 +212,15 @@ function Tile({ card }: { card: TickerCard }) {
         ))}
       </div>
 
-      <div className="text-[9px] text-muted font-mono text-right mt-1">
-        {card.count > card.signals.length ? `+${card.count - card.signals.length} more · ` : ''}{ageLabel(card.rx)}
+      <div className="text-[9px] font-mono text-right mt-1 flex items-center justify-end gap-1.5">
+        {evt && (
+          <span className={evt.days >= 4 ? 'text-[#ff9500]' : 'text-muted'} title="Filing / transaction date">
+            {evt.label} · {evt.days}d old
+          </span>
+        )}
+        <span className="text-muted">
+          {card.count > card.signals.length ? `+${card.count - card.signals.length} more · ` : ''}{ageLabel(card.rx)}
+        </span>
       </div>
     </div>
   )

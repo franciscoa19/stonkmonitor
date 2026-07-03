@@ -34,6 +34,64 @@ logger = logging.getLogger(__name__)
 
 _NY = ZoneInfo("America/New_York")
 
+# ── US market (NYSE) holiday calendar ───────────────────────────────────────
+# Full-day closures and early-close (13:00 ET) days, keyed by (year, month, day)
+# in America/New_York. Without this, the session classifier treats a holiday as
+# a normal trading day and keeps polling options-flow/darkpool, ingesting stale
+# last-session data (e.g. an already-expired option surfacing as a live "sweep").
+# UPDATE ANNUALLY — https://www.nyse.com/markets/hours-calendars. If the current
+# year is missing we log once and fall back to weekday/time-of-day only (fail-open).
+MARKET_HOLIDAYS: set[tuple[int, int, int]] = {
+    # 2026
+    (2026, 1, 1), (2026, 1, 19), (2026, 2, 16), (2026, 4, 3), (2026, 5, 25),
+    (2026, 6, 19), (2026, 7, 3), (2026, 9, 7), (2026, 11, 26), (2026, 12, 25),
+    # 2027
+    (2027, 1, 1), (2027, 1, 18), (2027, 2, 15), (2027, 3, 26), (2027, 5, 31),
+    (2027, 6, 18), (2027, 7, 5), (2027, 9, 6), (2027, 11, 25), (2027, 12, 24),
+}
+# Early closes — NYSE halts at 13:00 ET; options/darkpool marks go stale after.
+MARKET_EARLY_CLOSES: set[tuple[int, int, int]] = {
+    (2026, 11, 27), (2026, 12, 24),
+    (2027, 11, 26),
+}
+_EARLY_CLOSE_MINUTE = 13 * 60  # 13:00 ET
+_HOLIDAY_YEARS = {y for (y, _m, _d) in MARKET_HOLIDAYS}
+_warned_uncovered_years: set[int] = set()
+
+
+def _ny(now: Optional[datetime] = None) -> datetime:
+    """Normalize any datetime (or None) to America/New_York tz-aware."""
+    if now is None:
+        return datetime.now(_NY)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=_NY)
+    return now.astimezone(_NY)
+
+
+def is_market_holiday(now: Optional[datetime] = None) -> bool:
+    """True if `now` falls on a full-day NYSE closure."""
+    n = _ny(now)
+    if n.year not in _HOLIDAY_YEARS and n.year not in _warned_uncovered_years:
+        _warned_uncovered_years.add(n.year)
+        logger.warning(
+            f"No market-holiday data for {n.year} — update MARKET_HOLIDAYS in "
+            f"feeds/uw_budget.py. Falling back to weekday/time-of-day only."
+        )
+    return (n.year, n.month, n.day) in MARKET_HOLIDAYS
+
+
+def is_market_closed_now(now: Optional[datetime] = None) -> bool:
+    """True if the equity market is closed right now: weekend, full holiday, or
+    past the 13:00 ET early-close on a half day. Used to suppress options/darkpool
+    polling so we don't ingest stale last-session data on a closed market."""
+    n = _ny(now)
+    if n.weekday() >= 5 or is_market_holiday(n):
+        return True
+    if (n.year, n.month, n.day) in MARKET_EARLY_CLOSES:
+        if (n.hour * 60 + n.minute) >= _EARLY_CLOSE_MINUTE:
+            return True
+    return False
+
 # Session → (channel → poll interval seconds). INF (-1) disables the channel
 # entirely for that session. Tuned so weekday daily spend ≈ 8k calls and
 # weekend spend ≈ <200 calls.
@@ -72,17 +130,14 @@ SCHEDULE: dict[str, dict[str, int]] = {
 
 
 def current_session(now: Optional[datetime] = None) -> str:
-    """Return the current market session tag based on US/Eastern wall clock."""
-    if now is None:
-        now = datetime.now(_NY)
-    elif now.tzinfo is None:
-        now = now.replace(tzinfo=_NY)
-    else:
-        now = now.astimezone(_NY)
+    """Return the current market session tag based on US/Eastern wall clock.
 
-    # Monday=0 … Sunday=6
-    wd = now.weekday()
-    if wd >= 5:
+    Weekends, full holidays, and post-early-close hours all map to 'weekend' so
+    that SCHEDULE disables options-flow/darkpool polling (interval -1) — a closed
+    market has no new flow, and UW serves stale last-session data if we ask.
+    """
+    now = _ny(now)
+    if is_market_closed_now(now):
         return "weekend"
 
     hm = now.hour * 60 + now.minute
@@ -122,13 +177,8 @@ def is_auto_trade_window(now: Optional[datetime] = None) -> bool:
     and overnight fills are unpredictable. CHTR 2026-04-28 was queued at
     20:20 ET on a $0.12 ask that was almost certainly a stale book mark.
     """
-    if now is None:
-        now = datetime.now(_NY)
-    elif now.tzinfo is None:
-        now = now.replace(tzinfo=_NY)
-    else:
-        now = now.astimezone(_NY)
-    if now.weekday() >= 5:
+    now = _ny(now)
+    if is_market_closed_now(now):
         return False
     hm = now.hour * 60 + now.minute
     return 4 * 60 <= hm < 18 * 60
@@ -136,15 +186,8 @@ def is_auto_trade_window(now: Optional[datetime] = None) -> bool:
 
 def market_subphase(now: Optional[datetime] = None) -> str:
     """Return a fine-grained market sub-phase tag for noise filtering."""
-    if now is None:
-        now = datetime.now(_NY)
-    elif now.tzinfo is None:
-        now = now.replace(tzinfo=_NY)
-    else:
-        now = now.astimezone(_NY)
-
-    wd = now.weekday()
-    if wd >= 5:
+    now = _ny(now)
+    if is_market_closed_now(now):
         return "weekend"
 
     hm = now.hour * 60 + now.minute

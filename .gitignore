@@ -3,6 +3,8 @@
 .env.local
 .env.*.local
 *.env
+.env.txt
+*.env.txt
 *.pem
 
 # ── Claude Code internal files (may contain API keys from session history) ──
