@@ -32,12 +32,12 @@ class AlpacaTrader:
         try:
             acct = self.client.get_account()
             return {
-                "equity":         float(acct.equity),
-                "cash":           float(acct.cash),
-                "buying_power":   float(acct.buying_power),
-                "day_trade_count":int(acct.daytrade_count),
-                "pdt_flag":       acct.pattern_day_trader,
-                "status":         acct.status.value,
+                "equity":         float(acct.equity or 0),
+                "cash":           float(acct.cash or 0),
+                "buying_power":   float(acct.buying_power or 0),
+                "day_trade_count":int(acct.daytrade_count or 0),
+                "pdt_flag":       bool(acct.pattern_day_trader),
+                "status":         acct.status.value if acct.status else "unknown",
             }
         except Exception as e:
             logger.error(f"get_account error: {e}")
