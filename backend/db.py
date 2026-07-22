@@ -182,6 +182,11 @@ CREATE INDEX IF NOT EXISTS idx_tp_ticker    ON trade_performance(ticker);
 CREATE INDEX IF NOT EXISTS idx_tp_status    ON trade_performance(order_status);
 CREATE INDEX IF NOT EXISTS idx_tp_created   ON trade_performance(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS watchlist (
+    ticker     TEXT PRIMARY KEY,               -- upper-cased symbol, scanned for IV + earnings
+    added_at   TEXT NOT NULL
+);
+
 -- ── Indexes ───────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_of_ticker    ON options_flow(ticker);
 CREATE INDEX IF NOT EXISTS idx_of_created   ON options_flow(created_at DESC);
@@ -252,6 +257,20 @@ class Database:
         except Exception as e:
             logger.error(f"DB scalar error: {e}")
             return {}
+
+    # ── Watchlist (persisted across restarts) ────────────────────────────
+    async def get_watchlist(self) -> list[str]:
+        rows = await self._query("SELECT ticker FROM watchlist ORDER BY added_at")
+        return [r["ticker"] for r in rows]
+
+    async def add_watchlist(self, ticker: str) -> None:
+        await self._exec(
+            "INSERT OR IGNORE INTO watchlist (ticker, added_at) VALUES (?, ?)",
+            (ticker.upper(), datetime.utcnow().isoformat()),
+        )
+
+    async def remove_watchlist(self, ticker: str) -> None:
+        await self._exec("DELETE FROM watchlist WHERE ticker = ?", (ticker.upper(),))
 
     # ── Write: Options Flow ──────────────────────────────────────────────
     async def save_options_flow(self, event: dict):

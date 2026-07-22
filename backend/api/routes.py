@@ -448,15 +448,19 @@ async def get_watchlist():
 
 @router.post("/watchlist")
 async def add_to_watchlist(req: WatchlistRequest):
+    from main import db
     ticker = req.ticker.upper()
     if ticker not in _watchlist:
         _watchlist.append(ticker)
+    await db.add_watchlist(ticker)   # persist across restarts
     return {"tickers": _watchlist}
 
 
 @router.delete("/watchlist/{ticker}")
 async def remove_from_watchlist(ticker: str):
+    from main import db
     t = ticker.upper()
     if t in _watchlist:
         _watchlist.remove(t)
+    await db.remove_watchlist(t)
     return {"tickers": _watchlist}

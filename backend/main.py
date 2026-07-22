@@ -1120,6 +1120,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Startup pending-trade sweep failed: {e}")
 
+    # Restore the persisted watchlist into the in-memory list the scanners read.
+    try:
+        from api.routes import _watchlist
+        saved = await db.get_watchlist()
+        _watchlist[:] = saved
+        if saved:
+            logger.info(f"Watchlist restored: {', '.join(saved)}")
+    except Exception as e:
+        logger.error(f"Watchlist restore failed: {e}")
+
     logger.info("=" * 60)
     logger.info("  StonkMonitor starting up")
     logger.info(f"  Mode: {'PAPER' if settings.alpaca_paper else 'LIVE'} trading")
