@@ -1006,6 +1006,7 @@ async def iv_scanner_loop():
     import time as _time
     from api.routes import _watchlist
     from feeds.uw_budget import current_session, budget
+    from feeds.unusual_whales import iv_summary_from_termstructure
     from signals.earnings_scanner import scan_ticker as earnings_scan
     await asyncio.sleep(30)  # give server time to start
 
@@ -1024,12 +1025,16 @@ async def iv_scanner_loop():
         for ticker in list(_watchlist):
             try:
                 # ── IV Rank (UW) ────────────────────────────────────────
+                # UW returns a term-structure list, not a dict — reduce it to
+                # the 30-day point. UW gives IV *percentile*, not a separate
+                # rank, so we use it for both args of score_iv_rank.
                 iv_data = await uw_client.get_iv_rank(ticker)
-                iv_rank = float(iv_data.get("iv_rank", 0) or 0)
-                iv_pct  = float(iv_data.get("iv_percentile", 0) or 0)
-                signal  = engine.score_iv_rank(ticker, iv_rank, iv_pct)
-                if signal:
-                    await handle_signal(signal)
+                iv = iv_summary_from_termstructure(iv_data)
+                if iv:
+                    iv_pct = iv["iv_percentile"]
+                    signal = engine.score_iv_rank(ticker, iv_pct, iv_pct)
+                    if signal:
+                        await handle_signal(signal)
 
                 # ── Earnings IV/RV setup (yfinance) — max once per 30 min ──
                 now = _time.time()

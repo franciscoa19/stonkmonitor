@@ -30,6 +30,32 @@ ENDPOINTS = {
 }
 
 
+def iv_summary_from_termstructure(iv_data, target_dte: int = 30) -> dict:
+    """Reduce UW's interpolated-IV response to a single canonical point.
+
+    `/api/stock/{ticker}/interpolated-iv` returns a term-structure **list** —
+    one row per DTE — with `percentile` (0-1 IV percentile) and `volatility`
+    (annualized IV). There is NO `iv_rank` field. The IV scanner used to call
+    `iv_data.get("iv_rank")` on the list, which raised AttributeError every
+    cycle (swallowed by the loop's try/except) so no IV signal ever fired.
+
+    Picks the row nearest `target_dte` (30d = the standard IV-rank horizon).
+    Returns {'iv_percentile': 0-100, 'iv_annual_pct': 0-100, 'dte': int}, or
+    {} if the payload isn't a usable list.
+    """
+    if not isinstance(iv_data, list) or not iv_data:
+        return {}
+    try:
+        row = min(iv_data, key=lambda r: abs(int(float(r.get("days", 0) or 0)) - target_dte))
+        return {
+            "iv_percentile": float(row.get("percentile", 0) or 0) * 100.0,
+            "iv_annual_pct": float(row.get("volatility", 0) or 0) * 100.0,
+            "dte":           int(float(row.get("days", 0) or 0)),
+        }
+    except (ValueError, TypeError):
+        return {}
+
+
 class UnusualWhalesClient:
     def __init__(self, api_key: str):
         self.api_key = api_key
