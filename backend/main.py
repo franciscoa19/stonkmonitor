@@ -996,6 +996,37 @@ async def performance_sync_loop():
         await asyncio.sleep(900)  # every 15 minutes
 
 
+async def daily_equity_loop():
+    """Snapshot paper-account equity for the eval loop's equity curve.
+
+    Upserts once per ET calendar day (keyed by date), refreshed hourly so
+    'today' always holds the latest equity. Feeds the daily check-in report.
+    """
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    _ET = ZoneInfo("America/New_York")
+    await asyncio.sleep(20)  # let startup settle
+    while True:
+        try:
+            acct = trader.get_account()
+            equity = float(acct.get("equity", 0) or 0)
+            if equity > 0:
+                try:
+                    n_pos = len(trader.get_positions())
+                except Exception:
+                    n_pos = 0
+                await db.record_daily_equity(
+                    date_str=datetime.now(_ET).strftime("%Y-%m-%d"),
+                    equity=equity,
+                    cash=float(acct.get("cash", 0) or 0),
+                    buying_power=float(acct.get("buying_power", 0) or 0),
+                    open_positions=n_pos,
+                )
+        except Exception as e:
+            logger.warning(f"Daily equity snapshot error: {e}")
+        await asyncio.sleep(3600)  # hourly
+
+
 async def iv_scanner_loop():
     """Poll IV rank + earnings setup for watchlist tickers every 5 minutes.
 
@@ -1144,6 +1175,7 @@ async def lifespan(app: FastAPI):
     uw_budget_task = asyncio.create_task(uw_budget_monitor_loop())
     alpaca_monitor_task = asyncio.create_task(alpaca_position_monitor())
     perf_sync_task = asyncio.create_task(performance_sync_loop())
+    daily_equity_task = asyncio.create_task(daily_equity_loop())
 
     # Kalshi — login + start scan loop if configured
     kalshi_task = None

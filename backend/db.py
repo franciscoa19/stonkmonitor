@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS pending_trades (
     target_pct      REAL DEFAULT 80.0,
     score           REAL DEFAULT 0,
     rationale       TEXT,
+    strategy        TEXT,                    -- setup that triggered it (signal type or pattern name)
     status          TEXT DEFAULT 'pending',  -- pending/confirmed/skipped/expired/failed
     telegram_msg_id INTEGER,
     alpaca_order_id TEXT,
@@ -174,6 +175,9 @@ CREATE TABLE IF NOT EXISTS trade_performance (
     -- Metadata
     signal_score    REAL,                           -- original signal score if auto-trade
     trade_type      TEXT,                           -- option/equity
+    strategy        TEXT,                           -- setup that triggered it (joined from pending_trades)
+    entry_hour_et   INTEGER,                        -- hour-of-day (ET) the entry was submitted
+    hold_minutes    REAL,                           -- minutes held (submitted_at -> exit)
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -212,7 +216,25 @@ CREATE INDEX IF NOT EXISTS idx_sig_created  ON signals(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ph_ticker    ON pattern_hits(ticker);
 CREATE INDEX IF NOT EXISTS idx_ph_pattern   ON pattern_hits(pattern_name);
 CREATE INDEX IF NOT EXISTS idx_ph_created   ON pattern_hits(created_at DESC);
+
+-- ── Daily equity snapshot (paper-trading equity curve for the eval loop) ──
+CREATE TABLE IF NOT EXISTS daily_equity (
+    date          TEXT PRIMARY KEY,   -- YYYY-MM-DD (ET)
+    equity        REAL NOT NULL,      -- account equity at snapshot
+    cash          REAL,
+    buying_power  REAL,
+    open_positions INTEGER,
+    realized_pnl_day REAL,            -- realized P&L booked that day (from trade_performance)
+    created_at    TEXT NOT NULL
+);
 """
+
+# Columns added after initial release — applied by _migrate() on connect for
+# databases created before the column existed (SQLite has no ADD COLUMN IF NOT EXISTS).
+_MIGRATIONS = {
+    "pending_trades":    {"strategy": "TEXT"},
+    "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL"},
+}
 
 
 class Database:
@@ -224,8 +246,23 @@ class Database:
         self._conn = await aiosqlite.connect(self.path)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(SCHEMA)
+        await self._migrate()
         await self._conn.commit()
         logger.info(f"Database ready: {self.path}")
+
+    async def _migrate(self):
+        """Add columns introduced after a table's initial release (SQLite lacks
+        ADD COLUMN IF NOT EXISTS, so we diff against PRAGMA table_info)."""
+        for table, cols in _MIGRATIONS.items():
+            async with self._conn.execute(f"PRAGMA table_info({table})") as cur:
+                existing = {r["name"] for r in await cur.fetchall()}
+            for col, coltype in cols.items():
+                if col not in existing:
+                    try:
+                        await self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+                        logger.info(f"Migration: added {table}.{col}")
+                    except Exception as e:
+                        logger.error(f"Migration failed for {table}.{col}: {e}")
 
     async def close(self):
         if self._conn:
@@ -271,6 +308,29 @@ class Database:
 
     async def remove_watchlist(self, ticker: str) -> None:
         await self._exec("DELETE FROM watchlist WHERE ticker = ?", (ticker.upper(),))
+
+    # ── Daily equity snapshot (paper equity curve) ───────────────────────
+    async def record_daily_equity(self, date_str: str, equity: float, cash: float = 0.0,
+                                  buying_power: float = 0.0, open_positions: int = 0,
+                                  realized_pnl_day: float = 0.0) -> None:
+        """Upsert one day's equity snapshot (idempotent on date)."""
+        await self._exec(
+            """INSERT INTO daily_equity
+                 (date, equity, cash, buying_power, open_positions, realized_pnl_day, created_at)
+               VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(date) DO UPDATE SET
+                 equity=excluded.equity, cash=excluded.cash,
+                 buying_power=excluded.buying_power, open_positions=excluded.open_positions,
+                 realized_pnl_day=excluded.realized_pnl_day""",
+            (date_str, equity, cash, buying_power, open_positions, realized_pnl_day,
+             datetime.utcnow().isoformat()),
+        )
+
+    async def get_daily_equity(self, limit: int = 60) -> list[dict]:
+        rows = await self._query(
+            "SELECT * FROM daily_equity ORDER BY date DESC LIMIT ?", (limit,)
+        )
+        return list(reversed(rows))
 
     # ── Write: Options Flow ──────────────────────────────────────────────
     async def save_options_flow(self, event: dict):
@@ -449,8 +509,8 @@ class Database:
                 INSERT INTO pending_trades
                   (ticker, trade_type, symbol, side, option_type, strike, expiry, dte,
                    qty, limit_price, risk_amount, stop_pct, target_pct, score,
-                   rationale, created_at, expires_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   rationale, strategy, created_at, expires_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """
             params = (
                 kwargs.get("ticker", ""),
@@ -468,6 +528,7 @@ class Database:
                 kwargs.get("target_pct", 80.0),
                 kwargs.get("score", 0),
                 kwargs.get("rationale", ""),
+                kwargs.get("strategy", ""),
                 datetime.utcnow().isoformat(),
                 expires_at.isoformat() if hasattr(expires_at, "isoformat") else str(expires_at),
             )

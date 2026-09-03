@@ -90,6 +90,7 @@ class AutoTradeEngine:
         self._db = None
         self._trader = None
         self._pending: dict[int, TradeSuggestion] = {}
+        self._current_strategy = ""   # setup that triggered the trade being queued
 
         # ── Filter state ───────────────────────────────────────────────────
         # Regime cache: (spy_change_pct, spy_trend_pct, timestamp)
@@ -492,6 +493,8 @@ class AutoTradeEngine:
             return
         if signal is None:
             return
+        # Tag any trade queued during this call with the signal type that triggered it.
+        self._current_strategy = getattr(signal.type, "value", str(signal.type))
         if signal.score < self.settings.auto_trade_score_threshold:
             return
 
@@ -536,6 +539,8 @@ class AutoTradeEngine:
         """Called when a pattern fires. High-score qualifying patterns queue trades."""
         if not self.settings.auto_trade_enabled:
             return
+        # Tag any trade queued during this call with the pattern that triggered it.
+        self._current_strategy = pattern_name
 
         # Same trading-window gate as evaluate_signal — see note there.
         from feeds.uw_budget import is_auto_trade_window
@@ -888,6 +893,9 @@ class AutoTradeEngine:
                 return
 
         expires_at = datetime.utcnow() + timedelta(minutes=5)
+
+        # Attribute the trade to the setup that triggered it (set by evaluate_*).
+        kwargs.setdefault("strategy", getattr(self, "_current_strategy", ""))
 
         trade_id = await self._db.save_pending_trade(expires_at=expires_at, **kwargs)
         if not trade_id:
