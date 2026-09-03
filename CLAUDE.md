@@ -452,6 +452,7 @@ watchlist          -- tickers for IV + earnings scanning
 
 ## Recent Work
 
+- ✅ **Security patch (2026-08-12)** — `aiohttp` 3.14.1→3.14.3 (PYSEC-2026-3545/3546/3547) and `pip`→26.2.1 (PYSEC-2026-3721). `pip-audit` clean; backend re-verified running.
 - ✅ **Persistent watchlist + earnings-scanner deps (2026-07-22)** — added a `watchlist` DB table so IV/earnings scanning survives restarts (`_watchlist` restored on startup); pinned the earnings scanner's missing `scipy`/`yfinance` deps, which had been crashing the whole IV loop on fresh installs. IV-rank + earnings signals now run end-to-end (verified on NOW). (See Past Bugs #21, #22.)
 - ✅ **IV scanner fix (2026-07-22)** — the IV rank scanner had never fired: it read `iv_rank`/`iv_percentile` off UW's interpolated-IV response, which is a term-structure list, not a dict. New `iv_summary_from_termstructure()` reduces it to the 30-day IV percentile and feeds `score_iv_rank`. Verified live on NOW (98th-%ile → sell-premium signal). (See Past Bugs #20.)
 - ✅ **Market-holiday awareness + stale-filing gate (2026-07-03)** — holiday/early-close calendar in `feeds/uw_budget.py` stops options/darkpool polling on closed days; congress/insider signals now stamped with filing date and dropped if filed older than `CONGRESS_MAX_AGE_DAYS`/`INSIDER_MAX_AGE_DAYS` (both `.env`-tunable), so a post-downtime restart no longer replays UW's recent window as live. Frontend tile shows a filing-date age badge. (See Past Bugs #18, #19.)
