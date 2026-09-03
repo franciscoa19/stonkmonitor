@@ -58,7 +58,8 @@ trader      = AlpacaTrader(
 )
 engine          = SignalEngine(settings)
 pattern_engine  = PatternEngine(notify_threshold=8.0)
-discord     = DiscordNotifier(settings.discord_webhook_url)
+discord     = DiscordNotifier(settings.discord_webhook_url,
+                              alerts_enabled=settings.discord_alerts_enabled)
 pushover    = PushoverNotifier(settings.pushover_api_token, settings.pushover_user_key)
 telegram    = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id,
                                alerts_enabled=settings.telegram_alerts_enabled)

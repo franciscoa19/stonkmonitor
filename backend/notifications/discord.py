@@ -29,9 +29,11 @@ SIDE_COLORS = {
 
 
 class DiscordNotifier:
-    def __init__(self, webhook_url: str):
+    def __init__(self, webhook_url: str, alerts_enabled: bool = True):
         self.webhook_url = webhook_url
-        self.enabled = bool(webhook_url)
+        # `alerts_enabled` is a master mute: when False every send no-ops (they all
+        # gate on self.enabled), but the client stays intact for later re-enable.
+        self.enabled = bool(webhook_url) and alerts_enabled
 
     async def send_signal(self, signal: Signal, score_threshold: float = 0.0):
         """Post a signal as a rich Discord embed."""

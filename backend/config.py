@@ -22,6 +22,8 @@ class Settings(BaseSettings):
 
     # --- Discord ---
     discord_webhook_url: str = Field("", env="DISCORD_WEBHOOK_URL")
+    # Master mute for Discord sends (plumbing kept; flip true to re-enable).
+    discord_alerts_enabled: bool = Field(True, env="DISCORD_ALERTS_ENABLED")
 
     # --- Pushover ---
     pushover_api_token: str = Field("", env="PUSHOVER_API_TOKEN")
