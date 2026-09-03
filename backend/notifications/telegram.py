@@ -13,10 +13,13 @@ TGAPI = "https://api.telegram.org/bot{token}/{method}"
 
 
 class TelegramNotifier:
-    def __init__(self, token: str, chat_id: int = 0):
+    def __init__(self, token: str, chat_id: int = 0, alerts_enabled: bool = True):
         self.token = token
         self.chat_id = chat_id or None
-        self.enabled = bool(token and not token.startswith("your_"))
+        # `alerts_enabled` is a master mute: when False, every send + the getUpdates
+        # poll loop no-op (they all gate on self.enabled), but the client and all its
+        # methods stay intact so it can be re-enabled by flipping the flag.
+        self.enabled = bool(token and not token.startswith("your_")) and alerts_enabled
         self._session: Optional[aiohttp.ClientSession] = None
         self._offset = 0
         self._polling = False

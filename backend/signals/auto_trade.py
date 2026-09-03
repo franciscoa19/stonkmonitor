@@ -961,12 +961,18 @@ class AutoTradeEngine:
             }
         })
 
-        asyncio.create_task(self._expire(trade_id))
-
         logger.info(
             f"TRADE QUEUED: {symbol} x{kwargs['qty']} @ ${kwargs['limit_price']:.2f} "
             f"| risk=${kwargs['risk_amount']:,.0f} | score={kwargs.get('score',0):.1f}"
         )
+
+        # Fully autonomous (paper): execute now instead of waiting for a confirm tap.
+        # All pre-flight filters and risk caps already ran before we got here.
+        if self.settings.auto_trade_auto_execute:
+            logger.info(f"AUTO-EXECUTE: confirming {symbol} immediately (autonomous paper mode)")
+            await self.confirm_trade(trade_id, msg_id=0)
+        else:
+            asyncio.create_task(self._expire(trade_id))
 
     async def _expire(self, trade_id: int):
         await asyncio.sleep(5 * 60)

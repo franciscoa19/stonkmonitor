@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # --- Telegram ---
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: int = Field(0, env="TELEGRAM_CHAT_ID")
+    # Master mute for all Telegram sends + polling (plumbing stays intact).
+    # Set false for the autonomous paper setup (no cards, no getUpdates conflict).
+    telegram_alerts_enabled: bool = Field(True, env="TELEGRAM_ALERTS_ENABLED")
 
     # --- Kalshi ---
     kalshi_key_id: str = Field("", env="KALSHI_KEY_ID")
@@ -50,6 +53,9 @@ class Settings(BaseSettings):
 
     # --- Auto-Trade ---
     auto_trade_enabled: bool = Field(True, env="AUTO_TRADE_ENABLED")
+    # Fully autonomous: execute queued trades immediately instead of waiting for a
+    # Telegram/UI confirm tap. Paper only — all risk caps/filters still apply.
+    auto_trade_auto_execute: bool = Field(False, env="AUTO_TRADE_AUTO_EXECUTE")
     auto_trade_max_risk_pct: float = Field(0.02, env="AUTO_TRADE_MAX_RISK_PCT")      # 2% of equity per options trade
     auto_trade_max_risk_usd: float = Field(50000.0, env="AUTO_TRADE_MAX_RISK_USD")   # very high — % is the real cap
     auto_trade_score_threshold: float = Field(9.0, env="AUTO_TRADE_SCORE_THRESHOLD")    # raised from 8.5
