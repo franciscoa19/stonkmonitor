@@ -361,6 +361,21 @@ async def get_performance_summary():
     return await db.get_performance_summary()
 
 
+@router.get("/report/daily")
+async def get_daily_report(format: str = "json"):
+    """Daily eval-loop check-in. format=json (data) or format=html (dashboard)."""
+    from main import db, trader, settings
+    from daily_report import build_report_data, render_html
+    data = await build_report_data(db, trader, thresholds={
+        "score": settings.auto_trade_score_threshold,
+        "pattern": settings.auto_trade_pattern_threshold,
+    })
+    if format == "html":
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(render_html(data))
+    return data
+
+
 @router.get("/performance/positions")
 async def get_current_positions_with_pnl():
     """Get current Alpaca positions with real-time P&L."""

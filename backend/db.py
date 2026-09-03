@@ -12,9 +12,39 @@ Tables (one per feed + signals + pattern_hits):
 import json
 import logging
 import aiosqlite
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _et_hour(iso: Optional[str]):
+    """Hour-of-day (0-23) in US/Eastern for an ISO timestamp; None if unparseable."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_ET).hour
+    except (ValueError, TypeError):
+        return None
+
+
+def _minutes_between(start_iso: Optional[str], end_iso: Optional[str]):
+    """Minutes between two ISO timestamps; None if either is unparseable."""
+    try:
+        a = datetime.fromisoformat(str(start_iso).replace("Z", "+00:00"))
+        b = datetime.fromisoformat(str(end_iso).replace("Z", "+00:00"))
+        if a.tzinfo is None:
+            a = a.replace(tzinfo=timezone.utc)
+        if b.tzinfo is None:
+            b = b.replace(tzinfo=timezone.utc)
+        return round((b - a).total_seconds() / 60.0, 1)
+    except (ValueError, TypeError):
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -629,12 +659,22 @@ class Database:
                     params
                 )
         else:
+            # Attribution: pull the strategy that queued this order (joined on the
+            # order id the confirm flow wrote back) + the entry hour in ET.
+            strategy = ""
+            pend = await self._query(
+                "SELECT strategy FROM pending_trades WHERE alpaca_order_id=? LIMIT 1",
+                (order_id,),
+            )
+            if pend:
+                strategy = pend[0].get("strategy") or ""
             await self._exec(
                 """INSERT OR IGNORE INTO trade_performance
                    (alpaca_order_id, symbol, ticker, side, qty, filled_qty,
                     filled_avg_price, order_type, order_status, submitted_at,
-                    filled_at, signal_score, trade_type, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    filled_at, signal_score, trade_type, strategy, entry_hour_et,
+                    created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     order_id,
                     kwargs.get("symbol", ""),
@@ -649,6 +689,8 @@ class Database:
                     kwargs.get("filled_at", ""),
                     kwargs.get("signal_score"),
                     kwargs.get("trade_type", ""),
+                    strategy,
+                    _et_hour(kwargs.get("submitted_at", "")),
                     now, now,
                 ),
             )
@@ -659,18 +701,20 @@ class Database:
         now = datetime.utcnow().isoformat()
         # Find most recent entry without an exit
         rows = await self._query(
-            """SELECT id FROM trade_performance
+            """SELECT id, submitted_at FROM trade_performance
                WHERE (symbol=? OR ticker=?) AND side='buy' AND exit_reason IS NULL
                ORDER BY created_at DESC LIMIT 1""",
             (symbol, symbol),
         )
         if rows:
+            hold_minutes = _minutes_between(rows[0].get("submitted_at"), now)
             await self._exec(
                 """UPDATE trade_performance
                    SET exit_price=?, exit_reason=?, realized_pnl=?,
-                       realized_pnl_pct=?, updated_at=?
+                       realized_pnl_pct=?, hold_minutes=?, updated_at=?
                    WHERE id=?""",
-                (exit_price, exit_reason, realized_pnl, realized_pnl_pct, now, rows[0]["id"]),
+                (exit_price, exit_reason, realized_pnl, realized_pnl_pct,
+                 hold_minutes, now, rows[0]["id"]),
             )
 
     async def get_trade_performance(self, limit: int = 100, ticker: str = None,
