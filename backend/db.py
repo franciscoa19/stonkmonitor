@@ -33,6 +33,15 @@ def _et_hour(iso: Optional[str]):
         return None
 
 
+import re
+_OCC_RE = re.compile(r"^[A-Z.]{1,6}\d{6}[CP]\d{8}$")
+
+
+def _is_occ(symbol: Optional[str]) -> bool:
+    """True if `symbol` is an OCC option symbol (→ ×100 contract multiplier)."""
+    return bool(_OCC_RE.match(symbol or ""))
+
+
 def _minutes_between(start_iso: Optional[str], end_iso: Optional[str]):
     """Minutes between two ISO timestamps; None if either is unparseable."""
     try:
@@ -250,7 +259,8 @@ CREATE INDEX IF NOT EXISTS idx_ph_created   ON pattern_hits(created_at DESC);
 -- ── Daily equity snapshot (paper-trading equity curve for the eval loop) ──
 CREATE TABLE IF NOT EXISTS daily_equity (
     date          TEXT PRIMARY KEY,   -- YYYY-MM-DD (ET)
-    equity        REAL NOT NULL,      -- account equity at snapshot
+    equity        REAL NOT NULL,      -- latest account equity that day
+    open_equity   REAL,               -- first snapshot of the day (immutable; the day's open)
     cash          REAL,
     buying_power  REAL,
     open_positions INTEGER,
@@ -264,6 +274,7 @@ CREATE TABLE IF NOT EXISTS daily_equity (
 _MIGRATIONS = {
     "pending_trades":    {"strategy": "TEXT"},
     "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL"},
+    "daily_equity":      {"open_equity": "REAL"},
 }
 
 
@@ -344,15 +355,17 @@ class Database:
                                   buying_power: float = 0.0, open_positions: int = 0,
                                   realized_pnl_day: float = 0.0) -> None:
         """Upsert one day's equity snapshot (idempotent on date)."""
+        # open_equity is set on the first snapshot of the day and never updated,
+        # so it preserves the day's true open (the hourly upsert only moves `equity`).
         await self._exec(
             """INSERT INTO daily_equity
-                 (date, equity, cash, buying_power, open_positions, realized_pnl_day, created_at)
-               VALUES (?,?,?,?,?,?,?)
+                 (date, equity, open_equity, cash, buying_power, open_positions, realized_pnl_day, created_at)
+               VALUES (?,?,?,?,?,?,?,?)
                ON CONFLICT(date) DO UPDATE SET
                  equity=excluded.equity, cash=excluded.cash,
                  buying_power=excluded.buying_power, open_positions=excluded.open_positions,
                  realized_pnl_day=excluded.realized_pnl_day""",
-            (date_str, equity, cash, buying_power, open_positions, realized_pnl_day,
+            (date_str, equity, equity, cash, buying_power, open_positions, realized_pnl_day,
              datetime.utcnow().isoformat()),
         )
 
@@ -716,6 +729,54 @@ class Database:
                 (exit_price, exit_reason, realized_pnl, realized_pnl_pct,
                  hold_minutes, now, rows[0]["id"]),
             )
+
+    async def reconcile_trades(self) -> int:
+        """Book realized P&L for entries closed by *server-side* exits (bracket
+        TP/SL fills), which never call record_exit(). Pairs filled buy entries
+        with filled sell exits per symbol and writes the result onto the buy
+        (entry) row so it carries the strategy attribution. Options use a ×100
+        multiplier. Idempotent — recomputes the same values each run.
+
+        Returns the number of entry rows updated. Note: assumes one open entry
+        per symbol (re-entries would need lot matching — future work).
+        """
+        rows = await self._query(
+            """SELECT symbol,
+                 SUM(CASE WHEN side='buy'  THEN filled_qty ELSE 0 END) AS buy_qty,
+                 SUM(CASE WHEN side='sell' THEN filled_qty ELSE 0 END) AS sell_qty,
+                 SUM(CASE WHEN side='buy'  THEN filled_qty*filled_avg_price ELSE 0 END) AS buy_val,
+                 SUM(CASE WHEN side='sell' THEN filled_qty*filled_avg_price ELSE 0 END) AS sell_val,
+                 MIN(CASE WHEN side='buy'  THEN filled_at END) AS entry_at,
+                 MAX(CASE WHEN side='sell' THEN filled_at END) AS exit_at
+               FROM trade_performance
+               WHERE order_status='filled' AND filled_qty > 0
+               GROUP BY symbol
+               HAVING sell_qty > 0 AND buy_qty > 0""",
+        )
+        updated = 0
+        now = datetime.utcnow().isoformat()
+        for r in rows:
+            buy_qty, sell_qty = float(r["buy_qty"] or 0), float(r["sell_qty"] or 0)
+            if buy_qty <= 0 or sell_qty <= 0:
+                continue
+            avg_entry = float(r["buy_val"]) / buy_qty
+            avg_exit = float(r["sell_val"]) / sell_qty
+            closed_qty = min(buy_qty, sell_qty)     # realized only on the portion sold
+            mult = 100 if _is_occ(r["symbol"]) else 1
+            pnl = round((avg_exit - avg_entry) * closed_qty * mult, 2)
+            pnl_pct = round((avg_exit / avg_entry - 1) * 100, 2) if avg_entry else 0.0
+            reason = "closed_win" if pnl >= 0 else "closed_loss"
+            hold = _minutes_between(r["entry_at"], r["exit_at"])
+            await self._exec(
+                """UPDATE trade_performance
+                   SET realized_pnl=?, realized_pnl_pct=?, exit_price=?,
+                       exit_reason=COALESCE(NULLIF(exit_reason,''), ?),
+                       hold_minutes=COALESCE(hold_minutes, ?), updated_at=?
+                   WHERE symbol=? AND side='buy'""",
+                (pnl, pnl_pct, round(avg_exit, 4), reason, hold, now, r["symbol"]),
+            )
+            updated += 1
+        return updated
 
     async def get_trade_performance(self, limit: int = 100, ticker: str = None,
                                      status: str = None) -> list[dict]:

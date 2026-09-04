@@ -35,7 +35,12 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
 
     # ── Equity curve ─────────────────────────────────────────────────────
     curve = await db.get_daily_equity(90)
-    start_equity = float(curve[0]["equity"]) if curve else (equity or 50000.0)
+    # Start = the earliest day's IMMUTABLE open (open_equity), not its latest
+    # equity (which the hourly upsert moves), so day-1 P&L isn't zeroed out.
+    if curve:
+        start_equity = float(curve[0].get("open_equity") or curve[0]["equity"])
+    else:
+        start_equity = equity or 50000.0
     total_pnl = equity - start_equity
     total_pnl_pct = (total_pnl / start_equity * 100.0) if start_equity else 0.0
     days_running = len(curve)

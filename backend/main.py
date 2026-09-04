@@ -992,6 +992,10 @@ async def performance_sync_loop():
                 )
             if orders:
                 logger.debug(f"Performance sync: upserted {len(orders)} orders")
+            # Book realized P&L for bracket/server-side exits that never hit record_exit.
+            reconciled = await db.reconcile_trades()
+            if reconciled:
+                logger.debug(f"Performance sync: reconciled {reconciled} closed trades")
         except Exception as e:
             logger.error(f"Performance sync error: {e}")
 
