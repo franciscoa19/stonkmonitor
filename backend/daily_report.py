@@ -169,6 +169,45 @@ def _iso_days_ago(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
+async def build_watchlist_review(db, watchlist, lookback_days: int = 14,
+                                 add_threshold: int = 8) -> list[str]:
+    """Weekly, data-driven watchlist proposals (propose-and-approve — never auto).
+
+    ADD:    tickers generating lots of signals that aren't on the watchlist
+            (you're clearly getting signal there → scan it for IV/earnings too).
+    REMOVE: watchlist names with zero signals AND zero trades over the window
+            (dead weight / noise / budget).
+    """
+    props: list[str] = []
+    wl = {t.upper() for t in watchlist}
+    since = _iso_days_ago(lookback_days)
+
+    top = await db._query(
+        "SELECT ticker, COUNT(*) n FROM signals WHERE created_at >= ? "
+        "GROUP BY ticker ORDER BY n DESC LIMIT 30", (since,))
+    adds = [r for r in top if (r["ticker"] or "").upper() not in wl and r["n"] >= add_threshold]
+    for r in adds[:5]:
+        props.append(f"Watchlist ADD: {r['ticker']} — {r['n']} signals in {lookback_days}d, not watchlisted.")
+
+    sig_counts = {(r["ticker"] or "").upper(): r["n"] for r in await db._query(
+        "SELECT ticker, COUNT(*) n FROM signals WHERE created_at >= ? GROUP BY ticker", (since,))}
+    trade_counts = {(r["ticker"] or "").upper(): r["n"] for r in await db._query(
+        "SELECT ticker, COUNT(*) n FROM trade_performance WHERE created_at >= ? GROUP BY ticker", (since,))}
+    # Only flag removals for names that have had a FULL window on the watchlist —
+    # a freshly-added ticker hasn't had a fair chance to produce signals yet.
+    added = {(r["ticker"] or "").upper(): (r.get("added_at") or "")
+             for r in await db._query("SELECT ticker, added_at FROM watchlist")}
+    dead = [t for t in sorted(wl)
+            if sig_counts.get(t, 0) == 0 and trade_counts.get(t, 0) == 0
+            and added.get(t, "") < since]     # added before the window started
+    for t in dead[:8]:
+        props.append(f"Watchlist REMOVE?: {t} — 0 signals & 0 trades in {lookback_days}d.")
+
+    if not props:
+        props.append(f"Watchlist review: no changes — all {len(wl)} names active; no strong un-watchlisted names.")
+    return props
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  HTML render
 # ══════════════════════════════════════════════════════════════════════════

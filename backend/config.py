@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # Fully autonomous: execute queued trades immediately instead of waiting for a
     # Telegram/UI confirm tap. Paper only — all risk caps/filters still apply.
     auto_trade_auto_execute: bool = Field(False, env="AUTO_TRADE_AUTO_EXECUTE")
+
+    # --- Daily report scheduler ---
+    report_enabled: bool = Field(True, env="REPORT_ENABLED")
+    report_hour_et: int = Field(8, env="REPORT_HOUR_ET")   # weekday hour (ET) for the daily check-in
     auto_trade_max_risk_pct: float = Field(0.02, env="AUTO_TRADE_MAX_RISK_PCT")      # 2% of equity per options trade
     auto_trade_max_risk_usd: float = Field(50000.0, env="AUTO_TRADE_MAX_RISK_USD")   # very high — % is the real cap
     auto_trade_score_threshold: float = Field(9.0, env="AUTO_TRADE_SCORE_THRESHOLD")    # raised from 8.5

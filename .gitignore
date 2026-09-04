@@ -52,3 +52,6 @@ desktop.ini
 
 # ── Logs ─────────────────────────────────────────────────────────────
 *.log
+
+# Generated daily report snapshots
+backend/reports/

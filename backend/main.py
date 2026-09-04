@@ -1140,6 +1140,66 @@ async def uw_budget_monitor_loop():
         await asyncio.sleep(600)  # 10 min
 
 
+async def generate_daily_report(is_weekly: bool = False) -> dict:
+    """Build the daily check-in, persist it to backend/reports/, and Pushover
+    a one-line summary. Autonomous — no Claude needed. Returns the report data
+    (a scheduled Claude routine reads latest.json to republish the artifact +
+    surface proposals for approval)."""
+    from pathlib import Path
+    import json as _json
+    from daily_report import build_report_data, render_html, build_watchlist_review
+    from api.routes import _watchlist
+
+    data = await build_report_data(db, trader, thresholds={
+        "score": settings.auto_trade_score_threshold,
+        "pattern": settings.auto_trade_pattern_threshold,
+    })
+    if is_weekly:
+        data["proposals"] = (await build_watchlist_review(db, list(_watchlist))) + data["proposals"]
+
+    reports_dir = Path(__file__).parent / "reports"
+    reports_dir.mkdir(exist_ok=True)
+    day = data["generated"][:10]
+    html = render_html(data)
+    (reports_dir / f"daily_{day}.html").write_text(html)
+    (reports_dir / "latest.html").write_text(html)
+    (reports_dir / "latest.json").write_text(_json.dumps(data, default=str, indent=2))
+
+    a, m = data["account"], data["metrics"]
+    summary = (f"Equity ${a['equity']:,.0f} ({a['total_pnl_pct']:+.2f}%) | "
+               f"{m['closed_trades']} closed {m['win_rate']:.0f}%WR | "
+               f"{a['open_positions']} open | {len(data['proposals'])} proposal(s)")
+    try:
+        if pushover.enabled:
+            await pushover.send_alert(
+                f"StonkMonitor {'weekly' if is_weekly else 'daily'} check-in", summary)
+    except Exception as e:
+        logger.warning(f"Report Pushover send failed: {e}")
+    logger.info(f"Daily report generated ({day}): {summary}")
+    return data
+
+
+async def report_scheduler_loop():
+    """Fire the daily check-in once per weekday at REPORT_HOUR_ET (and the weekly
+    watchlist review on Mondays). Checks every 10 min; dedups on the day's report
+    file so a restart never double-fires."""
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    from pathlib import Path
+    _ET = ZoneInfo("America/New_York")
+    await asyncio.sleep(45)
+    while True:
+        try:
+            now = datetime.now(_ET)
+            done = (Path(__file__).parent / "reports" / f"daily_{now:%Y-%m-%d}.html").exists()
+            if (settings.report_enabled and now.weekday() < 5
+                    and now.hour >= settings.report_hour_et and not done):
+                await generate_daily_report(is_weekly=(now.weekday() == 0))
+        except Exception as e:
+            logger.error(f"Report scheduler error: {e}")
+        await asyncio.sleep(600)  # re-check every 10 min
+
+
 # ------------------------------------------------------------------ #
 #  App Lifecycle                                                       #
 # ------------------------------------------------------------------ #
@@ -1182,6 +1242,7 @@ async def lifespan(app: FastAPI):
     alpaca_monitor_task = asyncio.create_task(alpaca_position_monitor())
     perf_sync_task = asyncio.create_task(performance_sync_loop())
     daily_equity_task = asyncio.create_task(daily_equity_loop())
+    report_task = asyncio.create_task(report_scheduler_loop())
 
     # Kalshi — login + start scan loop if configured
     kalshi_task = None

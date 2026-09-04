@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 
 from db import Database, _is_occ, _et_hour, _minutes_between
-from daily_report import build_report_data
+from daily_report import build_report_data, build_watchlist_review
 
 URI = "URI260918C01050000"      # OCC option symbols (×100 multiplier)
 DXCM = "DXCM260918P00090000"
@@ -209,3 +209,30 @@ async def test_build_report_metrics(db):
     assert "golden_sweep" in strats and "triple_confluence" in strats
     assert strats["golden_sweep"]["pnl"] == 200.0
     assert strats["triple_confluence"]["pnl"] == -300.0
+
+
+# ── Weekly watchlist review ─────────────────────────────────────────────
+async def test_watchlist_review_add_and_remove(db):
+    now = "2026-09-03T14:30:00.000000"
+    # TSM (not watchlisted) generates lots of signals → should be proposed as ADD
+    for i in range(10):
+        await db._exec(
+            "INSERT INTO signals (type,ticker,score,side,title,description,raw,created_at) "
+            "VALUES ('sweep','TSM',9.0,'bullish','t','d','{}',?)", (now,))
+    # SPY watchlisted + has signals (active) → NOT removed; GLD watchlisted + silent → REMOVE?
+    await db._exec(
+        "INSERT INTO signals (type,ticker,score,side,title,description,raw,created_at) "
+        "VALUES ('iv_high','SPY',8.0,'neutral','t','d','{}',?)", (now,))
+
+    props = await build_watchlist_review(db, ["SPY", "GLD"], add_threshold=8)
+    text = " | ".join(props)
+    assert "ADD: TSM" in text
+    assert "REMOVE?: GLD" in text
+    assert "SPY" not in text          # active → not flagged for removal
+
+
+async def test_watchlist_review_skips_recently_added(db):
+    # A silent name added TODAY (within the window) must NOT be flagged for removal.
+    await db.add_watchlist("GLD")     # added_at = now
+    props = await build_watchlist_review(db, ["GLD"], lookback_days=14)
+    assert not any("REMOVE?: GLD" in p for p in props)

@@ -376,6 +376,19 @@ async def get_daily_report(format: str = "json"):
     return data
 
 
+@router.post("/report/generate")
+async def generate_report_now(weekly: bool = False):
+    """Force-generate + persist the daily check-in now (backend/reports/) and
+    Pushover the summary. Used by the scheduled delivery routine and for testing."""
+    from main import generate_daily_report
+    data = await generate_daily_report(is_weekly=weekly)
+    return {"ok": True, "generated": data["generated"],
+            "summary": {"equity": data["account"]["equity"],
+                        "pnl_pct": data["account"]["total_pnl_pct"],
+                        "closed": data["metrics"]["closed_trades"],
+                        "proposals": data["proposals"]}}
+
+
 @router.get("/performance/positions")
 async def get_current_positions_with_pnl():
     """Get current Alpaca positions with real-time P&L."""
