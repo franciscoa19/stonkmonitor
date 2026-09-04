@@ -238,6 +238,20 @@ async def test_watchlist_review_skips_recently_added(db):
     assert not any("REMOVE?: GLD" in p for p in props)
 
 
+# ── Account-fetch failure detection (guards the $0/-100% bogus report) ──
+async def test_report_flags_account_fetch_failure(db):
+    class FailingTrader:
+        def get_account(self):
+            raise RuntimeError("unauthorized")
+        def get_positions(self):
+            return []
+    await db.record_daily_equity("2026-09-03", 50000.0)
+    d = await build_report_data(db, FailingTrader())
+    # These are exactly what generate_daily_report checks to skip a bogus report.
+    assert d["account"]["equity"] == 0
+    assert d["account"]["error"]
+
+
 # ── Durable history export (git/backup) ─────────────────────────────────
 async def test_export_history(db, tmp_path):
     await db.record_daily_equity("2026-09-02", 50000.0)

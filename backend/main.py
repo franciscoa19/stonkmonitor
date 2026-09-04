@@ -1180,6 +1180,17 @@ async def generate_daily_report(is_weekly: bool = False) -> dict:
         "score": settings.auto_trade_score_threshold,
         "pattern": settings.auto_trade_pattern_threshold,
     })
+
+    # Guard: a transient Alpaca get_account() failure returns equity 0, which
+    # would produce a bogus "$0 / -100%" report — and push/email it. Bail out
+    # (keeping the last good report) so the scheduler just retries next cycle.
+    acct = data["account"]
+    if acct.get("error") or not acct.get("equity"):
+        logger.warning(
+            f"Report skipped — account fetch failed (equity={acct.get('equity')}, "
+            f"error={acct.get('error')}). Keeping last good report; will retry.")
+        return data
+
     if is_weekly:
         data["proposals"] = (await build_watchlist_review(db, list(_watchlist))) + data["proposals"]
 
