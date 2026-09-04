@@ -31,7 +31,11 @@ class PushoverNotifier:
     def __init__(self, api_token: str, user_key: str):
         self.api_token = api_token
         self.user_key = user_key
-        self.enabled = bool(api_token and user_key)
+        # Treat unfilled .env placeholders ("your_...") as disabled, so we don't
+        # spam invalid-token errors when Pushover was never configured.
+        self.enabled = bool(api_token and user_key
+                            and not api_token.startswith("your_")
+                            and not user_key.startswith("your_"))
 
     def _get_priority(self, score: float) -> int:
         if score >= 8:
