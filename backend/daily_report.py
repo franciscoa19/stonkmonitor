@@ -169,6 +169,40 @@ def _iso_days_ago(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
+async def export_history(db, reports_dir) -> dict:
+    """Write the durable, diffable historical record for git/backup:
+      - history.jsonl : one row per day (the equity curve + open/cash/positions)
+      - trades.csv    : every closed (realized) trade, fully attributed
+    These are small, versionable, and let the account be reconstructed off-machine.
+    Returns the file paths written.
+    """
+    import json as _json
+    import csv as _csv
+    from pathlib import Path
+    rd = Path(reports_dir)
+    rd.mkdir(exist_ok=True)
+
+    curve = await db.get_daily_equity(3650)
+    hist_path = rd / "history.jsonl"
+    with open(hist_path, "w") as f:
+        for r in curve:
+            f.write(_json.dumps({k: r[k] for k in r.keys()}, default=str) + "\n")
+
+    closed = await db._query(
+        "SELECT * FROM trade_performance WHERE realized_pnl IS NOT NULL ORDER BY updated_at")
+    cols = ["ticker", "symbol", "strategy", "trade_type", "side", "qty",
+            "filled_avg_price", "exit_price", "realized_pnl", "realized_pnl_pct",
+            "exit_reason", "entry_hour_et", "hold_minutes", "submitted_at", "updated_at"]
+    trades_path = rd / "trades.csv"
+    with open(trades_path, "w", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(cols)
+        for t in closed:
+            w.writerow([t.get(c) for c in cols])
+
+    return {"history": str(hist_path), "trades": str(trades_path), "days": len(curve), "trades_n": len(closed)}
+
+
 async def build_watchlist_review(db, watchlist, lookback_days: int = 14,
                                  add_threshold: int = 8) -> list[str]:
     """Weekly, data-driven watchlist proposals (propose-and-approve — never auto).

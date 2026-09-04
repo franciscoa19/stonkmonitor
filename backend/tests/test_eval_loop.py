@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 
 from db import Database, _is_occ, _et_hour, _minutes_between
-from daily_report import build_report_data, build_watchlist_review
+from daily_report import build_report_data, build_watchlist_review, export_history
 
 URI = "URI260918C01050000"      # OCC option symbols (×100 multiplier)
 DXCM = "DXCM260918P00090000"
@@ -236,3 +236,24 @@ async def test_watchlist_review_skips_recently_added(db):
     await db.add_watchlist("GLD")     # added_at = now
     props = await build_watchlist_review(db, ["GLD"], lookback_days=14)
     assert not any("REMOVE?: GLD" in p for p in props)
+
+
+# ── Durable history export (git/backup) ─────────────────────────────────
+async def test_export_history(db, tmp_path):
+    await db.record_daily_equity("2026-09-02", 50000.0)
+    await db.record_daily_equity("2026-09-03", 49414.85)
+    await seed_entry(db, "e1", URI, "URI", 8.50, 1, strategy="triple_confluence")
+    await seed_exit(db, "x1", URI, "URI", 5.50, 1)
+    await db.reconcile_trades()
+
+    res = await export_history(db, tmp_path)
+    assert res["days"] == 2 and res["trades_n"] == 1
+    # history.jsonl: one JSON row per day, open_equity preserved
+    lines = (tmp_path / "history.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 2
+    import json
+    assert json.loads(lines[0])["open_equity"] == 50000.0
+    # trades.csv: header + one closed trade, attributed with the correct P&L
+    csv_rows = (tmp_path / "trades.csv").read_text().strip().splitlines()
+    assert len(csv_rows) == 2
+    assert "triple_confluence" in csv_rows[1] and "-300" in csv_rows[1]

@@ -1140,6 +1140,32 @@ async def uw_budget_monitor_loop():
         await asyncio.sleep(600)  # 10 min
 
 
+def _git_push_eval_data(day: str):
+    """Commit + push the eval-data exports to GitHub (durable backup + the bridge
+    a cloud delivery routine reads from). Stages only the data files, so it never
+    touches unrelated working-tree changes. Best-effort — logs and moves on."""
+    import subprocess
+    from pathlib import Path
+    repo = Path(__file__).parent.parent
+    files = ["backend/reports/history.jsonl", "backend/reports/trades.csv",
+             "backend/reports/latest.json"]
+    try:
+        subprocess.run(["git", "add", *files], cwd=repo, check=True, capture_output=True, timeout=30)
+        r = subprocess.run(["git", "commit", "-m", f"eval-data: daily report {day}"],
+                           cwd=repo, capture_output=True, timeout=30)
+        if r.returncode != 0:
+            if b"nothing to commit" in r.stdout + r.stderr:
+                return
+            raise RuntimeError((r.stderr or r.stdout).decode()[:200])
+        subprocess.run(["git", "pull", "--rebase", "origin", "main"],
+                       cwd=repo, check=True, capture_output=True, timeout=60)
+        subprocess.run(["git", "push", "origin", "main"],
+                       cwd=repo, check=True, capture_output=True, timeout=60)
+        logger.info(f"eval-data pushed to GitHub ({day})")
+    except Exception as e:
+        logger.warning(f"eval-data git push failed: {e}")
+
+
 async def generate_daily_report(is_weekly: bool = False) -> dict:
     """Build the daily check-in, persist it to backend/reports/, and Pushover
     a one-line summary. Autonomous — no Claude needed. Returns the report data
@@ -1147,7 +1173,7 @@ async def generate_daily_report(is_weekly: bool = False) -> dict:
     surface proposals for approval)."""
     from pathlib import Path
     import json as _json
-    from daily_report import build_report_data, render_html, build_watchlist_review
+    from daily_report import build_report_data, render_html, build_watchlist_review, export_history
     from api.routes import _watchlist
 
     data = await build_report_data(db, trader, thresholds={
@@ -1164,6 +1190,11 @@ async def generate_daily_report(is_weekly: bool = False) -> dict:
     (reports_dir / f"daily_{day}.html").write_text(html)
     (reports_dir / "latest.html").write_text(html)
     (reports_dir / "latest.json").write_text(_json.dumps(data, default=str, indent=2))
+
+    # Durable history export (history.jsonl + trades.csv) → committed to git.
+    await export_history(db, reports_dir)
+    if settings.report_git_push:
+        _git_push_eval_data(day)
 
     a, m = data["account"], data["metrics"]
     summary = (f"Equity ${a['equity']:,.0f} ({a['total_pnl_pct']:+.2f}%) | "

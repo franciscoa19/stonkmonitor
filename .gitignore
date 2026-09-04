@@ -53,5 +53,6 @@ desktop.ini
 # ── Logs ─────────────────────────────────────────────────────────────
 *.log
 
-# Generated daily report snapshots
-backend/reports/
+# Generated daily report HTML (regenerable); the data exports below are tracked
+# as the durable history/backup: history.jsonl, trades.csv, latest.json.
+backend/reports/*.html
