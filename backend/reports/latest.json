@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-04T02:43:07.304267+00:00",
+  "generated": "2026-09-04T02:59:56.745992+00:00",
   "account": {
     "equity": 49414.85,
     "cash": 49094.85,
@@ -53,17 +53,6 @@
   ],
   "recent": [
     {
-      "ticker": "URI",
-      "symbol": "URI260918C01050000",
-      "strategy": "triple_confluence",
-      "trade_type": "option",
-      "pnl": -300.0,
-      "pnl_pct": -35.3,
-      "exit_reason": "closed_loss",
-      "hold_min": 120.1,
-      "hour": 13
-    },
-    {
       "ticker": "DXCM",
       "symbol": "DXCM260918P00090000",
       "strategy": "triple_confluence",
@@ -72,6 +61,17 @@
       "pnl_pct": -37.2,
       "exit_reason": "closed_loss",
       "hold_min": 107.4,
+      "hour": 13
+    },
+    {
+      "ticker": "URI",
+      "symbol": "URI260918C01050000",
+      "strategy": "triple_confluence",
+      "trade_type": "option",
+      "pnl": -300.0,
+      "pnl_pct": -35.3,
+      "exit_reason": "closed_loss",
+      "hold_min": 120.1,
       "hour": 13
     }
   ],
