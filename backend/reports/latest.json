@@ -1,12 +1,12 @@
 {
-  "generated": "2026-09-04T03:17:18.187683+00:00",
+  "generated": "2026-09-04T03:34:28.712616+00:00",
   "account": {
-    "equity": 0.0,
-    "cash": 0.0,
-    "buying_power": 0.0,
+    "equity": 49414.85,
+    "cash": 49094.85,
+    "buying_power": 196379.4,
     "start_equity": 50000.0,
-    "total_pnl": -50000.0,
-    "total_pnl_pct": -100.0,
+    "total_pnl": -585.1500000000015,
+    "total_pnl_pct": -1.170300000000003,
     "open_positions": 1,
     "days_running": 1,
     "error": null
