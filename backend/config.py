@@ -142,6 +142,10 @@ class Settings(BaseSettings):
     congress_max_age_days: int = Field(10, env="CONGRESS_MAX_AGE_DAYS")
     insider_max_age_days: int = Field(5, env="INSIDER_MAX_AGE_DAYS")
 
+    # Auto-add a ticker to the IV/earnings watchlist when options flow appears on
+    # it AND its market cap ≥ this many dollars (0 = off). Big + liquid coverage.
+    watchlist_auto_add_min_mktcap: float = Field(0, env="WATCHLIST_AUTO_ADD_MIN_MKTCAP")
+
     # --- Market Open/Close Noise Filter ---
     # Extra score required above base thresholds during noisy sub-phases.
     # Set to 0 to disable a particular bump.

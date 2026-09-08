@@ -251,6 +251,33 @@ async def handle_signal(signal):
     )
 
 
+async def _maybe_auto_watchlist(flow: dict):
+    """Auto-add big, liquid names to the watchlist when we see options flow on
+    them. Gated on market cap (WATCHLIST_AUTO_ADD_MIN_MKTCAP; 0 = off). The name
+    is generating options flow (so it's liquid) and clears the size bar — exactly
+    the universe worth IV/earnings-scanning. Persisted; the weekly review prunes
+    any that go quiet. Idempotent (skips names already watchlisted)."""
+    threshold = settings.watchlist_auto_add_min_mktcap
+    if not threshold:
+        return
+    ticker = (flow.get("ticker") or flow.get("underlying_symbol") or "").upper()
+    if not ticker:
+        return
+    try:
+        mktcap = float(flow.get("marketcap") or 0)
+    except (TypeError, ValueError):
+        return
+    if mktcap < threshold:
+        return
+    from api.routes import _watchlist
+    if ticker in _watchlist:
+        return
+    _watchlist.append(ticker)
+    await db.add_watchlist(ticker)
+    logger.info(f"Watchlist auto-add: {ticker} (mktcap ${mktcap/1e9:.0f}B ≥ "
+                f"${threshold/1e9:.0f}B threshold)")
+
+
 async def process_uw_event(raw: dict):
     """Dispatch a raw UW WebSocket message to the signal engine."""
     try:
@@ -263,6 +290,7 @@ async def process_uw_event(raw: dict):
         # Persist every event to its dedicated table
         if channel == "options-flow":
             await db.save_options_flow(data)
+            await _maybe_auto_watchlist(data)   # auto-cover big, liquid names
         elif channel == "darkpool":
             await db.save_dark_pool(data)
         elif channel == "insider-trades":
