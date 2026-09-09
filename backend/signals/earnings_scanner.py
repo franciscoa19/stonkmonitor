@@ -25,6 +25,12 @@ from scipy.interpolate import interp1d
 
 logger = logging.getLogger(__name__)
 
+# yfinance logs routine "no earnings dates / no fundamentals" conditions at
+# ERROR (e.g. for ETFs like SPY/QQQ, which legitimately have no earnings). Our
+# code handles those by returning None, so silence yfinance's own logger to
+# keep the backend log clean — the whole point of the UW-optional cleanup.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
 
 # ── Core quant functions (ported from calculator.py) ─────────────────────────
 
