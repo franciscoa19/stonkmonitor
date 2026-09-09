@@ -82,6 +82,12 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
            FROM trade_performance WHERE realized_pnl IS NOT NULL
            GROUP BY 1 ORDER BY pnl DESC"""
     )
+    # ── IV/RV edge validation (hypothetical short-straddle hit-rate) ─────
+    try:
+        iv_rv = await db.get_iv_eval_summary()
+    except Exception:
+        iv_rv = {"resolved": 0, "wins": 0, "win_rate": 0.0, "avg_edge_pct": 0.0, "open": 0}
+
     # ── Attribution: by entry hour (ET) ──────────────────────────────────
     by_hour = await db._query(
         """SELECT entry_hour_et h, COUNT(*) n, ROUND(SUM(realized_pnl),2) pnl
@@ -156,6 +162,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
                     "trades_7d": trades_7d, "trades_per_day": trades_per_day},
         "activity": {"tag": activity[0], "note": activity[1]},
         "equity_curve": [{"date": r["date"], "equity": float(r["equity"])} for r in curve],
+        "iv_rv": iv_rv,
         "by_strategy": [dict(r) for r in by_strategy],
         "by_hour": [dict(r) for r in by_hour],
         "recent": recent,
@@ -248,6 +255,7 @@ async def build_watchlist_review(db, watchlist, lookback_days: int = 14,
 def render_html(d: dict) -> str:
     a, m = d["account"], d["metrics"]
     act = d["activity"]
+    iv = d.get("iv_rv", {"resolved": 0, "wins": 0, "win_rate": 0.0, "avg_edge_pct": 0.0, "open": 0})
     e = _html.escape
     pnl_cls = "up" if a["total_pnl"] >= 0 else "down"
     pnl_sign = "+" if a["total_pnl"] >= 0 else ""
@@ -329,6 +337,17 @@ def render_html(d: dict) -> str:
   </div>
 
   <div class="card"><h2>Activity read</h2><div style="font-size:14px">{e(act['note'])}</div></div>
+
+  <div class="card">
+    <h2>IV/RV edge validation <span class="pill mut" style="font-size:11px">hypothetical short straddle · not yet traded</span></h2>
+    <div style="display:flex;gap:26px;flex-wrap:wrap;font-family:var(--mono)">
+      <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Resolved</div><div style="font-size:22px;font-weight:700">{iv['resolved']}</div></div>
+      <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Seller win rate</div><div style="font-size:22px;font-weight:700">{(str(round(iv['win_rate']))+'%') if iv['resolved'] else '—'}</div></div>
+      <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Avg edge</div><div style="font-size:22px;font-weight:700" class="{ 'up' if (iv['avg_edge_pct'] or 0)>=0 else 'down'}">{(f"{iv['avg_edge_pct']:+.1f}%") if iv['resolved'] else '—'}</div></div>
+      <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Open</div><div style="font-size:22px;font-weight:700">{iv['open']}</div></div>
+    </div>
+    <div class="mut" style="font-size:12px;margin-top:10px">Testing whether IV-rich setups over-price the move: realized &lt; implied ⇒ a premium seller wins. Validating the edge before any execution.</div>
+  </div>
 
   <div class="card">
     <h2>Equity curve</h2>

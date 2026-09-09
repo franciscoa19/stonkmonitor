@@ -256,6 +256,30 @@ CREATE INDEX IF NOT EXISTS idx_ph_ticker    ON pattern_hits(ticker);
 CREATE INDEX IF NOT EXISTS idx_ph_pattern   ON pattern_hits(pattern_name);
 CREATE INDEX IF NOT EXISTS idx_ph_created   ON pattern_hits(created_at DESC);
 
+-- ── IV/RV edge validation (hypothetical short-straddle outcomes) ──────────
+-- When an earnings/IV-rich setup fires we log the IMPLIED move; after the event
+-- we compare it to the REALIZED move. A premium seller wins when realized <
+-- implied. This validates the IV/RV edge on paper before we build execution.
+CREATE TABLE IF NOT EXISTS iv_rv_evals (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker            TEXT NOT NULL,
+    signal_date       TEXT NOT NULL,          -- date the setup fired
+    recommendation    TEXT,                   -- SELL_PREMIUM | CONSIDER
+    iv30_rv30         REAL,                   -- IV/RV ratio at signal
+    implied_move_pct  REAL,                   -- expected (straddle) move at signal
+    entry_price       REAL,
+    resolve_after     TEXT,                   -- date to measure the realized move
+    resolved          INTEGER DEFAULT 0,
+    exit_price        REAL,
+    realized_move_pct REAL,                   -- abs % move entry->exit
+    hypo_win          INTEGER,                -- 1 if realized < implied (seller wins)
+    hypo_edge_pct     REAL,                   -- implied - realized (positive = seller edge)
+    created_at        TEXT NOT NULL,
+    resolved_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ive_ticker  ON iv_rv_evals(ticker);
+CREATE INDEX IF NOT EXISTS idx_ive_open    ON iv_rv_evals(resolved, resolve_after);
+
 -- ── Daily equity snapshot (paper-trading equity curve for the eval loop) ──
 CREATE TABLE IF NOT EXISTS daily_equity (
     date          TEXT PRIMARY KEY,   -- YYYY-MM-DD (ET)
@@ -374,6 +398,50 @@ class Database:
             "SELECT * FROM daily_equity ORDER BY date DESC LIMIT ?", (limit,)
         )
         return list(reversed(rows))
+
+    # ── IV/RV edge validation ────────────────────────────────────────────
+    async def record_iv_eval(self, ticker: str, recommendation: str, iv30_rv30: float,
+                             implied_move_pct: float, entry_price: float,
+                             resolve_after: str) -> Optional[int]:
+        """Log a new IV/RV setup to validate. Deduped: skips if this ticker
+        already has an unresolved eval open (one event at a time)."""
+        open_ = await self._query(
+            "SELECT id FROM iv_rv_evals WHERE ticker=? AND resolved=0 LIMIT 1", (ticker,))
+        if open_:
+            return None
+        now = datetime.utcnow().isoformat()
+        await self._exec(
+            """INSERT INTO iv_rv_evals
+                 (ticker, signal_date, recommendation, iv30_rv30, implied_move_pct,
+                  entry_price, resolve_after, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (ticker, now[:10], recommendation, iv30_rv30, implied_move_pct,
+             entry_price, resolve_after, now))
+        return 1
+
+    async def get_due_iv_evals(self, today: str) -> list[dict]:
+        return await self._query(
+            "SELECT * FROM iv_rv_evals WHERE resolved=0 AND resolve_after <= ?", (today,))
+
+    async def resolve_iv_eval(self, eval_id: int, exit_price: float,
+                              realized_move_pct: float, implied_move_pct: float) -> None:
+        hypo_win = 1 if realized_move_pct < implied_move_pct else 0
+        edge = round(implied_move_pct - realized_move_pct, 2)
+        await self._exec(
+            """UPDATE iv_rv_evals SET resolved=1, exit_price=?, realized_move_pct=?,
+                 hypo_win=?, hypo_edge_pct=?, resolved_at=? WHERE id=?""",
+            (round(exit_price, 2), round(realized_move_pct, 2), hypo_win, edge,
+             datetime.utcnow().isoformat(), eval_id))
+
+    async def get_iv_eval_summary(self) -> dict:
+        rows = await self._query("SELECT * FROM iv_rv_evals WHERE resolved=1")
+        n = len(rows)
+        wins = sum(1 for r in rows if r["hypo_win"])
+        avg_edge = round(sum(r["hypo_edge_pct"] or 0 for r in rows) / n, 2) if n else 0.0
+        open_n = (await self._scalar("SELECT COUNT(*) AS n FROM iv_rv_evals WHERE resolved=0")).get("n", 0)
+        return {"resolved": n, "wins": wins,
+                "win_rate": round(wins / n * 100, 1) if n else 0.0,
+                "avg_edge_pct": avg_edge, "open": open_n}
 
     # ── Write: Options Flow ──────────────────────────────────────────────
     async def save_options_flow(self, event: dict):

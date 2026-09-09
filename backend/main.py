@@ -1058,6 +1058,23 @@ async def daily_equity_loop():
                 )
         except Exception as e:
             logger.warning(f"Daily equity snapshot error: {e}")
+
+        # Resolve any IV/RV evals whose window has elapsed: measure the realized
+        # move vs the implied move logged at signal time (hypothetical straddle).
+        try:
+            today = datetime.now(_ET).strftime("%Y-%m-%d")
+            for ev in await db.get_due_iv_evals(today):
+                q = feed.get_latest_quote(ev["ticker"])
+                bid, ask = float(q.get("bid") or 0), float(q.get("ask") or 0)
+                px = (bid + ask) / 2 if (bid and ask) else (bid or ask)
+                if px and ev["entry_price"]:
+                    realized = abs(px / ev["entry_price"] - 1) * 100
+                    await db.resolve_iv_eval(ev["id"], px, realized, ev["implied_move_pct"] or 0)
+                    logger.info(f"IV/RV eval resolved: {ev['ticker']} realized "
+                                f"±{realized:.1f}% vs implied ±{ev['implied_move_pct']:.1f}%")
+        except Exception as e:
+            logger.warning(f"IV eval resolve error: {e}")
+
         await asyncio.sleep(3600)  # hourly
 
 
@@ -1113,6 +1130,20 @@ async def iv_scanner_loop():
                             f"Earnings setup {ticker}: {setup.recommendation} "
                             f"IV/RV={setup.iv30_rv30:.2f}x score={signal.score}"
                         )
+                        # Log for IV/RV edge validation (hypothetical short straddle):
+                        # record the implied move now; resolve vs realized in ~a week.
+                        try:
+                            from datetime import datetime as _dt, timedelta as _td
+                            imp = float(str(setup.expected_move or "0").rstrip("%") or 0)
+                            resolve_after = (_dt.utcnow() + _td(days=7)).date().isoformat()
+                            if await db.record_iv_eval(
+                                ticker=ticker, recommendation=setup.recommendation,
+                                iv30_rv30=setup.iv30_rv30, implied_move_pct=imp,
+                                entry_price=setup.price, resolve_after=resolve_after):
+                                logger.info(f"IV/RV eval logged: {ticker} implied ±{imp:.1f}% "
+                                            f"@ ${setup.price:.2f}")
+                        except Exception as e:
+                            logger.debug(f"IV eval record skipped for {ticker}: {e}")
 
             except Exception as e:
                 logger.warning(f"IV scanner error for {ticker}: {e}")

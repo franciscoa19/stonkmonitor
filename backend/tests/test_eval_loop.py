@@ -238,6 +238,30 @@ async def test_watchlist_review_skips_recently_added(db):
     assert not any("REMOVE?: GLD" in p for p in props)
 
 
+# ── IV/RV edge validation (hypothetical short-straddle tracking) ────────
+async def test_iv_rv_eval_lifecycle(db):
+    # dedup: one open eval per ticker
+    r1 = await db.record_iv_eval("NVDA", "SELL_PREMIUM", 1.30, 8.0, 100.0, "2026-09-16")
+    r2 = await db.record_iv_eval("NVDA", "CONSIDER", 1.10, 6.0, 101.0, "2026-09-16")
+    assert r1 == 1 and r2 is None
+    await db.record_iv_eval("AAPL", "CONSIDER", 1.05, 5.0, 200.0, "2026-09-16")
+
+    due = await db.get_due_iv_evals("2026-09-20")
+    assert len(due) == 2
+    nv = next(x for x in due if x["ticker"] == "NVDA")
+    ap = next(x for x in due if x["ticker"] == "AAPL")
+    # NVDA moved 3% vs 8% implied → seller wins; AAPL moved 9% vs 5% → seller loses
+    await db.resolve_iv_eval(nv["id"], 103.0, 3.0, 8.0)
+    await db.resolve_iv_eval(ap["id"], 218.0, 9.0, 5.0)
+
+    s = await db.get_iv_eval_summary()
+    assert s["resolved"] == 2 and s["wins"] == 1 and s["win_rate"] == 50.0
+    assert s["avg_edge_pct"] == round(((8 - 3) + (5 - 9)) / 2, 2)   # (+5, -4) → 0.5
+    assert s["open"] == 0
+    # already-resolved ticker can open a new eval
+    assert await db.record_iv_eval("NVDA", "SELL_PREMIUM", 1.4, 7.0, 105.0, "2026-10-01") == 1
+
+
 # ── Account-fetch failure detection (guards the $0/-100% bogus report) ──
 async def test_report_flags_account_fetch_failure(db):
     class FailingTrader:
