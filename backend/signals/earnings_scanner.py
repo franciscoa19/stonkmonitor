@@ -151,23 +151,41 @@ class EarningsSetup:
         }
 
 
-def _next_earnings_date(stock) -> Optional[str]:
-    """Nearest FUTURE earnings date (YYYY-MM-DD) from yfinance, or None.
-    Free — no extra key. Tries get_earnings_dates(), falls back to .calendar."""
+# Earnings dates change ~once a quarter, but yfinance's get_earnings_dates()
+# rate-limits hard when the scanner loop hits it for every watchlist name each
+# cycle — which silently drops the date and forces the crude signal+7d resolve
+# fallback. So cache per ticker: a real date is good for days; a miss (ETF with
+# no earnings, or a throttled failure) is re-checked sooner so a transient 429
+# doesn't stick as None.
+_ED_CACHE: dict = {}                # ticker -> (date_str_or_None, fetched_epoch)
+_ED_TTL_HIT = 5 * 86400            # 5 days for a resolved date
+_ED_TTL_MISS = 6 * 3600            # 6 h for a None (ETF or transient failure)
+
+
+def _fetch_next_earnings_date(stock) -> Optional[str]:
+    """Uncached lookup: nearest FUTURE earnings date (YYYY-MM-DD) or None.
+    One retry with backoff on failure to ride out yfinance rate limiting.
+    Tries get_earnings_dates(), falls back to .calendar."""
+    import time as _t
     from datetime import datetime as _dt
     today = _dt.now().date()
 
     def _as_date(x):
         return x.date() if hasattr(x, "date") else x
 
-    try:
-        df = stock.get_earnings_dates(limit=16)
-        if df is not None and not df.empty:
-            future = sorted(d for d in (_as_date(i) for i in df.index) if d and d >= today)
-            if future:
-                return future[0].isoformat()
-    except Exception:
-        pass
+    for attempt in range(2):       # initial try + one retry
+        try:
+            df = stock.get_earnings_dates(limit=16)
+            if df is not None and not df.empty:
+                future = sorted(
+                    d for d in (_as_date(i) for i in df.index) if d and d >= today)
+                if future:
+                    return future[0].isoformat()
+            break                  # df resolved but no future date — genuine, stop retrying
+        except Exception:
+            if attempt == 0:
+                _t.sleep(1.5)      # runs in the scan_ticker executor thread, not the loop
+                continue
     try:
         cal = stock.calendar
         ed = cal.get("Earnings Date") if isinstance(cal, dict) else None
@@ -178,6 +196,25 @@ def _next_earnings_date(stock) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _next_earnings_date(stock) -> Optional[str]:
+    """Cached nearest-future earnings date (YYYY-MM-DD) or None. Free — no key.
+    Cache TTL keeps yfinance load to ~once per 5 days per ticker instead of
+    every scan cycle, which is what was triggering the rate limiting."""
+    import time as _t
+    sym = getattr(stock, "ticker", None) or ""
+    now = _t.time()
+    hit = _ED_CACHE.get(sym)
+    if hit is not None:
+        val, ts = hit
+        ttl = _ED_TTL_HIT if val else _ED_TTL_MISS
+        if now - ts < ttl:
+            return val
+    val = _fetch_next_earnings_date(stock)
+    if sym:
+        _ED_CACHE[sym] = (val, now)
+    return val
 
 
 # ── Main scanner ──────────────────────────────────────────────────────────────
