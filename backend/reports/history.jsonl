@@ -3,4 +3,5 @@
 {"date": "2026-09-05", "equity": 49334.59, "cash": 49334.59, "buying_power": 197338.36, "open_positions": 0, "realized_pnl_day": 0.0, "created_at": "2026-09-05T05:55:11.741429", "open_equity": 49334.65}
 {"date": "2026-09-06", "equity": 49334.59, "cash": 49334.59, "buying_power": 197338.36, "open_positions": 0, "realized_pnl_day": 0.0, "created_at": "2026-09-06T04:13:56.623844", "open_equity": 49334.59}
 {"date": "2026-09-07", "equity": 49334.59, "cash": 49334.59, "buying_power": 197338.36, "open_positions": 0, "realized_pnl_day": 0.0, "created_at": "2026-09-07T05:04:52.536397", "open_equity": 49334.59}
-{"date": "2026-09-08", "equity": 49334.59, "cash": 49334.59, "buying_power": 172798.08, "open_positions": 0, "realized_pnl_day": 0.0, "created_at": "2026-09-08T07:58:37.368218", "open_equity": 49334.59}
+{"date": "2026-09-08", "equity": 48537.24, "cash": 48537.24, "buying_power": 194148.96, "open_positions": 0, "realized_pnl_day": 0.0, "created_at": "2026-09-08T07:58:37.368218", "open_equity": 49334.59}
+{"date": "2026-09-09", "equity": 48536.94, "cash": 48536.94, "buying_power": 189299.72, "open_positions": 0, "realized_pnl_day": 0.0, "created_at": "2026-09-09T04:30:07.282184", "open_equity": 48537.24}
