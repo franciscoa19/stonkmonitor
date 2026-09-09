@@ -209,6 +209,7 @@ async def test_build_report_metrics(db):
     assert "golden_sweep" in strats and "triple_confluence" in strats
     assert strats["golden_sweep"]["pnl"] == 200.0
     assert strats["triple_confluence"]["pnl"] == -300.0
+    assert d["iv_condors"]["closed"] == 0
 
 
 # ── Weekly watchlist review ─────────────────────────────────────────────
@@ -406,6 +407,14 @@ async def test_condor_db_lifecycle(db):
     assert await db.has_open_condor("AAPL") is False
     assert await db.count_open_condors() == 1
     assert await db.count_condors_opened_today(today) == 1
+    assert len(await db.get_active_condor_leg_symbols()) == 4
+    assert len(await db.get_open_condors()) == 0  # submitted is not filled
+
+    # A real parent fill overwrites planning economics.  -1.05 is the MLeg
+    # net-credit convention, so the actual per-spread max loss is $195.
+    actual = await db.activate_condor(cid, filled_qty=1, filled_avg_price=-1.05)
+    assert actual == {"qty": 1, "credit": 1.05, "max_loss": 195.0}
+    assert len(await db.get_open_condors()) == 1
 
     # 'closing' still counts as active/open-for-dedup, but not in get_open_condors
     await db.mark_condor_closing(cid, "c1")
@@ -413,8 +422,8 @@ async def test_condor_db_lifecycle(db):
     assert len(await db.get_open_condors()) == 0
     assert len(await db.get_active_condors()) == 1
 
-    # close as a winner: pnl = (credit - exit_debit) * 100 * qty = (1.20-0.50)*100*2 = 140
-    await db.close_condor(cid, exit_debit=0.50, pnl=(1.20 - 0.50) * 100 * 2)
+    # Close using actual fill economics: (1.05 - 0.50) * 100 * 1 = 55.
+    await db.close_condor(cid, exit_debit=0.50, pnl=(1.05 - 0.50) * 100)
     assert await db.has_open_condor("NVDA") is False
     s = await db.get_condor_summary()
-    assert s["closed"] == 1 and s["wins"] == 1 and s["total_pnl"] == 140.0 and s["open"] == 0
+    assert s["closed"] == 1 and s["wins"] == 1 and s["total_pnl"] == 55.0 and s["open"] == 0

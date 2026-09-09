@@ -199,11 +199,25 @@ def _fetch_next_earnings_date(stock) -> Optional[str]:
 
 
 def _next_earnings_date(stock) -> Optional[str]:
-    """Cached nearest-future earnings date (YYYY-MM-DD) or None. Free — no key.
-    Cache TTL keeps yfinance load to ~once per 5 days per ticker instead of
-    every scan cycle, which is what was triggering the rate limiting."""
-    import time as _t
+    """Nearest-future earnings date (YYYY-MM-DD) or None. Free — no key.
+
+    Two independent sources for resilience:
+      1. Nasdaq calendar (date-keyed, shared cache — no per-ticker rate limit),
+      2. yfinance per-ticker (cached 5d + one retry) as fallback.
+    """
     sym = getattr(stock, "ticker", None) or ""
+
+    # Primary: shared Nasdaq-backed calendar.
+    try:
+        from feeds.earnings_calendar import get_next_earnings
+        d = get_next_earnings(sym)
+        if d:
+            return d
+    except Exception:
+        pass
+
+    # Fallback: per-ticker yfinance, cached + retried.
+    import time as _t
     now = _t.time()
     hit = _ED_CACHE.get(sym)
     if hit is not None:

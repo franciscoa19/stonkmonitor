@@ -87,6 +87,11 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         iv_rv = await db.get_iv_eval_summary()
     except Exception:
         iv_rv = {"resolved": 0, "wins": 0, "win_rate": 0.0, "avg_edge_pct": 0.0, "open": 0}
+    try:
+        iv_condors = await db.get_condor_summary()
+    except Exception:
+        iv_condors = {"closed": 0, "wins": 0, "win_rate": 0.0,
+                      "total_pnl": 0.0, "open": 0, "pending": 0}
 
     # ── Attribution: by entry hour (ET) ──────────────────────────────────
     by_hour = await db._query(
@@ -163,6 +168,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         "activity": {"tag": activity[0], "note": activity[1]},
         "equity_curve": [{"date": r["date"], "equity": float(r["equity"])} for r in curve],
         "iv_rv": iv_rv,
+        "iv_condors": iv_condors,
         "by_strategy": [dict(r) for r in by_strategy],
         "by_hour": [dict(r) for r in by_hour],
         "recent": recent,
@@ -256,6 +262,8 @@ def render_html(d: dict) -> str:
     a, m = d["account"], d["metrics"]
     act = d["activity"]
     iv = d.get("iv_rv", {"resolved": 0, "wins": 0, "win_rate": 0.0, "avg_edge_pct": 0.0, "open": 0})
+    condors = d.get("iv_condors", {"closed": 0, "wins": 0, "win_rate": 0.0,
+                                     "total_pnl": 0.0, "open": 0, "pending": 0})
     e = _html.escape
     pnl_cls = "up" if a["total_pnl"] >= 0 else "down"
     pnl_sign = "+" if a["total_pnl"] >= 0 else ""
@@ -347,6 +355,17 @@ def render_html(d: dict) -> str:
       <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Open</div><div style="font-size:22px;font-weight:700">{iv['open']}</div></div>
     </div>
     <div class="mut" style="font-size:12px;margin-top:10px">Testing whether IV-rich setups over-price the move: realized &lt; implied ⇒ a premium seller wins. Validating the edge before any execution.</div>
+  </div>
+
+  <div class="card">
+    <h2>IV condor paper executions <span class="pill mut" style="font-size:11px">actual multi-leg fills only</span></h2>
+    <div style="display:flex;gap:26px;flex-wrap:wrap;font-family:var(--mono)">
+      <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Closed</div><div style="font-size:22px;font-weight:700">{condors['closed']}</div></div>
+      <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Win rate</div><div style="font-size:22px;font-weight:700">{(str(round(condors['win_rate']))+'%') if condors['closed'] else '—'}</div></div>
+      <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Condor P&amp;L</div><div class="{ 'up' if (condors['total_pnl'] or 0)>=0 else 'down'}" style="font-size:22px;font-weight:700">{_money(condors['total_pnl'])}</div></div>
+      <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Active / pending</div><div style="font-size:22px;font-weight:700">{condors['open']} / {condors['pending']}</div></div>
+    </div>
+    <div class="mut" style="font-size:12px;margin-top:10px">This is separate from the legacy single-leg strategy ledger above.</div>
   </div>
 
   <div class="card">

@@ -75,9 +75,9 @@ class Settings(BaseSettings):
     # OFF by default — arm only after paper-testing the mechanics end to end.
     iv_exec_enabled: bool = Field(False, env="IV_EXEC_ENABLED")
     # Only act on setups this strong. SELL_PREMIUM = all 3 gates; CONSIDER = ts
-    # inversion + 1 other. Default also lets a CONSIDER through if earnings is
-    # imminent (front-month IV is already inverted the day before the print).
-    iv_exec_allow_consider: bool = Field(True, env="IV_EXEC_ALLOW_CONSIDER")
+    # inversion + only one other gate. CONSIDER stays alert-only by default: it
+    # is useful for plumbing and research, but is not evidence of an IV/RV edge.
+    iv_exec_allow_consider: bool = Field(False, env="IV_EXEC_ALLOW_CONSIDER")
     iv_exec_entry_days_before: int = Field(2, env="IV_EXEC_ENTRY_DAYS_BEFORE")   # enter when earnings ≤ N days out
     iv_exec_risk_pct: float = Field(0.015, env="IV_EXEC_RISK_PCT")               # 1.5% of equity max loss per condor (defined risk)
     iv_exec_max_risk_usd: float = Field(1500.0, env="IV_EXEC_MAX_RISK_USD")      # absolute max-loss cap per condor

@@ -310,7 +310,7 @@ CREATE TABLE IF NOT EXISTS iv_condors (
     entry_order_id TEXT,
     entry_status   TEXT,
     opened_at      TEXT NOT NULL,
-    status         TEXT DEFAULT 'open',     -- open | closing | closed
+    status         TEXT DEFAULT 'open',     -- pending_entry | open | closing | closed | void
     close_order_id TEXT,
     exit_debit     REAL,                    -- net debit paid to close per spread
     pnl            REAL,                    -- realized $ P&L (all spreads)
@@ -474,7 +474,9 @@ class Database:
     # ── IV/RV execution: iron condors (Phase 2) ─────────────────────────
     async def has_open_condor(self, ticker: str) -> bool:
         r = await self._query(
-            "SELECT id FROM iv_condors WHERE ticker=? AND status!='closed' LIMIT 1", (ticker,))
+            """SELECT id FROM iv_condors
+               WHERE ticker=? AND status IN ('pending_entry','open','closing') LIMIT 1""",
+            (ticker,))
         return bool(r)
 
     async def count_condors_opened_today(self, today: str) -> int:
@@ -483,7 +485,9 @@ class Database:
         return int(row.get("n", 0))
 
     async def count_open_condors(self) -> int:
-        row = await self._scalar("SELECT COUNT(*) AS n FROM iv_condors WHERE status!='closed'")
+        row = await self._scalar(
+            "SELECT COUNT(*) AS n FROM iv_condors WHERE status IN ('pending_entry','open','closing')"
+        )
         return int(row.get("n", 0))
 
     async def record_condor(self, ticker: str, earnings_date: Optional[str], expiry: str,
@@ -496,7 +500,7 @@ class Database:
                  (ticker, earnings_date, expiry, legs_json, short_put, long_put,
                   short_call, long_call, qty, credit, max_loss, entry_order_id,
                   entry_status, opened_at, status)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open')""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending_entry')""",
             (ticker, earnings_date, expiry, legs_json,
              strikes.get("short_put"), strikes.get("long_put"),
              strikes.get("short_call"), strikes.get("long_call"),
@@ -510,7 +514,68 @@ class Database:
 
     async def get_active_condors(self) -> list[dict]:
         return await self._query(
-            "SELECT * FROM iv_condors WHERE status IN ('open','closing')")
+            "SELECT * FROM iv_condors WHERE status IN ('pending_entry','open','closing')")
+
+    async def get_active_condor_leg_symbols(self) -> set[str]:
+        """OCC symbols owned by an active condor.
+
+        The generic single-leg TP/SL monitor must never manage one of these
+        symbols independently; condors are opened and closed as a four-leg unit.
+        Invalid legacy JSON is deliberately ignored rather than blocking the
+        monitor for all other positions.
+        """
+        rows = await self._query(
+            "SELECT legs_json FROM iv_condors WHERE status IN ('pending_entry','open','closing')"
+        )
+        symbols: set[str] = set()
+        for row in rows:
+            try:
+                for leg in json.loads(row.get("legs_json") or "[]"):
+                    symbol = str(leg.get("symbol") or "").strip().upper()
+                    if symbol:
+                        symbols.add(symbol)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                logger.warning("Skipping malformed iv_condors.legs_json while protecting condor legs")
+        return symbols
+
+    async def update_condor_entry_status(self, condor_id: int, entry_status: str) -> None:
+        await self._exec(
+            "UPDATE iv_condors SET entry_status=? WHERE id=?", (entry_status, condor_id))
+
+    async def activate_condor(self, condor_id: int, filled_qty: float,
+                              filled_avg_price: float, entry_status: str = "filled") -> dict:
+        """Mark a filled parent MLeg as manageable using actual fill economics.
+
+        Alpaca reports MLeg parent price as net debit/credit.  A credit order is
+        negative, so its absolute value is the credit collected per spread.
+        Recalculate max loss from that actual credit rather than the planning mid.
+        """
+        row = await self._scalar(
+            "SELECT short_put,long_put,short_call,long_call FROM iv_condors WHERE id=?", (condor_id,))
+        qty = int(float(filled_qty or 0))
+        credit = abs(float(filled_avg_price or 0))
+        if not row or qty < 1 or credit <= 0:
+            raise ValueError("filled condor requires positive quantity and net credit")
+        width = max(
+            float(row["long_call"] or 0) - float(row["short_call"] or 0),
+            float(row["short_put"] or 0) - float(row["long_put"] or 0),
+        )
+        max_loss = max(0.0, width - credit) * 100
+        await self._exec(
+            """UPDATE iv_condors
+               SET status='open', qty=?, credit=?, max_loss=?, entry_status=?
+               WHERE id=?""",
+            (qty, round(credit, 2), round(max_loss, 2), entry_status, condor_id),
+        )
+        return {"qty": qty, "credit": round(credit, 2), "max_loss": round(max_loss, 2)}
+
+    async def void_condor(self, condor_id: int, entry_status: str) -> None:
+        """Close the bookkeeping record for an entry that never filled."""
+        await self._exec(
+            """UPDATE iv_condors
+               SET status='void', entry_status=?, closed_at=? WHERE id=?""",
+            (entry_status, datetime.utcnow().isoformat(), condor_id),
+        )
 
     async def mark_condor_closing(self, condor_id: int, close_order_id: str) -> None:
         await self._exec(
@@ -528,10 +593,14 @@ class Database:
         n = len(rows)
         wins = sum(1 for r in rows if (r["pnl"] or 0) > 0)
         pnl = round(sum(r["pnl"] or 0 for r in rows), 2)
-        open_n = await self.count_open_condors()
+        open_row = await self._scalar(
+            "SELECT COUNT(*) AS n FROM iv_condors WHERE status IN ('open','closing')")
+        pending = await self._scalar(
+            "SELECT COUNT(*) AS n FROM iv_condors WHERE status='pending_entry'")
         return {"closed": n, "wins": wins,
                 "win_rate": round(wins / n * 100, 1) if n else 0.0,
-                "total_pnl": pnl, "open": open_n}
+                "total_pnl": pnl, "open": int(open_row.get("n", 0)),
+                "pending": int(pending.get("n", 0))}
 
     # ── Write: Options Flow ──────────────────────────────────────────────
     async def save_options_flow(self, event: dict):

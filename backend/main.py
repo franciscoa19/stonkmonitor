@@ -799,6 +799,11 @@ async def alpaca_position_monitor():
                 await asyncio.sleep(interval)
                 continue
 
+            # Condor legs must only be managed by _manage_condor().  Applying a
+            # single-contract stop or profit rule to one leg can destroy the
+            # defined-risk structure and leave an unintended directional trade.
+            condor_legs = await db.get_active_condor_leg_symbols()
+
             for pos in positions:
                 symbol  = pos["symbol"]
                 qty     = pos["qty"]
@@ -808,6 +813,10 @@ async def alpaca_position_monitor():
                 cur     = pos["current"]
 
                 if qty <= 0:
+                    continue
+
+                if symbol.upper() in condor_legs:
+                    logger.debug(f"Single-leg monitor skipped active condor leg: {symbol}")
                     continue
 
                 # Initialize state for new positions
@@ -1085,8 +1094,10 @@ async def maybe_execute_condor(setup):
     print is within iv_exec_entry_days_before, respecting position/day caps and a
     per-ticker one-condor rule. Logs its own outcome; returns None.
     """
-    from datetime import date as _date
+    from datetime import date as _date, datetime as _datetime
+    from zoneinfo import ZoneInfo
     from signals.iv_executor import build_iron_condor
+    _ET = ZoneInfo("America/New_York")
     s = settings
     if not s.iv_exec_enabled:
         return
@@ -1109,7 +1120,7 @@ async def maybe_execute_condor(setup):
     ticker = setup.ticker
     if await db.has_open_condor(ticker):
         return
-    today = datetime.now(_ET).strftime("%Y-%m-%d")
+    today = _datetime.now(_ET).strftime("%Y-%m-%d")
     if await db.count_open_condors() >= s.iv_exec_max_positions:
         logger.info("IV-exec skip: max open condors reached")
         return
@@ -1162,16 +1173,39 @@ async def _manage_condor(c: dict):
     legs = _json.loads(c["legs_json"])
     cid, qty, credit = c["id"], int(c["qty"]), float(c["credit"])
 
-    # ── Confirm the entry actually filled before managing it ──
-    if c["status"] == "open" and c.get("entry_order_id"):
+    # ── Confirm the parent entry filled before managing it ──
+    # A submitted MLeg is not a position.  Do not submit an inverse close while
+    # it is pending, and use the actual net credit/filled quantity once it is
+    # terminal.  This also handles legacy rows created before pending_entry.
+    entry_terminal = {"filled", "canceled", "expired", "rejected"}
+    needs_entry_sync = (
+        c["status"] == "pending_entry"
+        or (c["status"] == "open" and str(c.get("entry_status") or "").lower() not in entry_terminal)
+    )
+    if needs_entry_sync:
+        if not c.get("entry_order_id"):
+            logger.warning(f"IV-exec condor #{cid} has no entry order id; not managing it")
+            return
         o = await loop.run_in_executor(None, trader.get_order_raw, c["entry_order_id"])
-        est = (o or {}).get("status")
-        if est in ("canceled", "expired", "rejected"):
-            filled = float((o or {}).get("filled_qty") or 0)
-            if filled <= 0:
-                await db.close_condor(cid, 0.0, 0.0)   # voided — never got a position
-                logger.info(f"IV-exec condor #{cid} {c['ticker']} voided (entry {est}, no fill)")
-                return
+        est = str((o or {}).get("status") or "unknown").lower()
+        filled_qty = float((o or {}).get("filled_qty") or 0)
+        filled_avg = float((o or {}).get("filled_avg_price") or 0)
+        if est not in entry_terminal:
+            await db.update_condor_entry_status(cid, est)
+            return
+        if filled_qty <= 0:
+            await db.void_condor(cid, est)
+            logger.info(f"IV-exec condor #{cid} {c['ticker']} voided (entry {est}, no fill)")
+            return
+        try:
+            actual = await db.activate_condor(cid, filled_qty, filled_avg, est)
+        except ValueError as e:
+            logger.warning(f"IV-exec condor #{cid} has unusable fill data: {e}")
+            return
+        qty, credit = actual["qty"], actual["credit"]
+        c = {**c, "status": "open", "qty": qty, "credit": credit}
+        logger.info(f"IV-exec condor #{cid} {c['ticker']} filled x{qty} "
+                    f"credit ${credit:.2f}, max loss ${actual['max_loss']:.0f}")
 
     # ── Decide whether to close ──
     quotes = await loop.run_in_executor(None, trader.get_option_quotes,
@@ -1547,6 +1581,16 @@ async def lifespan(app: FastAPI):
     iv_task = asyncio.create_task(iv_scanner_loop())
     alpaca_monitor_task = asyncio.create_task(alpaca_position_monitor())
     condor_monitor_task = asyncio.create_task(iv_condor_monitor_loop())
+
+    async def _warm_earnings_calendar():
+        try:
+            from feeds.earnings_calendar import _ensure_fresh
+            await asyncio.get_event_loop().run_in_executor(None, _ensure_fresh)
+            from feeds.earnings_calendar import _cache
+            logger.info(f"Earnings calendar warmed: {len(_cache['map'])} names (Nasdaq)")
+        except Exception as e:
+            logger.warning(f"Earnings calendar warm-up failed: {e}")
+    asyncio.create_task(_warm_earnings_calendar())
     perf_sync_task = asyncio.create_task(performance_sync_loop())
     daily_equity_task = asyncio.create_task(daily_equity_loop())
     report_task = asyncio.create_task(report_scheduler_loop())
