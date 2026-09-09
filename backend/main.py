@@ -1107,16 +1107,19 @@ async def iv_scanner_loop():
         for ticker in list(_watchlist):
             try:
                 # ── IV Rank (UW) ────────────────────────────────────────
+                # Secondary signal — UW only. Skipped when UW is disabled; the
+                # yfinance earnings IV/RV setup below is the primary edge.
                 # UW returns a term-structure list, not a dict — reduce it to
                 # the 30-day point. UW gives IV *percentile*, not a separate
                 # rank, so we use it for both args of score_iv_rank.
-                iv_data = await uw_client.get_iv_rank(ticker)
-                iv = iv_summary_from_termstructure(iv_data)
-                if iv:
-                    iv_pct = iv["iv_percentile"]
-                    signal = engine.score_iv_rank(ticker, iv_pct, iv_pct)
-                    if signal:
-                        await handle_signal(signal)
+                if settings.uw_enabled:
+                    iv_data = await uw_client.get_iv_rank(ticker)
+                    iv = iv_summary_from_termstructure(iv_data)
+                    if iv:
+                        iv_pct = iv["iv_percentile"]
+                        signal = engine.score_iv_rank(ticker, iv_pct, iv_pct)
+                        if signal:
+                            await handle_signal(signal)
 
                 # ── Earnings IV/RV setup (yfinance) — max once per 30 min ──
                 now = _time.time()
@@ -1131,17 +1134,33 @@ async def iv_scanner_loop():
                             f"IV/RV={setup.iv30_rv30:.2f}x score={signal.score}"
                         )
                         # Log for IV/RV edge validation (hypothetical short straddle):
-                        # record the implied move now; resolve vs realized in ~a week.
+                        # record the implied move now; resolve vs realized after the
+                        # actual earnings print (yfinance calendar), so IV crush and
+                        # the realized move are both captured. Falls back to +7d when
+                        # no earnings date is known.
                         try:
-                            from datetime import datetime as _dt, timedelta as _td
+                            from datetime import datetime as _dt, timedelta as _td, date as _date
                             imp = float(str(setup.expected_move or "0").rstrip("%") or 0)
-                            resolve_after = (_dt.utcnow() + _td(days=7)).date().isoformat()
+                            edate = setup.next_earnings_date
+                            resolve_after = None
+                            if edate:
+                                try:
+                                    resolve_after = (
+                                        _date.fromisoformat(edate) + _td(days=2)
+                                    ).isoformat()
+                                except Exception:
+                                    resolve_after = None
+                            if not resolve_after:
+                                resolve_after = (_dt.utcnow() + _td(days=7)).date().isoformat()
                             if await db.record_iv_eval(
                                 ticker=ticker, recommendation=setup.recommendation,
                                 iv30_rv30=setup.iv30_rv30, implied_move_pct=imp,
-                                entry_price=setup.price, resolve_after=resolve_after):
-                                logger.info(f"IV/RV eval logged: {ticker} implied ±{imp:.1f}% "
-                                            f"@ ${setup.price:.2f}")
+                                entry_price=setup.price, resolve_after=resolve_after,
+                                earnings_date=edate):
+                                logger.info(
+                                    f"IV/RV eval logged: {ticker} implied ±{imp:.1f}% "
+                                    f"@ ${setup.price:.2f} — earnings {edate or 'n/a'}, "
+                                    f"resolves {resolve_after}")
                         except Exception as e:
                             logger.debug(f"IV eval record skipped for {ticker}: {e}")
 
@@ -1353,9 +1372,18 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
 
     # Start background tasks
-    uw_task = asyncio.create_task(start_uw_stream())
+    # UW stream + budget monitor are gated on uw_enabled: the earnings IV/RV
+    # edge runs on yfinance + Alpaca only, so UW can be cleanly disabled (e.g.
+    # after cancelling the sub) with no error spam. Plumbing stays intact.
+    uw_task = None
+    uw_budget_task = None
+    if settings.uw_enabled:
+        uw_task = asyncio.create_task(start_uw_stream())
+        uw_budget_task = asyncio.create_task(uw_budget_monitor_loop())
+    else:
+        logger.info("Unusual Whales DISABLED (UW_ENABLED=false) — "
+                    "earnings IV/RV scanner runs on yfinance + Alpaca only")
     iv_task = asyncio.create_task(iv_scanner_loop())
-    uw_budget_task = asyncio.create_task(uw_budget_monitor_loop())
     alpaca_monitor_task = asyncio.create_task(alpaca_position_monitor())
     perf_sync_task = asyncio.create_task(performance_sync_loop())
     daily_equity_task = asyncio.create_task(daily_equity_loop())
@@ -1410,7 +1438,10 @@ async def lifespan(app: FastAPI):
 
     yield  # app runs here
 
-    uw_task.cancel()
+    if uw_task:
+        uw_task.cancel()
+    if uw_budget_task:
+        uw_budget_task.cancel()
     iv_task.cancel()
     if kalshi_task:
         kalshi_task.cancel()

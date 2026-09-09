@@ -8,7 +8,12 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     # --- Unusual Whales ---
-    unusual_whales_api_key: str = Field(..., env="UNUSUAL_WHALES_API_KEY")
+    # Optional now that the earnings IV/RV edge runs on yfinance + Alpaca only.
+    # Set UW_ENABLED=false to cleanly disable the UW stream + IV-rank calls
+    # (no error spam) and let the key be blank — e.g. after cancelling the sub.
+    # All UW plumbing stays intact behind the flag so it can be re-enabled.
+    unusual_whales_api_key: str = Field("", env="UNUSUAL_WHALES_API_KEY")
+    uw_enabled: bool = Field(True, env="UW_ENABLED")
 
     # --- Alpaca ---
     alpaca_api_key: str = Field(..., env="ALPACA_API_KEY")

@@ -105,6 +105,8 @@ class EarningsSetup:
     iv_expensive:    bool        # iv30_rv30 >= 1.25
     ts_inverted:     bool        # ts_slope <= -0.00406
 
+    next_earnings_date: Optional[str] = None   # YYYY-MM-DD (yfinance calendar)
+
     @property
     def passes(self) -> int:
         return sum([self.vol_ok, self.iv_expensive, self.ts_inverted])
@@ -139,7 +141,37 @@ class EarningsSetup:
             "passes":        self.passes,
             "recommendation":self.recommendation,
             "score":         self.score,
+            "next_earnings_date": self.next_earnings_date,
         }
+
+
+def _next_earnings_date(stock) -> Optional[str]:
+    """Nearest FUTURE earnings date (YYYY-MM-DD) from yfinance, or None.
+    Free — no extra key. Tries get_earnings_dates(), falls back to .calendar."""
+    from datetime import datetime as _dt
+    today = _dt.now().date()
+
+    def _as_date(x):
+        return x.date() if hasattr(x, "date") else x
+
+    try:
+        df = stock.get_earnings_dates(limit=16)
+        if df is not None and not df.empty:
+            future = sorted(d for d in (_as_date(i) for i in df.index) if d and d >= today)
+            if future:
+                return future[0].isoformat()
+    except Exception:
+        pass
+    try:
+        cal = stock.calendar
+        ed = cal.get("Earnings Date") if isinstance(cal, dict) else None
+        if ed:
+            d = _as_date(ed[0] if isinstance(ed, (list, tuple)) else ed)
+            if d and d >= today:
+                return d.isoformat()
+    except Exception:
+        pass
+    return None
 
 
 # ── Main scanner ──────────────────────────────────────────────────────────────
@@ -264,4 +296,5 @@ def _compute_sync(ticker: str) -> Optional[EarningsSetup]:
         vol_ok       = avg_vol   >= 1_500_000,
         iv_expensive = iv30_rv30 >= 1.25,
         ts_inverted  = ts_slope  <= -0.00406,
+        next_earnings_date = _next_earnings_date(stock),
     )

@@ -262,6 +262,22 @@ async def test_iv_rv_eval_lifecycle(db):
     assert await db.record_iv_eval("NVDA", "SELL_PREMIUM", 1.4, 7.0, 105.0, "2026-10-01") == 1
 
 
+async def test_iv_rv_eval_stores_earnings_date(db):
+    # earnings_date (yfinance calendar) is persisted and surfaced when due
+    assert await db.record_iv_eval(
+        "MSFT", "SELL_PREMIUM", 1.35, 5.0, 400.0,
+        resolve_after="2026-09-16", earnings_date="2026-09-14") == 1
+    due = await db.get_due_iv_evals("2026-09-20")
+    row = next(x for x in due if x["ticker"] == "MSFT")
+    assert row["earnings_date"] == "2026-09-14"
+    # earnings_date is optional — omitting it stores NULL, still records fine
+    assert await db.record_iv_eval(
+        "AMZN", "CONSIDER", 1.10, 6.0, 180.0, resolve_after="2026-09-16") == 1
+    due2 = await db.get_due_iv_evals("2026-09-20")
+    amzn = next(x for x in due2 if x["ticker"] == "AMZN")
+    assert amzn["earnings_date"] is None
+
+
 # ── Account-fetch failure detection (guards the $0/-100% bogus report) ──
 async def test_report_flags_account_fetch_failure(db):
     class FailingTrader:

@@ -264,6 +264,7 @@ CREATE TABLE IF NOT EXISTS iv_rv_evals (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker            TEXT NOT NULL,
     signal_date       TEXT NOT NULL,          -- date the setup fired
+    earnings_date     TEXT,                   -- next earnings date (yfinance calendar)
     recommendation    TEXT,                   -- SELL_PREMIUM | CONSIDER
     iv30_rv30         REAL,                   -- IV/RV ratio at signal
     implied_move_pct  REAL,                   -- expected (straddle) move at signal
@@ -299,6 +300,7 @@ _MIGRATIONS = {
     "pending_trades":    {"strategy": "TEXT"},
     "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL"},
     "daily_equity":      {"open_equity": "REAL"},
+    "iv_rv_evals":       {"earnings_date": "TEXT"},
 }
 
 
@@ -402,7 +404,7 @@ class Database:
     # ── IV/RV edge validation ────────────────────────────────────────────
     async def record_iv_eval(self, ticker: str, recommendation: str, iv30_rv30: float,
                              implied_move_pct: float, entry_price: float,
-                             resolve_after: str) -> Optional[int]:
+                             resolve_after: str, earnings_date: str = None) -> Optional[int]:
         """Log a new IV/RV setup to validate. Deduped: skips if this ticker
         already has an unresolved eval open (one event at a time)."""
         open_ = await self._query(
@@ -412,11 +414,11 @@ class Database:
         now = datetime.utcnow().isoformat()
         await self._exec(
             """INSERT INTO iv_rv_evals
-                 (ticker, signal_date, recommendation, iv30_rv30, implied_move_pct,
-                  entry_price, resolve_after, created_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (ticker, now[:10], recommendation, iv30_rv30, implied_move_pct,
-             entry_price, resolve_after, now))
+                 (ticker, signal_date, earnings_date, recommendation, iv30_rv30,
+                  implied_move_pct, entry_price, resolve_after, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (ticker, now[:10], earnings_date, recommendation, iv30_rv30,
+             implied_move_pct, entry_price, resolve_after, now))
         return 1
 
     async def get_due_iv_evals(self, today: str) -> list[dict]:
