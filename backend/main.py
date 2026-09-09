@@ -1078,6 +1078,160 @@ async def daily_equity_loop():
         await asyncio.sleep(3600)  # hourly
 
 
+async def maybe_execute_condor(setup):
+    """Phase 2: sell a defined-risk iron condor into an imminent earnings print.
+
+    Gated by IV_EXEC_ENABLED. Fires only when the setup is strong enough and the
+    print is within iv_exec_entry_days_before, respecting position/day caps and a
+    per-ticker one-condor rule. Logs its own outcome; returns None.
+    """
+    from datetime import date as _date
+    from signals.iv_executor import build_iron_condor
+    s = settings
+    if not s.iv_exec_enabled:
+        return
+    rec = getattr(setup, "recommendation", "AVOID")
+    if rec != "SELL_PREMIUM" and not (rec == "CONSIDER" and s.iv_exec_allow_consider):
+        return
+    # Need a known print to time the crush exit, and it must be imminent.
+    edate = None
+    if getattr(setup, "next_earnings_date", None):
+        try:
+            edate = _date.fromisoformat(setup.next_earnings_date)
+        except Exception:
+            edate = None
+    if edate is None:
+        return
+    days_to = (edate - _date.today()).days
+    if days_to < 0 or days_to > s.iv_exec_entry_days_before:
+        return
+
+    ticker = setup.ticker
+    if await db.has_open_condor(ticker):
+        return
+    today = datetime.now(_ET).strftime("%Y-%m-%d")
+    if await db.count_open_condors() >= s.iv_exec_max_positions:
+        logger.info("IV-exec skip: max open condors reached")
+        return
+    if await db.count_condors_opened_today(today) >= s.iv_exec_max_per_day:
+        logger.info("IV-exec skip: daily condor cap reached")
+        return
+
+    acct = trader.get_account()
+    equity = float(acct.get("equity") or getattr(auto_trade, "_cached_equity", 0) or 0)
+    if equity <= 0:
+        logger.warning("IV-exec skip: no equity")
+        return
+
+    loop = asyncio.get_event_loop()
+    plan = await loop.run_in_executor(None, build_iron_condor, trader, setup, equity, s)
+    if not plan.get("ok"):
+        logger.info(f"IV-exec {ticker}: no condor ({plan.get('reason')})")
+        return
+    res = await loop.run_in_executor(
+        None, lambda: trader.multileg_order(plan["legs"], plan["qty"], plan["limit_price"]))
+    if res.get("error"):
+        logger.error(f"IV-exec {ticker} submit failed: {res['error']}")
+        return
+    cid = await db.record_condor(
+        ticker=ticker, earnings_date=setup.next_earnings_date, expiry=plan["expiry"],
+        legs_json=plan["legs_json"], strikes=plan["strikes"], qty=plan["qty"],
+        credit=plan["credit"], max_loss=plan["max_loss"],
+        entry_order_id=res.get("id"), entry_status=res.get("status"))
+    st = plan["strikes"]
+    logger.info(
+        f"IV-exec ✅ {ticker} iron condor #{cid}: "
+        f"{st['long_put']}/{st['short_put']}--{st['short_call']}/{st['long_call']} "
+        f"x{plan['qty']} credit ${plan['credit']:.2f} maxloss ${plan['max_loss']:.0f} "
+        f"risk ${plan['risk_usd']:.0f} exp {plan['expiry']} order={res.get('id')}")
+
+
+def _condor_close_debit(legs: list, quotes: dict) -> float:
+    """Current mid cost to buy the spread back (net debit). legs order:
+    [short_call, long_call, short_put, long_put]."""
+    m = {l["symbol"]: quotes.get(l["symbol"], {}).get("mid", 0) for l in legs}
+    return (m[legs[0]["symbol"]] + m[legs[2]["symbol"]]) \
+        - (m[legs[1]["symbol"]] + m[legs[3]["symbol"]])
+
+
+async def _manage_condor(c: dict):
+    """Confirm entry fill, then close on profit target / after the print."""
+    import json as _json
+    from datetime import date as _date
+    loop = asyncio.get_event_loop()
+    legs = _json.loads(c["legs_json"])
+    cid, qty, credit = c["id"], int(c["qty"]), float(c["credit"])
+
+    # ── Confirm the entry actually filled before managing it ──
+    if c["status"] == "open" and c.get("entry_order_id"):
+        o = await loop.run_in_executor(None, trader.get_order_raw, c["entry_order_id"])
+        est = (o or {}).get("status")
+        if est in ("canceled", "expired", "rejected"):
+            filled = float((o or {}).get("filled_qty") or 0)
+            if filled <= 0:
+                await db.close_condor(cid, 0.0, 0.0)   # voided — never got a position
+                logger.info(f"IV-exec condor #{cid} {c['ticker']} voided (entry {est}, no fill)")
+                return
+
+    # ── Decide whether to close ──
+    quotes = await loop.run_in_executor(None, trader.get_option_quotes,
+                                        [l["symbol"] for l in legs])
+    if not quotes:
+        return
+    debit = _condor_close_debit(legs, quotes)
+    edate = None
+    try:
+        edate = _date.fromisoformat(c["earnings_date"]) if c.get("earnings_date") else None
+    except Exception:
+        edate = None
+    post_earnings = edate is not None and _date.today() > edate
+    tp_hit = debit <= (1 - settings.iv_exec_tp_pct) * credit
+    if c["status"] == "open" and not (post_earnings or tp_hit):
+        return
+
+    if c["status"] == "closing" and c.get("close_order_id"):
+        # Check whether the close filled and book actual P&L.
+        o = await loop.run_in_executor(None, trader.get_order_raw, c["close_order_id"])
+        st = (o or {}).get("status")
+        if st == "filled":
+            exit_debit = abs(float((o or {}).get("filled_avg_price") or debit))
+            pnl = (credit - exit_debit) * 100 * qty
+            await db.close_condor(cid, exit_debit, pnl)
+            logger.info(f"IV-exec condor #{cid} {c['ticker']} CLOSED: "
+                        f"credit ${credit:.2f} exit ${exit_debit:.2f} → P&L ${pnl:+.0f}")
+        elif st in ("canceled", "expired", "rejected"):
+            await db._exec("UPDATE iv_condors SET status='open', close_order_id=NULL WHERE id=?", (cid,))
+        return
+
+    # Submit the close (marketable-ish debit limit) and mark closing.
+    reason = "TP" if tp_hit else "post-earnings"
+    limit = round(max(debit, 0.01) * 1.10, 2)
+    res = await loop.run_in_executor(None, lambda: trader.close_multileg(legs, qty, limit))
+    if res.get("error"):
+        logger.warning(f"IV-exec condor #{cid} close submit failed: {res['error']}")
+        return
+    await db.mark_condor_closing(cid, res.get("id"))
+    logger.info(f"IV-exec condor #{cid} {c['ticker']} closing ({reason}) "
+                f"debit≈${debit:.2f} order={res.get('id')}")
+
+
+async def iv_condor_monitor_loop():
+    """Manage open iron condors: confirm fills, take profit, close after prints."""
+    await asyncio.sleep(45)
+    while True:
+        try:
+            if settings.iv_exec_enabled:
+                for c in await db.get_active_condors():
+                    try:
+                        await _manage_condor(c)
+                    except Exception as e:
+                        logger.warning(f"Condor #{c.get('id')} manage error: {e}")
+                    await asyncio.sleep(1)
+        except Exception as e:
+            logger.warning(f"Condor monitor error: {e}")
+        await asyncio.sleep(300)  # every 5 min
+
+
 async def iv_scanner_loop():
     """Poll IV rank + earnings setup for watchlist tickers every 5 minutes.
 
@@ -1163,6 +1317,13 @@ async def iv_scanner_loop():
                                     f"resolves {resolve_after}")
                         except Exception as e:
                             logger.debug(f"IV eval record skipped for {ticker}: {e}")
+
+                        # Phase 2: sell a defined-risk iron condor into the print
+                        # (gated by IV_EXEC_ENABLED — no-op until armed).
+                        try:
+                            await maybe_execute_condor(setup)
+                        except Exception as e:
+                            logger.warning(f"IV-exec {ticker} error: {e}")
 
             except Exception as e:
                 logger.warning(f"IV scanner error for {ticker}: {e}")
@@ -1385,6 +1546,7 @@ async def lifespan(app: FastAPI):
                     "earnings IV/RV scanner runs on yfinance + Alpaca only")
     iv_task = asyncio.create_task(iv_scanner_loop())
     alpaca_monitor_task = asyncio.create_task(alpaca_position_monitor())
+    condor_monitor_task = asyncio.create_task(iv_condor_monitor_loop())
     perf_sync_task = asyncio.create_task(performance_sync_loop())
     daily_equity_task = asyncio.create_task(daily_equity_loop())
     report_task = asyncio.create_task(report_scheduler_loop())
@@ -1443,6 +1605,7 @@ async def lifespan(app: FastAPI):
     if uw_budget_task:
         uw_budget_task.cancel()
     iv_task.cancel()
+    condor_monitor_task.cancel()
     if kalshi_task:
         kalshi_task.cancel()
     if kalshi_monitor_task:

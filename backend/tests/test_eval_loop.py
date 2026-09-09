@@ -311,3 +311,110 @@ async def test_export_history(db, tmp_path):
     csv_rows = (tmp_path / "trades.csv").read_text().strip().splitlines()
     assert len(csv_rows) == 2
     assert "triple_confluence" in csv_rows[1] and "-300" in csv_rows[1]
+
+
+# ── IV/RV Phase 2 execution: iron-condor builder + DB lifecycle ──────────
+import json as _json
+import types as _types
+from datetime import date as _date, timedelta as _timedelta
+
+
+def _occ(t, exp, cp, strike):
+    return f"{t}{exp:%y%m%d}{cp}{int(strike * 1000):08d}"
+
+
+class FakeOptionTrader(FakeTrader):
+    """FakeTrader + a canned single-expiry option chain for build_iron_condor."""
+    def __init__(self, expiry, strikes, mids, **kw):
+        super().__init__(**kw)
+        self.expiry = expiry                 # datetime.date
+        self.strikes = strikes               # list[float]
+        self.mids = mids                     # {("C"|"P", strike): mid}
+
+    def get_option_contracts(self, underlying, exp_gte, exp_lte, opt_type=None, limit=500):
+        if not (exp_gte <= self.expiry <= exp_lte):
+            return []
+        cp = "C" if opt_type == "call" else "P"
+        return [{"symbol": _occ(underlying, self.expiry, cp, k), "strike": k,
+                 "expiry": self.expiry, "type": opt_type, "open_interest": 500}
+                for k in self.strikes]
+
+    def get_option_quotes(self, symbols):
+        out = {}
+        for s in symbols:
+            cp = "C" if "C" in s[-9:] else "P"
+            strike = int(s[-8:]) / 1000.0
+            m = self.mids.get((cp, strike), 0)
+            out[s] = {"bid": round(m * 0.98, 2), "ask": round(m * 1.02, 2), "mid": m}
+        return out
+
+
+def test_build_iron_condor_happy_path():
+    from signals.iv_executor import build_iron_condor
+    from config import get_settings
+    exp = _date.today() + _timedelta(days=1)          # front expiry, day after the print
+    strikes = [float(k) for k in range(80, 121)]      # $1-wide chain 80..120
+    mids = {}
+    for k in strikes:
+        # cheap OTM wings, richer near-the-money shorts — enough credit to pass gates
+        mids[("C", k)] = max(0.10, 3.0 - 0.12 * (k - 100)) if k >= 100 else 3.0
+        mids[("P", k)] = max(0.10, 3.0 - 0.12 * (100 - k)) if k <= 100 else 3.0
+    trader = FakeOptionTrader(exp, strikes, mids, equity=50000.0)
+    setup = _types.SimpleNamespace(
+        ticker="TEST", price=100.0, expected_move="10.0%",
+        recommendation="SELL_PREMIUM",
+        next_earnings_date=(_date.today()).isoformat())   # prints today → expiry tomorrow
+    plan = build_iron_condor(trader, setup, 50000.0, get_settings())
+    assert plan["ok"], plan.get("reason")
+    st = plan["strikes"]
+    # shorts at ~the implied move (±10 from 100), wings 3% ($3) beyond
+    assert st["short_call"] == 110.0 and st["short_put"] == 90.0
+    assert st["long_call"] == 113.0 and st["long_put"] == 87.0
+    assert plan["qty"] >= 1
+    assert plan["credit"] > 0 and plan["limit_price"] < 0     # net credit = negative limit
+    assert plan["expiry"] == exp.isoformat()
+    assert len(plan["legs"]) == 4
+
+
+def test_build_iron_condor_rejects_far_earnings():
+    from signals.iv_executor import build_iron_condor
+    from config import get_settings
+    exp = _date.today() + _timedelta(days=1)
+    trader = FakeOptionTrader(exp, [float(k) for k in range(80, 121)], {}, equity=50000.0)
+    setup = _types.SimpleNamespace(
+        ticker="TEST", price=100.0, expected_move="10.0%", recommendation="SELL_PREMIUM",
+        next_earnings_date=(_date.today() + _timedelta(days=40)).isoformat())
+    plan = build_iron_condor(trader, setup, 50000.0, get_settings())
+    assert not plan["ok"] and "DTE band" in plan["reason"]
+
+
+async def test_condor_db_lifecycle(db):
+    strikes = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+    legs = _json.dumps([
+        {"symbol": "TEST260911C00110000", "side": "sell", "position_intent": "sell_to_open", "ratio_qty": 1},
+        {"symbol": "TEST260911C00113000", "side": "buy",  "position_intent": "buy_to_open",  "ratio_qty": 1},
+        {"symbol": "TEST260911P00090000", "side": "sell", "position_intent": "sell_to_open", "ratio_qty": 1},
+        {"symbol": "TEST260911P00087000", "side": "buy",  "position_intent": "buy_to_open",  "ratio_qty": 1},
+    ])
+    from datetime import datetime as _dt
+    today = _dt.utcnow().strftime("%Y-%m-%d")
+    cid = await db.record_condor("NVDA", "2026-09-10", "2026-09-11", legs, strikes,
+                                 qty=2, credit=1.20, max_loss=180.0,
+                                 entry_order_id="o1", entry_status="new")
+    assert cid > 0
+    assert await db.has_open_condor("NVDA") is True
+    assert await db.has_open_condor("AAPL") is False
+    assert await db.count_open_condors() == 1
+    assert await db.count_condors_opened_today(today) == 1
+
+    # 'closing' still counts as active/open-for-dedup, but not in get_open_condors
+    await db.mark_condor_closing(cid, "c1")
+    assert await db.has_open_condor("NVDA") is True
+    assert len(await db.get_open_condors()) == 0
+    assert len(await db.get_active_condors()) == 1
+
+    # close as a winner: pnl = (credit - exit_debit) * 100 * qty = (1.20-0.50)*100*2 = 140
+    await db.close_condor(cid, exit_debit=0.50, pnl=(1.20 - 0.50) * 100 * 2)
+    assert await db.has_open_condor("NVDA") is False
+    s = await db.get_condor_summary()
+    assert s["closed"] == 1 and s["wins"] == 1 and s["total_pnl"] == 140.0 and s["open"] == 0

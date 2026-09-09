@@ -69,6 +69,27 @@ class Settings(BaseSettings):
     # infra intact for other signal paths.
     auto_trade_flow_enabled: bool = Field(True, env="AUTO_TRADE_FLOW_ENABLED")
 
+    # --- IV/RV earnings execution (Phase 2 — defined-risk short premium) ---
+    # The primary edge: sell an iron condor before an earnings print and collect
+    # the IV crush. Level-3 defined risk (short strangle + protective wings).
+    # OFF by default — arm only after paper-testing the mechanics end to end.
+    iv_exec_enabled: bool = Field(False, env="IV_EXEC_ENABLED")
+    # Only act on setups this strong. SELL_PREMIUM = all 3 gates; CONSIDER = ts
+    # inversion + 1 other. Default also lets a CONSIDER through if earnings is
+    # imminent (front-month IV is already inverted the day before the print).
+    iv_exec_allow_consider: bool = Field(True, env="IV_EXEC_ALLOW_CONSIDER")
+    iv_exec_entry_days_before: int = Field(2, env="IV_EXEC_ENTRY_DAYS_BEFORE")   # enter when earnings ≤ N days out
+    iv_exec_risk_pct: float = Field(0.015, env="IV_EXEC_RISK_PCT")               # 1.5% of equity max loss per condor (defined risk)
+    iv_exec_max_risk_usd: float = Field(1500.0, env="IV_EXEC_MAX_RISK_USD")      # absolute max-loss cap per condor
+    iv_exec_wing_width_pct: float = Field(0.03, env="IV_EXEC_WING_WIDTH_PCT")    # protective wing = 3% of underlying beyond short
+    iv_exec_short_move_mult: float = Field(1.0, env="IV_EXEC_SHORT_MOVE_MULT")   # short strikes at 1.0× the implied move
+    iv_exec_max_positions: int = Field(5, env="IV_EXEC_MAX_POSITIONS")           # concurrent condors
+    iv_exec_max_per_day: int = Field(4, env="IV_EXEC_MAX_PER_DAY")               # new condors per day
+    iv_exec_tp_pct: float = Field(0.5, env="IV_EXEC_TP_PCT")                     # close at 50% of max credit captured
+    iv_exec_min_credit: float = Field(0.10, env="IV_EXEC_MIN_CREDIT")           # skip if net credit < $0.10 (not worth it)
+    iv_exec_min_dte: int = Field(1, env="IV_EXEC_MIN_DTE")                       # front expiry must be ≥1 DTE after earnings
+    iv_exec_max_dte: int = Field(10, env="IV_EXEC_MAX_DTE")                      # …and ≤10 DTE (front-month only)
+
     # --- Daily report scheduler ---
     report_enabled: bool = Field(True, env="REPORT_ENABLED")
     report_hour_et: int = Field(8, env="REPORT_HOUR_ET")   # weekday hour (ET) for the daily check-in

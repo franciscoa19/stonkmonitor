@@ -22,8 +22,21 @@ class AlpacaTrader:
     def __init__(self, api_key: str, secret_key: str, paper: bool = True):
         self.paper = paper
         self.client = TradingClient(api_key, secret_key, paper=paper)
+        # Raw-REST essentials for multi-leg (mleg) orders — alpaca-py 0.29 has no
+        # OptionLegRequest/MLEG, but the REST API supports it (verified on paper).
+        self._key = api_key
+        self._secret = secret_key
+        self._trade_base = ("https://paper-api.alpaca.markets" if paper
+                            else "https://api.alpaca.markets")
+        self._data_base = "https://data.alpaca.markets"
         mode = "PAPER" if paper else "LIVE"
         logger.info(f"AlpacaTrader initialized in {mode} mode")
+
+    @property
+    def _rest_headers(self) -> dict:
+        return {"APCA-API-KEY-ID": self._key,
+                "APCA-API-SECRET-KEY": self._secret,
+                "Content-Type": "application/json"}
 
     # ------------------------------------------------------------------ #
     #  Account Info                                                        #
@@ -247,3 +260,108 @@ class AlpacaTrader:
         except Exception as e:
             logger.error(f"close_position error: {e}")
             return {"error": str(e)}
+
+    # ------------------------------------------------------------------ #
+    #  Options — chain data + multi-leg (spreads / iron condors)          #
+    # ------------------------------------------------------------------ #
+    def _rest(self, method: str, url: str, body: Optional[dict] = None) -> tuple:
+        """Minimal blocking REST call (stdlib). Returns (status_code, parsed)."""
+        import json, urllib.request, urllib.error
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(url, data=data, headers=self._rest_headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                txt = r.read().decode()
+                return r.status, (json.loads(txt) if txt else {})
+        except urllib.error.HTTPError as e:
+            return e.code, {"error": e.read().decode()[:600]}
+        except Exception as e:
+            return 0, {"error": str(e)}
+
+    def get_order_raw(self, order_id: str) -> dict:
+        """Raw order dict via REST (works for mleg orders the SDK can't parse)."""
+        code, body = self._rest("GET", f"{self._trade_base}/v2/orders/{order_id}")
+        return body if code == 200 else {"error": body.get("error", f"HTTP {code}")}
+
+    def get_option_contracts(self, underlying: str, exp_gte, exp_lte,
+                             opt_type: Optional[str] = None, limit: int = 500) -> list[dict]:
+        """List tradable option contracts for an underlying within a date window."""
+        try:
+            from alpaca.trading.requests import GetOptionContractsRequest
+            kw = dict(underlying_symbols=[underlying.upper()],
+                      expiration_date_gte=exp_gte, expiration_date_lte=exp_lte, limit=limit)
+            if opt_type:
+                kw["type"] = opt_type
+            res = self.client.get_option_contracts(GetOptionContractsRequest(**kw))
+            return [
+                {"symbol": c.symbol, "strike": float(c.strike_price),
+                 "expiry": c.expiration_date, "type": c.type.value if c.type else None,
+                 "open_interest": int(c.open_interest or 0) if getattr(c, "open_interest", None) else 0}
+                for c in (res.option_contracts or [])
+            ]
+        except Exception as e:
+            logger.error(f"get_option_contracts error: {e}")
+            return []
+
+    def get_option_quotes(self, symbols: list[str]) -> dict:
+        """Latest bid/ask per OCC symbol. Returns {symbol: {bid, ask, mid}}."""
+        if not symbols:
+            return {}
+        import urllib.parse
+        out: dict = {}
+        # batch to keep URLs sane
+        for i in range(0, len(symbols), 100):
+            chunk = symbols[i:i + 100]
+            q = urllib.parse.urlencode({"symbols": ",".join(chunk)})
+            url = f"{self._data_base}/v1beta1/options/quotes/latest?{q}"
+            code, body = self._rest("GET", url)
+            if code == 200:
+                for sym, qt in (body.get("quotes") or {}).items():
+                    bid, ask = float(qt.get("bp") or 0), float(qt.get("ap") or 0)
+                    mid = (bid + ask) / 2 if (bid and ask) else (bid or ask)
+                    out[sym] = {"bid": bid, "ask": ask, "mid": mid}
+            else:
+                logger.debug(f"get_option_quotes {code}: {body.get('error')}")
+        return out
+
+    def multileg_order(self, legs: list[dict], qty: int, limit_price: float,
+                       order_type: str = "limit", tif: str = "day") -> dict:
+        """Submit a multi-leg (mleg) options order via REST.
+
+        legs: [{symbol, side('buy'|'sell'), position_intent, ratio_qty(int=1)}]
+        limit_price: net price of the spread. NEGATIVE = net credit (we receive),
+                     POSITIVE = net debit (we pay) — Alpaca's mleg convention.
+        Defined-risk spreads only at options level 3 (no naked shorts).
+        """
+        payload = {
+            "order_class": "mleg",
+            "qty": str(int(qty)),
+            "type": order_type,
+            "time_in_force": tif,
+            "legs": [
+                {"symbol": l["symbol"], "ratio_qty": str(int(l.get("ratio_qty", 1))),
+                 "side": l["side"], "position_intent": l["position_intent"]}
+                for l in legs
+            ],
+        }
+        if order_type == "limit":
+            payload["limit_price"] = str(round(float(limit_price), 2))
+        code, body = self._rest("POST", f"{self._trade_base}/v2/orders", payload)
+        if code in (200, 201) and body.get("id"):
+            logger.info(f"MLEG order submitted: {len(legs)} legs qty={qty} "
+                        f"net={limit_price:+.2f} | id={body['id']} status={body.get('status')}")
+            return {"id": body["id"], "status": body.get("status"),
+                    "legs": body.get("legs", [])}
+        logger.error(f"multileg_order failed ({code}): {body.get('error')}")
+        return {"error": body.get("error", f"HTTP {code}")}
+
+    def close_multileg(self, legs: list[dict], qty: int, limit_price: float,
+                       tif: str = "day") -> dict:
+        """Close an existing spread by submitting the inverse legs (…_to_close)."""
+        inv = []
+        for l in legs:
+            side = "buy" if l["side"] == "sell" else "sell"
+            intent = "buy_to_close" if l["side"] == "sell" else "sell_to_close"
+            inv.append({"symbol": l["symbol"], "side": side,
+                        "position_intent": intent, "ratio_qty": l.get("ratio_qty", 1)})
+        return self.multileg_order(inv, qty, limit_price, "limit", tif)

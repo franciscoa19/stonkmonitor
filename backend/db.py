@@ -292,6 +292,32 @@ CREATE TABLE IF NOT EXISTS daily_equity (
     realized_pnl_day REAL,            -- realized P&L booked that day (from trade_performance)
     created_at    TEXT NOT NULL
 );
+
+-- ── IV/RV earnings execution (Phase 2): defined-risk iron condors ──
+-- One row per condor sold before an earnings print. Legs are stored as JSON so
+-- the exit can submit the inverse. P&L = (credit - exit_debit) * 100 * qty.
+CREATE TABLE IF NOT EXISTS iv_condors (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker         TEXT NOT NULL,
+    earnings_date  TEXT,                    -- the print we're selling into
+    expiry         TEXT NOT NULL,           -- option expiry (YYYY-MM-DD)
+    legs_json      TEXT NOT NULL,           -- [{symbol, side, position_intent, ratio_qty}]
+    short_put      REAL, long_put   REAL,
+    short_call     REAL, long_call  REAL,
+    qty            INTEGER NOT NULL,
+    credit         REAL NOT NULL,           -- net credit collected per spread ($)
+    max_loss       REAL NOT NULL,           -- per-spread max loss ($)
+    entry_order_id TEXT,
+    entry_status   TEXT,
+    opened_at      TEXT NOT NULL,
+    status         TEXT DEFAULT 'open',     -- open | closing | closed
+    close_order_id TEXT,
+    exit_debit     REAL,                    -- net debit paid to close per spread
+    pnl            REAL,                    -- realized $ P&L (all spreads)
+    closed_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_condor_open ON iv_condors(status);
+CREATE INDEX IF NOT EXISTS idx_condor_tkr  ON iv_condors(ticker, status);
 """
 
 # Columns added after initial release — applied by _migrate() on connect for
@@ -444,6 +470,68 @@ class Database:
         return {"resolved": n, "wins": wins,
                 "win_rate": round(wins / n * 100, 1) if n else 0.0,
                 "avg_edge_pct": avg_edge, "open": open_n}
+
+    # ── IV/RV execution: iron condors (Phase 2) ─────────────────────────
+    async def has_open_condor(self, ticker: str) -> bool:
+        r = await self._query(
+            "SELECT id FROM iv_condors WHERE ticker=? AND status!='closed' LIMIT 1", (ticker,))
+        return bool(r)
+
+    async def count_condors_opened_today(self, today: str) -> int:
+        row = await self._scalar(
+            "SELECT COUNT(*) AS n FROM iv_condors WHERE substr(opened_at,1,10)=?", (today,))
+        return int(row.get("n", 0))
+
+    async def count_open_condors(self) -> int:
+        row = await self._scalar("SELECT COUNT(*) AS n FROM iv_condors WHERE status!='closed'")
+        return int(row.get("n", 0))
+
+    async def record_condor(self, ticker: str, earnings_date: Optional[str], expiry: str,
+                            legs_json: str, strikes: dict, qty: int, credit: float,
+                            max_loss: float, entry_order_id: Optional[str],
+                            entry_status: Optional[str]) -> int:
+        now = datetime.utcnow().isoformat()
+        await self._exec(
+            """INSERT INTO iv_condors
+                 (ticker, earnings_date, expiry, legs_json, short_put, long_put,
+                  short_call, long_call, qty, credit, max_loss, entry_order_id,
+                  entry_status, opened_at, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open')""",
+            (ticker, earnings_date, expiry, legs_json,
+             strikes.get("short_put"), strikes.get("long_put"),
+             strikes.get("short_call"), strikes.get("long_call"),
+             int(qty), round(credit, 2), round(max_loss, 2),
+             entry_order_id, entry_status, now))
+        row = await self._scalar("SELECT last_insert_rowid() AS id")
+        return int(row.get("id", 0))
+
+    async def get_open_condors(self) -> list[dict]:
+        return await self._query("SELECT * FROM iv_condors WHERE status='open'")
+
+    async def get_active_condors(self) -> list[dict]:
+        return await self._query(
+            "SELECT * FROM iv_condors WHERE status IN ('open','closing')")
+
+    async def mark_condor_closing(self, condor_id: int, close_order_id: str) -> None:
+        await self._exec(
+            "UPDATE iv_condors SET status='closing', close_order_id=? WHERE id=?",
+            (close_order_id, condor_id))
+
+    async def close_condor(self, condor_id: int, exit_debit: float, pnl: float) -> None:
+        await self._exec(
+            """UPDATE iv_condors SET status='closed', exit_debit=?, pnl=?, closed_at=?
+               WHERE id=?""",
+            (round(exit_debit, 2), round(pnl, 2), datetime.utcnow().isoformat(), condor_id))
+
+    async def get_condor_summary(self) -> dict:
+        rows = await self._query("SELECT * FROM iv_condors WHERE status='closed'")
+        n = len(rows)
+        wins = sum(1 for r in rows if (r["pnl"] or 0) > 0)
+        pnl = round(sum(r["pnl"] or 0 for r in rows), 2)
+        open_n = await self.count_open_condors()
+        return {"closed": n, "wins": wins,
+                "win_rate": round(wins / n * 100, 1) if n else 0.0,
+                "total_pnl": pnl, "open": open_n}
 
     # ── Write: Options Flow ──────────────────────────────────────────────
     async def save_options_flow(self, event: dict):
