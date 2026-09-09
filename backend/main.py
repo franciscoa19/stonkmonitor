@@ -1324,9 +1324,25 @@ async def lifespan(app: FastAPI):
         saved = await db.get_watchlist()
         _watchlist[:] = saved
         if saved:
-            logger.info(f"Watchlist restored: {', '.join(saved)}")
+            logger.info(f"Watchlist restored: {len(saved)} names")
     except Exception as e:
         logger.error(f"Watchlist restore failed: {e}")
+
+    # Ensure the curated earnings universe is on the watchlist (declarative source
+    # of truth for the IV/RV scanner — edit signals/earnings_universe.py + restart).
+    try:
+        from signals.earnings_universe import tickers as _universe_tickers
+        existing = set(_watchlist)
+        added = 0
+        for t in _universe_tickers():
+            if t not in existing:
+                await db.add_watchlist(t)
+                _watchlist.append(t)
+                added += 1
+        if added:
+            logger.info(f"Watchlist: seeded {added} from earnings universe ({len(_watchlist)} total)")
+    except Exception as e:
+        logger.error(f"Earnings-universe seed failed: {e}")
 
     logger.info("=" * 60)
     logger.info("  StonkMonitor starting up")
