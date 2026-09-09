@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # Fully autonomous: execute queued trades immediately instead of waiting for a
     # Telegram/UI confirm tap. Paper only — all risk caps/filters still apply.
     auto_trade_auto_execute: bool = Field(False, env="AUTO_TRADE_AUTO_EXECUTE")
+    # Master switch for the flow/pattern/insider/congress trade path (sweeps,
+    # triple_confluence, etc.). Set false to pause it — e.g. after it proved to
+    # be a losing edge (2026-09: triple_confluence went 0/5). Leaves the engine
+    # infra intact for other signal paths.
+    auto_trade_flow_enabled: bool = Field(True, env="AUTO_TRADE_FLOW_ENABLED")
 
     # --- Daily report scheduler ---
     report_enabled: bool = Field(True, env="REPORT_ENABLED")

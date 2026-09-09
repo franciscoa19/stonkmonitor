@@ -489,7 +489,7 @@ class AutoTradeEngine:
 
     async def evaluate_signal(self, signal, account: dict):
         """Called after every scored signal. Routes qualifying signals to trade builders."""
-        if not self.settings.auto_trade_enabled:
+        if not self.settings.auto_trade_enabled or not self.settings.auto_trade_flow_enabled:
             return
         if signal is None:
             return
@@ -537,7 +537,7 @@ class AutoTradeEngine:
     async def evaluate_pattern(self, pattern_name: str, ticker: str,
                                score: float, evidence: list, account: dict):
         """Called when a pattern fires. High-score qualifying patterns queue trades."""
-        if not self.settings.auto_trade_enabled:
+        if not self.settings.auto_trade_enabled or not self.settings.auto_trade_flow_enabled:
             return
         # Tag any trade queued during this call with the pattern that triggered it.
         self._current_strategy = pattern_name
