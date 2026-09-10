@@ -1,6 +1,1 @@
 ticker,symbol,strategy,trade_type,side,qty,filled_avg_price,exit_price,realized_pnl,realized_pnl_pct,exit_reason,entry_hour_et,hold_minutes,submitted_at,updated_at
-URI,URI260918C01050000,triple_confluence,option,buy,1.0,8.5,5.5,-300.0,-35.29,closed_loss,13,120.1,2026-09-03T17:56:25.711267+00:00,2026-09-09T11:57:46.354206
-DXCM,DXCM260918P00090000,triple_confluence,option,buy,3.0,2.55,1.3333,-365.0,-47.71,closed_loss,13,107.4,2026-09-03T17:56:23.120137+00:00,2026-09-09T11:57:46.354206
-DELL,DELL260918P00490000,triple_confluence,option,buy,1.0,10.1,6.45,-365.0,-36.14,closed_loss,4,308.5,2026-09-08T08:15:02.744221+00:00,2026-09-09T11:57:46.354206
-AMD,AMD260918P00420000,triple_confluence,option,buy,5.0,1.22,0.746,-237.0,-38.85,sl,4,372.4,2026-09-08T08:15:03.753908+00:00,2026-09-09T11:57:46.354206
-AMD,AMD260918P00452500,triple_confluence,option,buy,1.0,5.35,3.4,-195.0,-36.45,closed_loss,4,53.2,2026-09-08T08:15:03.522860+00:00,2026-09-09T11:57:46.354206

@@ -1,143 +1,103 @@
 {
-  "generated": "2026-09-09T12:15:14.104332+00:00",
+  "generated": "2026-09-10T12:00:15.206697+00:00",
   "account": {
-    "equity": 48536.94,
-    "cash": 48536.94,
-    "buying_power": 189299.72,
-    "start_equity": 50000.0,
-    "total_pnl": -1463.0599999999977,
-    "total_pnl_pct": -2.926119999999995,
-    "open_positions": 0,
-    "days_running": 7,
+    "equity": 49880.05,
+    "cash": 50540.05,
+    "buying_power": 195160.2,
+    "start_equity": 49992.8,
+    "total_pnl": -112.75,
+    "total_pnl_pct": -0.22553247667664142,
+    "open_positions": 8,
+    "days_running": 2,
     "error": null
   },
   "metrics": {
-    "closed_trades": 5,
+    "closed_trades": 0,
     "wins": 0,
-    "losses": 5,
+    "losses": 0,
     "win_rate": 0.0,
     "profit_factor": 0.0,
     "avg_win": 0.0,
-    "avg_loss": 292.4,
-    "realized_total": -1462.0,
-    "avg_hold_min": 192.32,
-    "trades_7d": 15,
-    "trades_per_day": 2.142857142857143
+    "avg_loss": 0.0,
+    "realized_total": 0,
+    "avg_hold_min": null,
+    "trades_7d": 0,
+    "trades_per_day": 0.0
   },
   "activity": {
-    "tag": "MEASURED",
-    "note": "~2.1 entries/day."
+    "tag": "QUIET",
+    "note": "No trades yet \u2014 the conservative thresholds are holding fire. Expected early on; watch that we're not too selective."
   },
   "equity_curve": [
     {
-      "date": "2026-09-03",
-      "equity": 49414.85
-    },
-    {
-      "date": "2026-09-04",
-      "equity": 49334.65
-    },
-    {
-      "date": "2026-09-05",
-      "equity": 49334.59
-    },
-    {
-      "date": "2026-09-06",
-      "equity": 49334.59
-    },
-    {
-      "date": "2026-09-07",
-      "equity": 49334.59
-    },
-    {
-      "date": "2026-09-08",
-      "equity": 48537.24
-    },
-    {
       "date": "2026-09-09",
-      "equity": 48536.94
+      "equity": 49880.5
+    },
+    {
+      "date": "2026-09-10",
+      "equity": 49880.05
     }
   ],
-  "by_strategy": [
+  "iv_rv": {
+    "resolved": 0,
+    "wins": 0,
+    "win_rate": 0.0,
+    "avg_edge_pct": 0.0,
+    "open": 12
+  },
+  "iv_condors": {
+    "closed": 0,
+    "wins": 0,
+    "win_rate": 0.0,
+    "total_pnl": 0,
+    "open": 2,
+    "pending": 0
+  },
+  "by_strategy": [],
+  "by_hour": [],
+  "recent": [],
+  "open_positions": [
     {
-      "strategy": "triple_confluence",
-      "n": 5,
-      "wins": 0,
-      "pnl": -1462.0,
-      "avg_pnl": -292.4,
-      "avg_hold": 192.3
+      "symbol": "ADBE260911C00277500",
+      "qty": -1.0,
+      "pnl": 0.0
+    },
+    {
+      "symbol": "ADBE260911C00285000",
+      "qty": 1.0,
+      "pnl": 0.0
+    },
+    {
+      "symbol": "ADBE260911P00227500",
+      "qty": 1.0,
+      "pnl": 0.0
+    },
+    {
+      "symbol": "ADBE260911P00235000",
+      "qty": -1.0,
+      "pnl": 0.0
+    },
+    {
+      "symbol": "ORCL260911C00180000",
+      "qty": -2.0,
+      "pnl": 0.0
+    },
+    {
+      "symbol": "ORCL260911C00185000",
+      "qty": 2.0,
+      "pnl": 0.0
+    },
+    {
+      "symbol": "ORCL260911P00137000",
+      "qty": 2.0,
+      "pnl": 0.0
+    },
+    {
+      "symbol": "ORCL260911P00142000",
+      "qty": -2.0,
+      "pnl": 0.0
     }
   ],
-  "by_hour": [
-    {
-      "h": 4,
-      "n": 3,
-      "pnl": -797.0
-    },
-    {
-      "h": 13,
-      "n": 2,
-      "pnl": -665.0
-    }
-  ],
-  "recent": [
-    {
-      "ticker": "URI",
-      "symbol": "URI260918C01050000",
-      "strategy": "triple_confluence",
-      "trade_type": "option",
-      "pnl": -300.0,
-      "pnl_pct": -35.3,
-      "exit_reason": "closed_loss",
-      "hold_min": 120.1,
-      "hour": 13
-    },
-    {
-      "ticker": "DXCM",
-      "symbol": "DXCM260918P00090000",
-      "strategy": "triple_confluence",
-      "trade_type": "option",
-      "pnl": -365.0,
-      "pnl_pct": -47.7,
-      "exit_reason": "closed_loss",
-      "hold_min": 107.4,
-      "hour": 13
-    },
-    {
-      "ticker": "DELL",
-      "symbol": "DELL260918P00490000",
-      "strategy": "triple_confluence",
-      "trade_type": "option",
-      "pnl": -365.0,
-      "pnl_pct": -36.1,
-      "exit_reason": "closed_loss",
-      "hold_min": 308.5,
-      "hour": 4
-    },
-    {
-      "ticker": "AMD",
-      "symbol": "AMD260918P00420000",
-      "strategy": "triple_confluence",
-      "trade_type": "option",
-      "pnl": -237.0,
-      "pnl_pct": -38.9,
-      "exit_reason": "sl",
-      "hold_min": 372.4,
-      "hour": 4
-    },
-    {
-      "ticker": "AMD",
-      "symbol": "AMD260918P00452500",
-      "strategy": "triple_confluence",
-      "trade_type": "option",
-      "pnl": -195.0,
-      "pnl_pct": -36.5,
-      "exit_reason": "closed_loss",
-      "hold_min": 53.2,
-      "hour": 4
-    }
-  ],
-  "open_positions": [],
   "proposals": [
     "No changes proposed \u2014 baseline accruing. Keep collecting."
   ]
