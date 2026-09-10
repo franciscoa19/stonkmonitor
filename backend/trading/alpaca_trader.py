@@ -76,66 +76,53 @@ class AlpacaTrader:
             logger.error(f"get_positions error: {e}")
             return []
 
-    def get_orders(self, status: str = "open") -> list[dict]:
-        try:
-            from alpaca.trading.requests import GetOrdersRequest
-            from alpaca.trading.enums import QueryOrderStatus
-            req = GetOrdersRequest(status=QueryOrderStatus(status))
-            orders = self.client.get_orders(filter=req)
-            return [
-                {
-                    "id":         str(o.id),
-                    "symbol":     o.symbol,
-                    "qty":        float(o.qty or 0),
-                    "side":       o.side.value,
-                    "type":       o.order_type.value,
-                    "status":     o.status.value,
-                    "limit":      float(o.limit_price) if o.limit_price else None,
-                    "stop":       float(o.stop_price) if o.stop_price else None,
-                    "filled_qty": float(o.filled_qty or 0),
-                    "filled_avg": float(o.filled_avg_price) if o.filled_avg_price else None,
-                    "created_at": o.created_at.isoformat() if o.created_at else None,
-                }
-                for o in orders
-            ]
-        except Exception as e:
-            logger.error(f"get_orders error: {e}")
+    @staticmethod
+    def _map_rest_order(o: dict) -> dict:
+        """Map a raw REST order dict to our flat shape (SDK-free)."""
+        def _f(v):
+            return float(v) if v not in (None, "") else None
+        return {
+            "id":         str(o.get("id")),
+            "symbol":     o.get("symbol"),
+            "qty":        float(o.get("qty") or 0),
+            "side":       o.get("side") or "",
+            "type":       o.get("order_type") or o.get("type") or "",
+            "status":     o.get("status") or "",
+            "limit":      _f(o.get("limit_price")),
+            "stop":       _f(o.get("stop_price")),
+            "filled_qty": float(o.get("filled_qty") or 0),
+            "filled_avg": _f(o.get("filled_avg_price")),
+            "created_at": o.get("created_at"),
+            "filled_at":  o.get("filled_at"),
+            "updated_at": o.get("updated_at"),
+        }
+
+    def _list_orders(self, status: str = "open", after: str = None,
+                     limit: int = 500) -> list[dict]:
+        """List orders via raw REST. Skips multi-leg (mleg) parent orders — the
+        SDK can't parse them and they aren't single instruments; condor orders
+        are tracked separately via get_order_raw / the iv_condors ledger."""
+        import urllib.parse
+        params = {"status": status, "limit": str(limit)}
+        if after:
+            params["after"] = after
+        url = f"{self._trade_base}/v2/orders?{urllib.parse.urlencode(params)}"
+        code, body = self._rest("GET", url)
+        if code != 200 or not isinstance(body, list):
+            err = body.get("error") if isinstance(body, dict) else f"HTTP {code}"
+            logger.error(f"list_orders error: {err}")
             return []
+        return [self._map_rest_order(o) for o in body
+                if o.get("order_class") != "mleg"]
+
+    def get_orders(self, status: str = "open") -> list[dict]:
+        return self._list_orders(status=status)
 
     def get_order_history(self, days: int = 30, limit: int = 500) -> list[dict]:
-        """Fetch closed/filled orders for performance tracking."""
-        try:
-            from alpaca.trading.requests import GetOrdersRequest
-            from alpaca.trading.enums import QueryOrderStatus
-            from datetime import datetime, timedelta
-            after = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
-            req = GetOrdersRequest(
-                status=QueryOrderStatus.CLOSED,
-                after=after,
-                limit=limit,
-            )
-            orders = self.client.get_orders(filter=req)
-            return [
-                {
-                    "id":         str(o.id),
-                    "symbol":     o.symbol,
-                    "qty":        float(o.qty or 0),
-                    "side":       o.side.value,
-                    "type":       o.order_type.value,
-                    "status":     o.status.value,
-                    "limit":      float(o.limit_price) if o.limit_price else None,
-                    "stop":       float(o.stop_price) if o.stop_price else None,
-                    "filled_qty": float(o.filled_qty or 0),
-                    "filled_avg": float(o.filled_avg_price) if o.filled_avg_price else None,
-                    "created_at": o.created_at.isoformat() if o.created_at else None,
-                    "filled_at":  o.filled_at.isoformat() if o.filled_at else None,
-                    "updated_at": o.updated_at.isoformat() if o.updated_at else None,
-                }
-                for o in orders
-            ]
-        except Exception as e:
-            logger.error(f"get_order_history error: {e}")
-            return []
+        """Fetch closed/filled orders for performance tracking (mleg-safe)."""
+        from datetime import datetime, timedelta
+        after = (datetime.utcnow() - timedelta(days=days)).isoformat() + "Z"
+        return self._list_orders(status="closed", after=after, limit=limit)
 
     # ------------------------------------------------------------------ #
     #  Stock Orders                                                        #
