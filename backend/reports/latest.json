@@ -1,14 +1,14 @@
 {
-  "generated": "2026-09-10T12:00:15.206697+00:00",
+  "generated": "2026-09-11T12:09:10.203312+00:00",
   "account": {
-    "equity": 49880.05,
+    "equity": 49726.05,
     "cash": 50540.05,
-    "buying_power": 195160.2,
+    "buying_power": 192056.2,
     "start_equity": 49992.8,
-    "total_pnl": -112.75,
-    "total_pnl_pct": -0.22553247667664142,
+    "total_pnl": -266.75,
+    "total_pnl_pct": -0.5335768350642491,
     "open_positions": 8,
-    "days_running": 2,
+    "days_running": 3,
     "error": null
   },
   "metrics": {
@@ -35,7 +35,11 @@
     },
     {
       "date": "2026-09-10",
-      "equity": 49880.05
+      "equity": 49726.05
+    },
+    {
+      "date": "2026-09-11",
+      "equity": 49726.05
     }
   ],
   "iv_rv": {
@@ -43,7 +47,7 @@
     "wins": 0,
     "win_rate": 0.0,
     "avg_edge_pct": 0.0,
-    "open": 12
+    "open": 17
   },
   "iv_condors": {
     "closed": 0,
@@ -99,6 +103,6 @@
     }
   ],
   "proposals": [
-    "No changes proposed \u2014 baseline accruing. Keep collecting."
+    "No closed trades in 3 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
   ]
 }
