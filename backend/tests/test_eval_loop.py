@@ -279,6 +279,50 @@ async def test_iv_rv_eval_stores_earnings_date(db):
     assert amzn["earnings_date"] is None
 
 
+# ── IV/RV strategy-variant logger (measurement only) ────────────────────
+def test_variant_payoff():
+    from signals.iv_variants import variant_payoff
+    condor = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0,
+              "long_call": 113.0, "credit": 1.20}
+    assert variant_payoff(condor, 100) == 120.0        # inside → full credit
+    assert variant_payoff(condor, 85) == -180.0        # below long put → capped max loss
+    assert variant_payoff(condor, 111) == 20.0         # partway into call spread
+    assert variant_payoff(condor, 120) == -180.0       # blown through → capped
+    fly = {"short_put": 100.0, "long_put": 95.0, "short_call": 100.0,
+           "long_call": 105.0, "credit": 4.0}
+    assert variant_payoff(fly, 100) == 400.0           # pin ATM → full credit
+    assert variant_payoff(fly, 110) == -100.0          # capped (width 5 − credit 4)
+    straddle = {"short_put": 100.0, "long_put": None, "short_call": 100.0,
+                "long_call": None, "credit": 8.0}
+    assert variant_payoff(straddle, 100) == 800.0
+    assert variant_payoff(straddle, 90) == -200.0      # uncapped (moved 10 vs 8 credit)
+
+
+async def test_variant_eval_lifecycle(db):
+    sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+    await db.record_variant_eval("NVDA", "2026-09-16", "2026-09-18", "condor_1.0sd",
+                                 100.0, 8.0, sp, credit=1.20, max_loss=180.0,
+                                 resolve_after="2026-09-18")
+    await db.record_variant_eval("NVDA", "2026-09-16", "2026-09-18", "straddle",
+                                 100.0, 8.0, {"short_put": 100.0, "short_call": 100.0},
+                                 credit=8.0, max_loss=None, resolve_after="2026-09-18")
+    assert await db.has_variant_evals("NVDA", "2026-09-16") is True
+    assert await db.has_variant_evals("AAPL", "2026-09-16") is False
+
+    due = await db.get_due_variant_evals("2026-09-20")
+    assert len(due) == 2
+    from signals.iv_variants import variant_payoff
+    for ev in due:
+        await db.resolve_variant_eval(ev["id"], 103.0, variant_payoff(ev, 103.0))
+
+    summ = {r["variant"]: r for r in await db.get_variant_summary()}
+    # NVDA moved to 103: condor stays inside (full +120), straddle loses 3 → (8-3)*100=+500
+    assert summ["condor_1.0sd"]["avg_pnl"] == 120.0 and summ["condor_1.0sd"]["win_rate"] == 100.0
+    assert summ["condor_1.0sd"]["avg_ror_pct"] == round(120.0 / 180.0 * 100, 1)
+    assert summ["straddle"]["avg_pnl"] == 500.0
+    assert summ["straddle"]["avg_ror_pct"] is None      # undefined risk → no RoR
+
+
 # ── Account-fetch failure detection (guards the $0/-100% bogus report) ──
 async def test_report_flags_account_fetch_failure(db):
     class FailingTrader:

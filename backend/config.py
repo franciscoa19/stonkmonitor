@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     iv_exec_min_credit: float = Field(0.10, env="IV_EXEC_MIN_CREDIT")           # skip if net credit < $0.10 (not worth it)
     iv_exec_min_dte: int = Field(1, env="IV_EXEC_MIN_DTE")                       # front expiry must be ≥1 DTE after earnings
     iv_exec_max_dte: int = Field(10, env="IV_EXEC_MAX_DTE")                      # …and ≤10 DTE (front-month only)
+    # Log several hypothetical structures per earnings event (condor 0.7/1.0/1.3×,
+    # iron fly, straddle) and resolve vs realized to compare expectancy. Pure
+    # measurement, zero capital at risk — on by default during the paper test.
+    iv_variants_log_enabled: bool = Field(True, env="IV_VARIANTS_LOG_ENABLED")
 
     # --- Daily report scheduler ---
     report_enabled: bool = Field(True, env="REPORT_ENABLED")

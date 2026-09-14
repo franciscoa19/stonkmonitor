@@ -1084,6 +1084,29 @@ async def daily_equity_loop():
         except Exception as e:
             logger.warning(f"IV eval resolve error: {e}")
 
+        # Resolve due strategy-variant evals: score each hypothetical structure's
+        # expiry-intrinsic payoff at the realized underlying price (no execution).
+        try:
+            from signals.iv_variants import variant_payoff
+            today = datetime.now(_ET).strftime("%Y-%m-%d")
+            due = await db.get_due_variant_evals(today)
+            spot_cache: dict = {}
+            for ev in due:
+                tk = ev["ticker"]
+                if tk not in spot_cache:
+                    q = feed.get_latest_quote(tk)
+                    bid, ask = float(q.get("bid") or 0), float(q.get("ask") or 0)
+                    spot_cache[tk] = (bid + ask) / 2 if (bid and ask) else (bid or ask)
+                px = spot_cache[tk]
+                if px:
+                    pnl = variant_payoff(ev, px)
+                    await db.resolve_variant_eval(ev["id"], px, pnl)
+            if due:
+                logger.info(f"Variant evals resolved: {len(due)} rows across "
+                            f"{len(spot_cache)} events")
+        except Exception as e:
+            logger.warning(f"Variant eval resolve error: {e}")
+
         await asyncio.sleep(3600)  # hourly
 
 
@@ -1155,6 +1178,46 @@ async def maybe_execute_condor(setup):
         f"{st['long_put']}/{st['short_put']}--{st['short_call']}/{st['long_call']} "
         f"x{plan['qty']} credit ${plan['credit']:.2f} maxloss ${plan['max_loss']:.0f} "
         f"risk ${plan['risk_usd']:.0f} exp {plan['expiry']} order={res.get('id')}")
+
+
+async def log_variant_evals(setup):
+    """Measurement only: price several hypothetical structures for this earnings
+    event and log them for later resolution vs the realized move. No execution.
+    One set per ticker+event (deduped). Resolves on the same date the condor
+    would (earnings + 2d, or signal + 7d fallback)."""
+    from datetime import date as _date, timedelta as _td, datetime as _dt
+    from signals.iv_variants import build_variants
+    if not settings.iv_variants_log_enabled:
+        return
+    edate = getattr(setup, "next_earnings_date", None)
+    if await db.has_variant_evals(setup.ticker, edate):
+        return
+    resolve_after = None
+    if edate:
+        try:
+            resolve_after = (_date.fromisoformat(edate) + _td(days=2)).isoformat()
+        except Exception:
+            resolve_after = None
+    if not resolve_after:
+        resolve_after = (_dt.utcnow() + _td(days=7)).date().isoformat()
+
+    loop = asyncio.get_event_loop()
+    variants = await loop.run_in_executor(None, build_variants, trader, setup, settings)
+    if not variants:
+        return
+    im = 0.0
+    try:
+        im = float(str(setup.expected_move or "0").rstrip("%") or 0)
+    except Exception:
+        im = 0.0
+    for v in variants:
+        await db.record_variant_eval(
+            ticker=setup.ticker, earnings_date=edate, expiry=v["expiry"],
+            variant=v["variant"], spot=setup.price, implied_move_pct=im,
+            strikes=v["strikes"], credit=v["credit"], max_loss=v["max_loss"],
+            resolve_after=resolve_after)
+    logger.info(f"Variant-log {setup.ticker}: {len(variants)} structures "
+                f"({', '.join(v['variant'] for v in variants)}) resolve {resolve_after}")
 
 
 def _condor_close_debit(legs: list, quotes: dict) -> float:
@@ -1358,6 +1421,13 @@ async def iv_scanner_loop():
                             await maybe_execute_condor(setup)
                         except Exception as e:
                             logger.warning(f"IV-exec {ticker} error: {e}")
+
+                        # Measurement: log hypothetical structure variants for
+                        # this event (no execution) to compare expectancy.
+                        try:
+                            await log_variant_evals(setup)
+                        except Exception as e:
+                            logger.debug(f"variant-log {ticker} skipped: {e}")
 
             except Exception as e:
                 logger.warning(f"IV scanner error for {ticker}: {e}")

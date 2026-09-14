@@ -318,6 +318,35 @@ CREATE TABLE IF NOT EXISTS iv_condors (
 );
 CREATE INDEX IF NOT EXISTS idx_condor_open ON iv_condors(status);
 CREATE INDEX IF NOT EXISTS idx_condor_tkr  ON iv_condors(ticker, status);
+
+-- ── IV/RV strategy-variant logger (measurement only, NO execution) ──
+-- For each earnings event we log several hypothetical structures side by side
+-- (condor at 0.7/1.0/1.3× the implied move, iron fly, short straddle) priced off
+-- the live chain, then resolve each vs the realized move to compare expectancy
+-- before promoting any variant to real execution. Zero capital at risk.
+CREATE TABLE IF NOT EXISTS iv_variant_evals (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker         TEXT NOT NULL,
+    earnings_date  TEXT,
+    signal_date    TEXT NOT NULL,
+    expiry         TEXT,
+    variant        TEXT NOT NULL,          -- condor_1.0sd | condor_0.7sd | ... | fly | straddle
+    spot           REAL,                   -- underlying at signal
+    implied_move_pct REAL,
+    short_put      REAL, long_put  REAL,   -- long_* NULL for straddle/strangle
+    short_call     REAL, long_call REAL,
+    credit         REAL NOT NULL,          -- credit collected per 1 spread ($ per share)
+    max_loss       REAL,                   -- per-spread $ (NULL = undefined risk)
+    resolve_after  TEXT,
+    resolved       INTEGER DEFAULT 0,
+    exit_spot      REAL,                   -- underlying at resolution
+    realized_pnl   REAL,                   -- $ per 1 spread at expiry intrinsic
+    win            INTEGER,
+    created_at     TEXT NOT NULL,
+    resolved_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_variant_open ON iv_variant_evals(resolved, resolve_after);
+CREATE INDEX IF NOT EXISTS idx_variant_kind ON iv_variant_evals(variant, resolved);
 """
 
 # Columns added after initial release — applied by _migrate() on connect for
@@ -601,6 +630,60 @@ class Database:
                 "win_rate": round(wins / n * 100, 1) if n else 0.0,
                 "total_pnl": pnl, "open": int(open_row.get("n", 0)),
                 "pending": int(pending.get("n", 0))}
+
+    # ── IV/RV strategy-variant logger (measurement only) ────────────────
+    async def has_variant_evals(self, ticker: str, earnings_date: Optional[str]) -> bool:
+        """True if this ticker+event already has variants logged (dedup)."""
+        r = await self._query(
+            """SELECT id FROM iv_variant_evals
+               WHERE ticker=? AND resolved=0
+                 AND (earnings_date IS ? OR earnings_date=?) LIMIT 1""",
+            (ticker, earnings_date, earnings_date))
+        return bool(r)
+
+    async def record_variant_eval(self, ticker: str, earnings_date: Optional[str],
+                                  expiry: Optional[str], variant: str, spot: float,
+                                  implied_move_pct: float, strikes: dict, credit: float,
+                                  max_loss: Optional[float], resolve_after: str) -> None:
+        now = datetime.utcnow().isoformat()
+        await self._exec(
+            """INSERT INTO iv_variant_evals
+                 (ticker, earnings_date, signal_date, expiry, variant, spot,
+                  implied_move_pct, short_put, long_put, short_call, long_call,
+                  credit, max_loss, resolve_after, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (ticker, earnings_date, now[:10], expiry, variant, round(spot, 2),
+             round(implied_move_pct, 2), strikes.get("short_put"), strikes.get("long_put"),
+             strikes.get("short_call"), strikes.get("long_call"),
+             round(credit, 2), (round(max_loss, 2) if max_loss is not None else None),
+             resolve_after, now))
+
+    async def get_due_variant_evals(self, today: str) -> list[dict]:
+        return await self._query(
+            "SELECT * FROM iv_variant_evals WHERE resolved=0 AND resolve_after <= ?", (today,))
+
+    async def resolve_variant_eval(self, eval_id: int, exit_spot: float,
+                                   realized_pnl: float) -> None:
+        await self._exec(
+            """UPDATE iv_variant_evals SET resolved=1, exit_spot=?, realized_pnl=?,
+                 win=?, resolved_at=? WHERE id=?""",
+            (round(exit_spot, 2), round(realized_pnl, 2),
+             1 if realized_pnl > 0 else 0, datetime.utcnow().isoformat(), eval_id))
+
+    async def get_variant_summary(self) -> list[dict]:
+        """Per-variant aggregates over resolved events, best expectancy first."""
+        rows = await self._query(
+            """SELECT variant,
+                      COUNT(*) AS n,
+                      SUM(win) AS wins,
+                      ROUND(AVG(realized_pnl), 2) AS avg_pnl,
+                      ROUND(SUM(realized_pnl), 2) AS total_pnl,
+                      ROUND(AVG(CASE WHEN max_loss>0 THEN realized_pnl/max_loss END)*100, 1) AS avg_ror_pct
+               FROM iv_variant_evals WHERE resolved=1
+               GROUP BY variant ORDER BY avg_pnl DESC""")
+        for r in rows:
+            r["win_rate"] = round((r["wins"] or 0) / r["n"] * 100, 1) if r["n"] else 0.0
+        return rows
 
     # ── Write: Options Flow ──────────────────────────────────────────────
     async def save_options_flow(self, event: dict):

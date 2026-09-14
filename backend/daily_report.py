@@ -92,6 +92,10 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
     except Exception:
         iv_condors = {"closed": 0, "wins": 0, "win_rate": 0.0,
                       "total_pnl": 0.0, "open": 0, "pending": 0}
+    try:
+        iv_variants = await db.get_variant_summary()
+    except Exception:
+        iv_variants = []
 
     # ── Attribution: by entry hour (ET) ──────────────────────────────────
     by_hour = await db._query(
@@ -169,6 +173,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         "equity_curve": [{"date": r["date"], "equity": float(r["equity"])} for r in curve],
         "iv_rv": iv_rv,
         "iv_condors": iv_condors,
+        "iv_variants": iv_variants,
         "by_strategy": [dict(r) for r in by_strategy],
         "by_hour": [dict(r) for r in by_hour],
         "recent": recent,
@@ -264,6 +269,29 @@ def render_html(d: dict) -> str:
     iv = d.get("iv_rv", {"resolved": 0, "wins": 0, "win_rate": 0.0, "avg_edge_pct": 0.0, "open": 0})
     condors = d.get("iv_condors", {"closed": 0, "wins": 0, "win_rate": 0.0,
                                      "total_pnl": 0.0, "open": 0, "pending": 0})
+    variants = d.get("iv_variants", []) or []
+    if variants:
+        _vrows = "".join(
+            f"<tr><td style='padding:3px 12px 3px 0'>{_html.escape(str(v['variant']))}</td>"
+            f"<td style='text-align:right'>{v['n']}</td>"
+            f"<td style='text-align:right'>{round(v.get('win_rate') or 0)}%</td>"
+            f"<td style='text-align:right' class=\"{'up' if (v.get('avg_pnl') or 0)>=0 else 'down'}\">{_money(v.get('avg_pnl') or 0)}</td>"
+            f"<td style='text-align:right'>{(str(v['avg_ror_pct'])+'%') if v.get('avg_ror_pct') is not None else '—'}</td>"
+            f"<td style='text-align:right' class=\"{'up' if (v.get('total_pnl') or 0)>=0 else 'down'}\">{_money(v.get('total_pnl') or 0)}</td></tr>"
+            for v in variants)
+        _variant_card = (
+            "<div class=\"card\"><h2>Strategy-variant comparison "
+            "<span class=\"pill mut\" style=\"font-size:11px\">hypothetical · no execution</span></h2>"
+            "<table style=\"width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px\">"
+            "<tr class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase;text-align:right\">"
+            "<th style=\"text-align:left\">Variant</th><th>N</th><th>Win%</th>"
+            "<th>Avg P&amp;L</th><th>Avg RoR</th><th>Total</th></tr>"
+            f"{_vrows}</table>"
+            "<div class=\"mut\" style=\"font-size:12px;margin-top:10px\">Same events, "
+            "different structures, priced off the live chain and scored at expiry vs the "
+            "realized move. Per 1 spread. Ranks which shape to actually trade.</div></div>")
+    else:
+        _variant_card = ""
     e = _html.escape
     pnl_cls = "up" if a["total_pnl"] >= 0 else "down"
     pnl_sign = "+" if a["total_pnl"] >= 0 else ""
@@ -367,6 +395,8 @@ def render_html(d: dict) -> str:
     </div>
     <div class="mut" style="font-size:12px;margin-top:10px">This is separate from the legacy single-leg strategy ledger above.</div>
   </div>
+
+  {_variant_card}
 
   <div class="card">
     <h2>Equity curve</h2>
