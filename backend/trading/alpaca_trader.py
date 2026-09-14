@@ -57,24 +57,32 @@ class AlpacaTrader:
             return {}
 
     def get_positions(self) -> list[dict]:
-        try:
-            positions = self.client.get_all_positions()
-            return [
-                {
-                    "symbol":    p.symbol,
-                    "qty":       float(p.qty),
-                    "side":      p.side.value,
-                    "avg_price": float(p.avg_entry_price),
-                    "current":   float(p.current_price),
-                    "pnl":       float(p.unrealized_pl),
-                    "pnl_pct":   float(p.unrealized_plpc) * 100,
-                    "market_val":float(p.market_value),
-                }
-                for p in positions
-            ]
-        except Exception as e:
-            logger.error(f"get_positions error: {e}")
-            return []
+        # Alpaca occasionally drops the connection mid-request (RemoteDisconnected);
+        # one quick retry absorbs the transient blip instead of logging an error.
+        import time as _t
+        last = None
+        for attempt in range(2):
+            try:
+                positions = self.client.get_all_positions()
+                return [
+                    {
+                        "symbol":    p.symbol,
+                        "qty":       float(p.qty),
+                        "side":      p.side.value,
+                        "avg_price": float(p.avg_entry_price),
+                        "current":   float(p.current_price),
+                        "pnl":       float(p.unrealized_pl),
+                        "pnl_pct":   float(p.unrealized_plpc) * 100,
+                        "market_val":float(p.market_value),
+                    }
+                    for p in positions
+                ]
+            except Exception as e:
+                last = e
+                if attempt == 0:
+                    _t.sleep(0.5)
+        logger.error(f"get_positions error: {last}")
+        return []
 
     @staticmethod
     def _map_rest_order(o: dict) -> dict:
