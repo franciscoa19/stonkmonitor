@@ -1,14 +1,14 @@
 {
-  "generated": "2026-09-11T12:09:10.203312+00:00",
+  "generated": "2026-09-14T12:17:57.706184+00:00",
   "account": {
-    "equity": 49726.05,
-    "cash": 50540.05,
-    "buying_power": 192056.2,
+    "equity": 50261.51,
+    "cash": 50261.51,
+    "buying_power": 201046.04,
     "start_equity": 49992.8,
-    "total_pnl": -266.75,
-    "total_pnl_pct": -0.5335768350642491,
-    "open_positions": 8,
-    "days_running": 3,
+    "total_pnl": 268.7099999999991,
+    "total_pnl_pct": 0.5374973996255442,
+    "open_positions": 0,
+    "days_running": 6,
     "error": null
   },
   "metrics": {
@@ -39,7 +39,19 @@
     },
     {
       "date": "2026-09-11",
-      "equity": 49726.05
+      "equity": 50261.75
+    },
+    {
+      "date": "2026-09-12",
+      "equity": 50261.51
+    },
+    {
+      "date": "2026-09-13",
+      "equity": 50261.51
+    },
+    {
+      "date": "2026-09-14",
+      "equity": 50261.51
     }
   ],
   "iv_rv": {
@@ -50,59 +62,23 @@
     "open": 17
   },
   "iv_condors": {
-    "closed": 0,
-    "wins": 0,
-    "win_rate": 0.0,
-    "total_pnl": 0,
-    "open": 2,
+    "closed": 2,
+    "wins": 2,
+    "win_rate": 100.0,
+    "total_pnl": 270.0,
+    "open": 0,
     "pending": 0
   },
   "by_strategy": [],
   "by_hour": [],
   "recent": [],
-  "open_positions": [
-    {
-      "symbol": "ADBE260911C00277500",
-      "qty": -1.0,
-      "pnl": 0.0
-    },
-    {
-      "symbol": "ADBE260911C00285000",
-      "qty": 1.0,
-      "pnl": 0.0
-    },
-    {
-      "symbol": "ADBE260911P00227500",
-      "qty": 1.0,
-      "pnl": 0.0
-    },
-    {
-      "symbol": "ADBE260911P00235000",
-      "qty": -1.0,
-      "pnl": 0.0
-    },
-    {
-      "symbol": "ORCL260911C00180000",
-      "qty": -2.0,
-      "pnl": 0.0
-    },
-    {
-      "symbol": "ORCL260911C00185000",
-      "qty": 2.0,
-      "pnl": 0.0
-    },
-    {
-      "symbol": "ORCL260911P00137000",
-      "qty": 2.0,
-      "pnl": 0.0
-    },
-    {
-      "symbol": "ORCL260911P00142000",
-      "qty": -2.0,
-      "pnl": 0.0
-    }
-  ],
+  "open_positions": [],
   "proposals": [
-    "No closed trades in 3 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
+    "Watchlist ADD: DIA \u2014 75 signals in 14d, not watchlisted.",
+    "Watchlist ADD: TSM \u2014 53 signals in 14d, not watchlisted.",
+    "Watchlist ADD: PDD \u2014 52 signals in 14d, not watchlisted.",
+    "Watchlist ADD: GEV \u2014 19 signals in 14d, not watchlisted.",
+    "Watchlist ADD: NEM \u2014 15 signals in 14d, not watchlisted.",
+    "No closed trades in 6 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
   ]
 }
