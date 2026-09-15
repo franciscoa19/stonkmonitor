@@ -279,6 +279,25 @@ async def test_iv_rv_eval_stores_earnings_date(db):
     assert amzn["earnings_date"] is None
 
 
+# ── Earnings sell-premium eligibility filter (scoring cleanup) ──────────
+def test_is_sell_eligible():
+    from signals.earnings_scanner import is_sell_eligible
+    from datetime import date as _d, timedelta as _td
+    import types as _t
+
+    def mk(rec="SELL_PREMIUM", ivrv=1.30, days=3):
+        ed = (_d.today() + _td(days=days)).isoformat() if days is not None else None
+        return _t.SimpleNamespace(recommendation=rec, iv30_rv30=ivrv, next_earnings_date=ed)
+
+    assert is_sell_eligible(mk(), 7) is True                 # near, rich IV, scores
+    assert is_sell_eligible(mk(rec="AVOID"), 7) is False     # doesn't score
+    assert is_sell_eligible(mk(ivrv=0.0), 7) is False        # broken/zero IV/RV
+    assert is_sell_eligible(mk(days=None), 7) is False       # no known earnings (ETF)
+    assert is_sell_eligible(mk(days=30), 7) is False         # earnings too far out
+    assert is_sell_eligible(mk(days=-2), 7) is False         # print already passed
+    assert is_sell_eligible(None, 7) is False                # no setup
+
+
 # ── IV/RV strategy-variant logger (measurement only) ────────────────────
 def test_variant_payoff():
     from signals.iv_variants import variant_payoff

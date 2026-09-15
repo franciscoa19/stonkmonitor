@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     # iron fly, straddle) and resolve vs realized to compare expectancy. Pure
     # measurement, zero capital at risk — on by default during the paper test.
     iv_variants_log_enabled: bool = Field(True, env="IV_VARIANTS_LOG_ENABLED")
+    # A setup only counts as a real earnings sell-premium candidate when a known
+    # print is within this many days (the term-structure-inversion thesis only
+    # holds near earnings). Filters far-dated / cheap-IV / ETF noise from the
+    # signal, the eval log, and execution. Execution still needs ≤ entry_days_before.
+    iv_setup_max_days_to_earnings: int = Field(7, env="IV_SETUP_MAX_DAYS_TO_EARNINGS")
 
     # --- Daily report scheduler ---
     report_enabled: bool = Field(True, env="REPORT_ENABLED")

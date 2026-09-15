@@ -198,6 +198,30 @@ def _fetch_next_earnings_date(stock) -> Optional[str]:
     return None
 
 
+def is_sell_eligible(setup, max_days_to_earnings: int) -> bool:
+    """A scored setup is a real earnings sell-premium candidate only when:
+      • it scores (recommendation != AVOID),
+      • IV/RV is valid (> 0 — guards the broken-vol iv30_rv30==0 rows), and
+      • a KNOWN earnings print is within max_days_to_earnings.
+    This filters the far-dated, cheap-IV, and no-earnings (ETF) noise that
+    otherwise pollutes the signal feed, the eval log, and would mis-fire trades
+    if the tight execution window weren't there. Returns False for None setups."""
+    from datetime import date as _d
+    if getattr(setup, "recommendation", "AVOID") == "AVOID":
+        return False
+    ivrv = getattr(setup, "iv30_rv30", 0) or 0
+    if ivrv <= 0:
+        return False
+    edate = getattr(setup, "next_earnings_date", None)
+    if not edate:
+        return False
+    try:
+        days = (_d.fromisoformat(edate) - _d.today()).days
+    except Exception:
+        return False
+    return 0 <= days <= max_days_to_earnings
+
+
 def _next_earnings_date(stock) -> Optional[str]:
     """Nearest-future earnings date (YYYY-MM-DD) or None. Free — no key.
 

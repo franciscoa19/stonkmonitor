@@ -1340,7 +1340,7 @@ async def iv_scanner_loop():
     from api.routes import _watchlist
     from feeds.uw_budget import current_session, budget
     from feeds.unusual_whales import iv_summary_from_termstructure
-    from signals.earnings_scanner import scan_ticker as earnings_scan
+    from signals.earnings_scanner import scan_ticker as earnings_scan, is_sell_eligible
     await asyncio.sleep(30)  # give server time to start
 
     _earnings_last_run: dict[str, float] = {}  # ticker → epoch of last scan
@@ -1378,11 +1378,15 @@ async def iv_scanner_loop():
                     _earnings_last_run[ticker] = now
                     setup  = await earnings_scan(ticker)
                     signal = engine.score_earnings_setup(setup)
-                    if signal:
+                    # Only act on a scored setup when it's a real earnings play —
+                    # a known print within the window, valid IV/RV. Filters the
+                    # far-dated / cheap-IV / ETF noise from alerts, evals, and trades.
+                    if signal and is_sell_eligible(setup, settings.iv_setup_max_days_to_earnings):
                         await handle_signal(signal)
                         logger.info(
                             f"Earnings setup {ticker}: {setup.recommendation} "
-                            f"IV/RV={setup.iv30_rv30:.2f}x score={signal.score}"
+                            f"IV/RV={setup.iv30_rv30:.2f}x score={signal.score} "
+                            f"earnings {setup.next_earnings_date}"
                         )
                         # Log for IV/RV edge validation (hypothetical short straddle):
                         # record the implied move now; resolve vs realized after the
