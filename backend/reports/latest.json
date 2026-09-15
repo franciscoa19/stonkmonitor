@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-14T12:17:57.706184+00:00",
+  "generated": "2026-09-15T12:00:21.235555+00:00",
   "account": {
     "equity": 50261.51,
     "cash": 50261.51,
@@ -8,7 +8,7 @@
     "total_pnl": 268.7099999999991,
     "total_pnl_pct": 0.5374973996255442,
     "open_positions": 0,
-    "days_running": 6,
+    "days_running": 7,
     "error": null
   },
   "metrics": {
@@ -52,6 +52,10 @@
     {
       "date": "2026-09-14",
       "equity": 50261.51
+    },
+    {
+      "date": "2026-09-15",
+      "equity": 50261.51
     }
   ],
   "iv_rv": {
@@ -59,7 +63,7 @@
     "wins": 0,
     "win_rate": 0.0,
     "avg_edge_pct": 0.0,
-    "open": 17
+    "open": 18
   },
   "iv_condors": {
     "closed": 2,
@@ -69,16 +73,12 @@
     "open": 0,
     "pending": 0
   },
+  "iv_variants": [],
   "by_strategy": [],
   "by_hour": [],
   "recent": [],
   "open_positions": [],
   "proposals": [
-    "Watchlist ADD: DIA \u2014 75 signals in 14d, not watchlisted.",
-    "Watchlist ADD: TSM \u2014 53 signals in 14d, not watchlisted.",
-    "Watchlist ADD: PDD \u2014 52 signals in 14d, not watchlisted.",
-    "Watchlist ADD: GEV \u2014 19 signals in 14d, not watchlisted.",
-    "Watchlist ADD: NEM \u2014 15 signals in 14d, not watchlisted.",
-    "No closed trades in 6 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
+    "No closed trades in 7 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
   ]
 }
