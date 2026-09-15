@@ -38,12 +38,28 @@ class AlpacaTrader:
                 "APCA-API-SECRET-KEY": self._secret,
                 "Content-Type": "application/json"}
 
+    @staticmethod
+    def _retry_call(fn, attempts: int = 2, delay: float = 0.5):
+        """Call fn(), retrying once on any exception. Alpaca intermittently drops
+        the connection mid-request (RemoteDisconnected / read timeout); one quick
+        retry absorbs the blip instead of surfacing a transient error."""
+        import time as _t
+        last = None
+        for i in range(attempts):
+            try:
+                return fn()
+            except Exception as e:
+                last = e
+                if i < attempts - 1:
+                    _t.sleep(delay)
+        raise last
+
     # ------------------------------------------------------------------ #
     #  Account Info                                                        #
     # ------------------------------------------------------------------ #
     def get_account(self) -> dict:
         try:
-            acct = self.client.get_account()
+            acct = self._retry_call(self.client.get_account)
             return {
                 "equity":         float(acct.equity or 0),
                 "cash":           float(acct.cash or 0),
@@ -57,32 +73,24 @@ class AlpacaTrader:
             return {}
 
     def get_positions(self) -> list[dict]:
-        # Alpaca occasionally drops the connection mid-request (RemoteDisconnected);
-        # one quick retry absorbs the transient blip instead of logging an error.
-        import time as _t
-        last = None
-        for attempt in range(2):
-            try:
-                positions = self.client.get_all_positions()
-                return [
-                    {
-                        "symbol":    p.symbol,
-                        "qty":       float(p.qty),
-                        "side":      p.side.value,
-                        "avg_price": float(p.avg_entry_price),
-                        "current":   float(p.current_price),
-                        "pnl":       float(p.unrealized_pl),
-                        "pnl_pct":   float(p.unrealized_plpc) * 100,
-                        "market_val":float(p.market_value),
-                    }
-                    for p in positions
-                ]
-            except Exception as e:
-                last = e
-                if attempt == 0:
-                    _t.sleep(0.5)
-        logger.error(f"get_positions error: {last}")
-        return []
+        try:
+            positions = self._retry_call(self.client.get_all_positions)
+            return [
+                {
+                    "symbol":    p.symbol,
+                    "qty":       float(p.qty),
+                    "side":      p.side.value,
+                    "avg_price": float(p.avg_entry_price),
+                    "current":   float(p.current_price),
+                    "pnl":       float(p.unrealized_pl),
+                    "pnl_pct":   float(p.unrealized_plpc) * 100,
+                    "market_val":float(p.market_value),
+                }
+                for p in positions
+            ]
+        except Exception as e:
+            logger.error(f"get_positions error: {e}")
+            return []
 
     @staticmethod
     def _map_rest_order(o: dict) -> dict:
@@ -260,18 +268,27 @@ class AlpacaTrader:
     #  Options — chain data + multi-leg (spreads / iron condors)          #
     # ------------------------------------------------------------------ #
     def _rest(self, method: str, url: str, body: Optional[dict] = None) -> tuple:
-        """Minimal blocking REST call (stdlib). Returns (status_code, parsed)."""
-        import json, urllib.request, urllib.error
+        """Minimal blocking REST call (stdlib). Returns (status_code, parsed).
+        Retries once on a transient connection drop — but ONLY for GET: a POST
+        that dropped after the server received it must never be resent (a retried
+        order submission would double-fill)."""
+        import json, time, urllib.request, urllib.error
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, headers=self._rest_headers, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                txt = r.read().decode()
-                return r.status, (json.loads(txt) if txt else {})
-        except urllib.error.HTTPError as e:
-            return e.code, {"error": e.read().decode()[:600]}
-        except Exception as e:
-            return 0, {"error": str(e)}
+        attempts = 2 if method.upper() == "GET" else 1
+        last_err = None
+        for i in range(attempts):
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    txt = r.read().decode()
+                    return r.status, (json.loads(txt) if txt else {})
+            except urllib.error.HTTPError as e:
+                return e.code, {"error": e.read().decode()[:600]}   # real API error — don't retry
+            except Exception as e:
+                last_err = e
+                if i < attempts - 1:
+                    time.sleep(0.5)
+        return 0, {"error": str(last_err)}
 
     def get_order_raw(self, order_id: str) -> dict:
         """Raw order dict via REST (works for mleg orders the SDK can't parse)."""
