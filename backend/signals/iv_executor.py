@@ -13,8 +13,10 @@ reason it declined. main.py's iv_scanner_loop submits the plan when armed.
 """
 import json
 import logging
-from datetime import date, timedelta, datetime, time
+from datetime import date, datetime, timedelta
 from typing import Optional
+
+from market_time import et_now, et_today
 
 logger = logging.getLogger(__name__)
 
@@ -40,18 +42,13 @@ def is_pre_earnings_entry_window(earnings_date: Optional[str],
         edate = date.fromisoformat(str(earnings_date))
     except (TypeError, ValueError):
         return False
-    from zoneinfo import ZoneInfo
-    et = ZoneInfo("America/New_York")
-    if now is None:
-        now = datetime.now(et)
-    elif now.tzinfo is not None:
-        now = now.astimezone(et)
+    now = et_now(now)
     days_to = (edate - now.date()).days
     if days_to < 0 or days_to > entry_days_before:
         return False
     if days_to > 0:
         return True
-    return report_time == "post" and now.time() < time(16, 0)
+    return report_time == "post" and now.hour < 16
 
 
 def _implied_move_frac(setup) -> float:
@@ -74,7 +71,7 @@ def build_iron_condor(trader, setup, equity: float, settings) -> dict:
     if spot <= 0 or em <= 0:
         return {"ok": False, "reason": "no spot/implied move"}
 
-    today = date.today()
+    today = et_today()
     edate = None
     if setup.next_earnings_date:
         try:

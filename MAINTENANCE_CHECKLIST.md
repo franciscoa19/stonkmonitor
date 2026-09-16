@@ -23,6 +23,9 @@ Nothing gets pushed until the code is reviewed, vetted for secrets, and verified
 - [ ] Read the touched modules; look for bugs, race conditions, dead code, N+1 / wasted calls.
 - [ ] Note refactor / simplification / efficiency opportunities.
 - [ ] Keep changes matching surrounding style and altitude.
+- [ ] For earnings-timing changes, run the backend tests with both `TZ=UTC` and
+      `TZ=America/New_York`. Earnings eligibility must use the code's ET clock,
+      not depend on the host timezone.
 
 ## 4. Propose changes → wait for approval
 - [ ] Summarize proposed changes (what, why, risk) and **prompt the user**.

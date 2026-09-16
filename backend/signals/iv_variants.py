@@ -24,6 +24,8 @@ import logging
 from datetime import date, timedelta
 from typing import Optional
 
+from market_time import et_today
+
 logger = logging.getLogger(__name__)
 
 VARIANTS = ["straddle", "condor_0.7sd", "condor_1.0sd", "condor_1.3sd", "fly"]
@@ -74,7 +76,7 @@ def variant_payoff(row: dict, final_price: float) -> float:
 def _front_expiry_chain(trader, setup, settings):
     """(expiry_str, {strike:call}, {strike:put}) for the front expiry after the
     print within the DTE band, or None."""
-    today = date.today()
+    today = et_today()
     edate = None
     if getattr(setup, "next_earnings_date", None):
         try:

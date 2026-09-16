@@ -26,13 +26,24 @@ Selling premium produces a tidy equity curve punctuated by one disaster. An iron
 condor wins ~65-70% of the time *by construction*, so win rate says almost
 nothing. `tail_ratio` — mean of the worst 5% of events over the mean of the rest —
 is what exposes negative expectancy hiding behind a 70% win rate. Read it as
-"one tail event costs N typical events."
+"one tail event costs N typical events." The report also shows the effective
+tail count and percentage: below 20 events, "worst 5%" is necessarily one event.
 
 ### The `sufficient_sample` rail
 `MIN_EVENTS_FOR_CONFIDENCE = 100`. The scanner fires at most ~4×/yr/ticker and
 the gates reject most of those. Below ~100 resolved events, the honest output is
 the shortfall, not a curve through a handful of trades. The daily report surfaces
 this so a 2-for-2 start is never read as evidence.
+
+### Sample-size decision pending
+The current 78-name forward test can collect roughly 312 ungated events/year,
+but only an estimated 50–90 events/year pass all three gates. Both arms need 100
+resolved events, so the gated comparison is unlikely to clear its rail before
+late 2027–2028. The methodology reset to `conservative_bid_ask_v2` deliberately
+starts this sample at zero. The owner must choose and record one of: licensed
+historical options data, a wider measurement-only universe, or a pre-registered
+lower evidence threshold. Until then, the report shows the remaining count but
+does not infer a completion date from an unobserved collection rate.
 
 ## What does NOT exist, and why
 

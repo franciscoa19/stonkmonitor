@@ -47,6 +47,11 @@ def max_drawdown(pnls: Sequence[float]) -> float:
     return round(worst, 2)
 
 
+def tail_event_count(n_events: int) -> int:
+    """How many observations make up the worst-five-percent tail."""
+    return max(1, math.ceil(n_events * _TAIL_PCT)) if n_events else 0
+
+
 def tail_ratio(pnls: Sequence[float]) -> Optional[float]:
     """Mean of the worst 5% of events ÷ mean of the remainder.
 
@@ -58,7 +63,7 @@ def tail_ratio(pnls: Sequence[float]) -> Optional[float]:
     n = len(pnls)
     if n < 2:
         return None
-    k = max(1, math.ceil(n * _TAIL_PCT))
+    k = tail_event_count(n)
     if k >= n:
         return None
     ordered = sorted(pnls)
@@ -93,6 +98,7 @@ def compute_metrics(pnls: Sequence[float],
                 "expectancy": None, "profit_factor": None, "avg_win": None,
                 "avg_loss": None, "largest_single_loss": None, "max_drawdown": 0.0,
                 "sharpe": None, "sortino": None, "tail_ratio": None,
+                "tail_events": 0, "tail_pct_effective": None,
                 "pct_events_exceeding_implied": None,
                 "sufficient_sample": False, "events_needed": MIN_EVENTS_FOR_CONFIDENCE}
 
@@ -107,6 +113,7 @@ def compute_metrics(pnls: Sequence[float],
     # breakeven ($0); non-loss events contribute a zero downside deviation.
     downside_deviation = math.sqrt(
         sum(min(0.0, p) ** 2 for p in pnls) / n)
+    tail_events = tail_event_count(n)
 
     pct_exceed = None
     if exceeded_implied is not None and len(exceeded_implied) == n and n:
@@ -127,6 +134,8 @@ def compute_metrics(pnls: Sequence[float],
         "sortino":             (round(mean / downside_deviation, 2)
                                 if downside_deviation else None),
         "tail_ratio":          tail_ratio(pnls),
+        "tail_events":         tail_events,
+        "tail_pct_effective":  round(tail_events / n * 100, 1),
         "pct_events_exceeding_implied": pct_exceed,
         # Honesty rail: below this, decline to draw conclusions.
         "sufficient_sample":   n >= MIN_EVENTS_FOR_CONFIDENCE,

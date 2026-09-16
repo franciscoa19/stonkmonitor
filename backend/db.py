@@ -768,6 +768,8 @@ class Database:
             where += " AND COALESCE(gate_passed,1)=?"
             params += (1 if gate_passed else 0,)
         rows = await self._query(
+            # max_drawdown is path-dependent, so this event order is part of
+            # the metric definition rather than cosmetic presentation sorting.
             f"""SELECT variant, realized_pnl, max_loss, pin_risk, credit,
                        implied_move_pct, spot, exit_spot
                 FROM iv_variant_evals {where}
@@ -808,6 +810,7 @@ class Database:
         out = {}
         for label, flag in (("gated", 1), ("ungated", 0)):
             rows = await self._query(
+                # Keep the gated/ungated drawdown paths chronological too.
                 """SELECT realized_pnl FROM iv_variant_evals
                    WHERE resolved=1 AND pricing_model=?
                      AND COALESCE(gate_passed,1)=? AND variant=?

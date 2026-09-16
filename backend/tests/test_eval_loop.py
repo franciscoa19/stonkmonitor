@@ -14,7 +14,8 @@ import pytest
 import pytest_asyncio
 
 from db import Database, _is_occ, _et_hour, _minutes_between
-from daily_report import build_report_data, build_watchlist_review, export_history
+from daily_report import build_report_data, build_watchlist_review, export_history, render_html
+from market_time import et_today
 
 URI = "URI260918C01050000"      # OCC option symbols (×100 multiplier)
 DXCM = "DXCM260918P00090000"
@@ -212,6 +213,14 @@ async def test_build_report_metrics(db):
     assert d["iv_condors"]["closed"] == 0
 
 
+async def test_daily_report_surfaces_empty_variant_sample_rail(db):
+    """The evidence requirement remains visible before any event resolves."""
+    report = render_html(await build_report_data(db, FakeTrader()))
+    assert "Forward-test sample rail." in report
+    assert "Gated: 0 resolved / 100 more needed" in report
+    assert "ungated: 0 resolved / 100 more needed" in report
+
+
 # ── Weekly watchlist review ─────────────────────────────────────────────
 async def test_watchlist_review_add_and_remove(db):
     now = "2026-09-03T14:30:00.000000"
@@ -282,22 +291,23 @@ async def test_iv_rv_eval_stores_earnings_date(db):
 # ── Earnings sell-premium eligibility filter (scoring cleanup) ──────────
 def test_is_sell_eligible():
     from signals.earnings_scanner import is_sell_eligible
-    from datetime import date as _d, timedelta as _td
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     import types as _t
+    now = _dt(2026, 9, 15, 15, tzinfo=_tz.utc)
 
     def mk(rec="SELL_PREMIUM", ivrv=1.30, days=3):
-        ed = (_d.today() + _td(days=days)).isoformat() if days is not None else None
+        ed = (now.date() + _td(days=days)).isoformat() if days is not None else None
         return _t.SimpleNamespace(recommendation=rec, iv30_rv30=ivrv, next_earnings_date=ed)
 
-    assert is_sell_eligible(mk(), 7) is True                 # near, rich IV, scores
-    assert is_sell_eligible(mk(rec="AVOID"), 7) is False     # doesn't score
-    assert is_sell_eligible(mk(ivrv=0.0), 7) is False        # broken/zero IV/RV
-    assert is_sell_eligible(mk(ivrv=float("nan")), 7) is False
-    assert is_sell_eligible(mk(ivrv=float("inf")), 7) is False
-    assert is_sell_eligible(mk(days=None), 7) is False       # no known earnings (ETF)
-    assert is_sell_eligible(mk(days=30), 7) is False         # earnings too far out
-    assert is_sell_eligible(mk(days=-2), 7) is False         # print already passed
-    assert is_sell_eligible(None, 7) is False                # no setup
+    assert is_sell_eligible(mk(), 7, now=now) is True                 # near, rich IV, scores
+    assert is_sell_eligible(mk(rec="AVOID"), 7, now=now) is False     # doesn't score
+    assert is_sell_eligible(mk(ivrv=0.0), 7, now=now) is False        # broken/zero IV/RV
+    assert is_sell_eligible(mk(ivrv=float("nan")), 7, now=now) is False
+    assert is_sell_eligible(mk(ivrv=float("inf")), 7, now=now) is False
+    assert is_sell_eligible(mk(days=None), 7, now=now) is False       # no known earnings (ETF)
+    assert is_sell_eligible(mk(days=30), 7, now=now) is False         # earnings too far out
+    assert is_sell_eligible(mk(days=-2), 7, now=now) is False         # print already passed
+    assert is_sell_eligible(None, 7, now=now) is False                # no setup
 
 
 # ── Short-premium metric set (VALIDATION_SPEC §4) ───────────────────────
@@ -314,6 +324,7 @@ def test_metrics_on_hand_built_fixture():
     assert m["largest_single_loss"] == -200.0
     # curve: 100, 50, 150, 250, 50 → peak 250, trough 50 → drawdown 200
     assert m["max_drawdown"] == 200.0
+    assert m["tail_events"] == 1 and m["tail_pct_effective"] == 20.0
     assert m["sufficient_sample"] is False              # n=5 is not evidence
     assert m["events_needed"] == 95
 
@@ -329,12 +340,14 @@ def test_tail_ratio_exposes_hidden_negative_expectancy():
     assert m["profit_factor"] < 1
     # worst 5% (1 event) vs the rest: -3000 / 100 = -30 typical wins erased
     assert m["tail_ratio"] == -30.0
+    assert m["tail_events"] == 1 and m["tail_pct_effective"] == 5.0
 
 
 def test_metrics_empty_and_all_wins():
     from backtest.metrics import compute_metrics
     e = compute_metrics([])
     assert e["n_events"] == 0 and e["profit_factor"] is None and e["max_drawdown"] == 0.0
+    assert e["tail_events"] == 0 and e["tail_pct_effective"] is None
     w = compute_metrics([10.0, 20.0])
     assert w["profit_factor"] is None                   # no losses to divide by
     assert w["max_drawdown"] == 0.0 and w["largest_single_loss"] is None
@@ -360,30 +373,49 @@ def test_pct_events_exceeding_implied():
 def test_is_near_earnings_is_weaker_than_sell_eligible():
     """Baseline 2 needs the ungated population: near-earnings regardless of gates."""
     from signals.earnings_scanner import is_near_earnings, is_sell_eligible
-    from datetime import date as _d, datetime as _dt, time as _time, timedelta as _td
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     import types as _t
+    now = _dt(2026, 9, 15, 15, tzinfo=_tz.utc)
     avoid = _t.SimpleNamespace(recommendation="AVOID", iv30_rv30=0.6,
-                               next_earnings_date=(_d.today() + _td(days=2)).isoformat())
-    assert is_sell_eligible(avoid, 7) is False      # gates rejected it
-    assert is_near_earnings(avoid, 7) is True       # ...but it still gets measured
+                               next_earnings_date=(now.date() + _td(days=2)).isoformat())
+    assert is_sell_eligible(avoid, 7, now=now) is False      # gates rejected it
+    assert is_near_earnings(avoid, 7, now=now) is True        # ...but it still gets measured
     far = _t.SimpleNamespace(recommendation="AVOID", iv30_rv30=0.6,
-                             next_earnings_date=(_d.today() + _td(days=40)).isoformat())
-    assert is_near_earnings(far, 7) is False
+                             next_earnings_date=(now.date() + _td(days=40)).isoformat())
+    assert is_near_earnings(far, 7, now=now) is False
     etf = _t.SimpleNamespace(recommendation="SELL_PREMIUM", iv30_rv30=1.4,
                              next_earnings_date=None)
-    assert is_near_earnings(etf, 7) is False
+    assert is_near_earnings(etf, 7, now=now) is False
     # The ungated baseline must not price an event after a same-day BMO/unknown
     # release. A confirmed after-close release is still valid before 16:00 ET.
     bmo = _t.SimpleNamespace(recommendation="SELL_PREMIUM", iv30_rv30=1.4,
-                             next_earnings_date=_d.today().isoformat(),
+                             next_earnings_date=now.date().isoformat(),
                              earnings_report_time="pre")
     post = _t.SimpleNamespace(recommendation="SELL_PREMIUM", iv30_rv30=1.4,
-                              next_earnings_date=_d.today().isoformat(),
+                              next_earnings_date=now.date().isoformat(),
                               earnings_report_time="post")
-    assert is_near_earnings(bmo, 7, now=_dt.combine(_d.today(), _time(10, 0))) is False
-    assert is_sell_eligible(bmo, 7) is False
-    assert is_near_earnings(post, 7, now=_dt.combine(_d.today(), _time(15, 59))) is True
-    assert is_near_earnings(post, 7, now=_dt.combine(_d.today(), _time(16, 0))) is False
+    assert is_near_earnings(bmo, 7, now=now) is False
+    assert is_sell_eligible(bmo, 7, now=now) is False
+    assert is_near_earnings(post, 7, now=_dt(2026, 9, 15, 19, 59, tzinfo=_tz.utc)) is True
+    assert is_near_earnings(post, 7, now=_dt(2026, 9, 15, 20, 0, tzinfo=_tz.utc)) is False
+
+    # 03:01 UTC is still 23:01 on 15 Sep in ET. These checks used to disagree
+    # whenever the process happened to run with a UTC local timezone.
+    utc_boundary = _dt(2026, 9, 16, 3, 1, tzinfo=_tz.utc)
+    assert is_near_earnings(bmo, 7, now=utc_boundary) is False
+    assert is_sell_eligible(bmo, 7, now=utc_boundary) is False
+    assert is_near_earnings(post, 7, now=utc_boundary) is False
+
+
+def test_market_time_normalizes_a_utc_date_boundary_to_et():
+    from market_time import et_today
+    from datetime import datetime as _dt, date as _d, timezone as _tz
+    assert et_today(_dt(2026, 9, 16, 3, 1, tzinfo=_tz.utc)) == _d(2026, 9, 15)
+
+
+def test_auto_trade_flow_is_opt_in_by_default():
+    from config import Settings
+    assert Settings.model_fields["auto_trade_flow_enabled"].default is False
 
 
 def test_pin_risk_flag():
@@ -511,7 +543,7 @@ async def test_export_history(db, tmp_path):
 # ── IV/RV Phase 2 execution: iron-condor builder + DB lifecycle ──────────
 import json as _json
 import types as _types
-from datetime import date as _date, timedelta as _timedelta
+from datetime import timedelta as _timedelta
 
 
 def _occ(t, exp, cp, strike):
@@ -547,7 +579,7 @@ class FakeOptionTrader(FakeTrader):
 def test_build_iron_condor_happy_path():
     from signals.iv_executor import build_iron_condor
     from config import get_settings
-    exp = _date.today() + _timedelta(days=1)          # front expiry, day after the print
+    exp = et_today() + _timedelta(days=1)             # front expiry, day after the print
     strikes = [float(k) for k in range(80, 121)]      # $1-wide chain 80..120
     mids = {}
     for k in strikes:
@@ -558,7 +590,7 @@ def test_build_iron_condor_happy_path():
     setup = _types.SimpleNamespace(
         ticker="TEST", price=100.0, expected_move="10.0%",
         recommendation="SELL_PREMIUM",
-        next_earnings_date=(_date.today()).isoformat())   # prints today → expiry tomorrow
+        next_earnings_date=et_today().isoformat())         # prints today → expiry tomorrow
     plan = build_iron_condor(trader, setup, 50000.0, get_settings())
     assert plan["ok"], plan.get("reason")
     st = plan["strikes"]
@@ -575,7 +607,7 @@ def test_variant_pricing_applies_slippage_and_fees():
     """VALIDATION_SPEC §3: fills must be worse than mid and commission explicit."""
     from signals.iv_variants import build_variants
     from config import get_settings
-    exp = _date.today() + _timedelta(days=1)
+    exp = et_today() + _timedelta(days=1)
     strikes = [float(k) for k in range(80, 121)]
     mids = {}
     for k in strikes:
@@ -584,7 +616,7 @@ def test_variant_pricing_applies_slippage_and_fees():
     trader = FakeOptionTrader(exp, strikes, mids, equity=50000.0)
     setup = _types.SimpleNamespace(
         ticker="TEST", price=100.0, expected_move="10.0%", recommendation="SELL_PREMIUM",
-        next_earnings_date=_date.today().isoformat())
+        next_earnings_date=et_today().isoformat())
     plans = {v["variant"]: v for v in build_variants(trader, setup, get_settings())}
 
     condor = plans["condor_1.0sd"]
@@ -603,7 +635,7 @@ def test_variant_pricing_rejects_a_missing_executable_side_quote():
     """A zero bid must not be silently replaced with the option's mid price."""
     from signals.iv_variants import build_variants
     from config import get_settings
-    exp = _date.today() + _timedelta(days=1)
+    exp = et_today() + _timedelta(days=1)
     strikes = [float(k) for k in range(80, 121)]
     mids = {}
     for k in strikes:
@@ -620,7 +652,7 @@ def test_variant_pricing_rejects_a_missing_executable_side_quote():
     trader = NoShortCallBidTrader(exp, strikes, mids, equity=50000.0)
     setup = _types.SimpleNamespace(
         ticker="TEST", price=100.0, expected_move="10.0%", recommendation="SELL_PREMIUM",
-        next_earnings_date=_date.today().isoformat())
+        next_earnings_date=et_today().isoformat())
     plans = {v["variant"]: v for v in build_variants(trader, setup, get_settings())}
     assert "condor_1.0sd" not in plans
 
@@ -685,11 +717,11 @@ async def test_variant_metrics_exclude_legacy_rows_and_order_by_expiry(db):
 def test_build_iron_condor_rejects_far_earnings():
     from signals.iv_executor import build_iron_condor
     from config import get_settings
-    exp = _date.today() + _timedelta(days=1)
+    exp = et_today() + _timedelta(days=1)
     trader = FakeOptionTrader(exp, [float(k) for k in range(80, 121)], {}, equity=50000.0)
     setup = _types.SimpleNamespace(
         ticker="TEST", price=100.0, expected_move="10.0%", recommendation="SELL_PREMIUM",
-        next_earnings_date=(_date.today() + _timedelta(days=40)).isoformat())
+        next_earnings_date=(et_today() + _timedelta(days=40)).isoformat())
     plan = build_iron_condor(trader, setup, 50000.0, get_settings())
     assert not plan["ok"] and "DTE band" in plan["reason"]
 

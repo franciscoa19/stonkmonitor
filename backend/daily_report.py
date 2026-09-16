@@ -276,6 +276,20 @@ def render_html(d: dict) -> str:
                                      "total_pnl": 0.0, "open": 0, "pending": 0})
     variants = d.get("iv_variants", []) or []
     gate_cmp = d.get("iv_gate_comparison", {}) or {}
+    gated, ungated = gate_cmp.get("gated", {}), gate_cmp.get("ungated", {})
+
+    def _sample_rail() -> str:
+        """Make the two-arm evidence requirement visible even before results."""
+        g_need = gated.get("events_needed", 100)
+        u_need = ungated.get("events_needed", 100)
+        return (
+            "<div style=\"margin-top:10px;padding:8px 10px;border-left:3px solid #c88;"
+            "font-size:12px\"><b>Forward-test sample rail.</b> "
+            f"Gated: {gated.get('n_events', 0)} resolved / {g_need} more needed; "
+            f"ungated: {ungated.get('n_events', 0)} resolved / {u_need} more needed. "
+            "Both arms need 100 events; no completion date is projected until a real "
+            "collection rate exists.</div>")
+
     if variants:
         def _f(x, suffix=""):
             return "—" if x is None else f"{x}{suffix}"
@@ -297,9 +311,13 @@ def render_html(d: dict) -> str:
                  f"{_n} resolved event(s); ~{_need} more needed before these numbers "
                  "mean anything. An iron condor wins ~65–70% of the time by construction, "
                  "so win rate is noise until the tail has shown up.</div>")
+        _tail_basis = "; ".join(
+            f"{_html.escape(str(v['variant']))}: worst {v.get('tail_events', 0)}/"
+            f"{v['n_events']} event(s) ({v.get('tail_pct_effective') or 0}%)"
+            for v in variants)
         _cmp_html = ""
         if gate_cmp.get("gated") or gate_cmp.get("ungated"):
-            g, u = gate_cmp.get("gated", {}), gate_cmp.get("ungated", {})
+            g, u = gated, ungated
             _cmp_html = (
                 "<div style=\"margin-top:14px\"><div class=\"mut\" style=\"font-size:10.5px;"
                 "text-transform:uppercase\">Do the gates earn their keep?</div>"
@@ -316,7 +334,12 @@ def render_html(d: dict) -> str:
                 f"<td style='text-align:right'>{_f(u.get('profit_factor'))}</td>"
                 f"<td style='text-align:right'>{_f(u.get('tail_ratio'))}</td></tr></table>"
                 "<div class=\"mut\" style=\"font-size:12px;margin-top:6px\">If selling "
-                "indiscriminately matches the filtered set, the three gates are noise.</div></div>")
+                "indiscriminately matches the filtered set, the three gates are noise.</div>"
+                f"{_sample_rail()}</div>")
+        else:
+            # A transient comparison-query failure must not hide the evidence
+            # requirement from the morning report.
+            _cmp_html = _sample_rail()
         _variant_card = (
             "<div class=\"card\"><h2>Strategy-variant comparison "
             "<span class=\"pill mut\" style=\"font-size:11px\">hypothetical · no execution</span></h2>"
@@ -329,10 +352,17 @@ def render_html(d: dict) -> str:
             "different structures, priced at a conservative fill (short=bid, long=ask) net "
             "of commission and settled on the underlying's close at expiry. Per 1 spread. "
             "<b>Tail</b> = worst 5% vs the rest — how many good events one bad one erases; "
-            "it is the number that catches a 70%-win-rate strategy that still loses money."
+            "it is the number that catches a 70%-win-rate strategy that still loses money. "
+            f"Effective tail: {_tail_basis}."
             f"</div>{_warn}{_cmp_html}</div>")
     else:
-        _variant_card = ""
+        _variant_card = (
+            "<div class=\"card\"><h2>Strategy-variant comparison "
+            "<span class=\"pill mut\" style=\"font-size:11px\">hypothetical · no execution</span></h2>"
+            "<div class=\"mut\" style=\"font-size:12px\">No resolved evaluations under the "
+            "current conservative pricing model yet. Earlier methodology is retained for audit "
+            "but is not evidence.</div>"
+            f"{_sample_rail()}</div>")
     e = _html.escape
     pnl_cls = "up" if a["total_pnl"] >= 0 else "down"
     pnl_sign = "+" if a["total_pnl"] >= 0 else ""

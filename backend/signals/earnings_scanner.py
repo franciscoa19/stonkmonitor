@@ -24,6 +24,9 @@ from typing import Optional
 import numpy as np
 from scipy.interpolate import interp1d
 
+from market_time import et_today
+from signals.iv_executor import is_pre_earnings_entry_window
+
 logger = logging.getLogger(__name__)
 
 # yfinance logs routine "no earnings dates / no fundamentals" conditions at
@@ -80,7 +83,7 @@ def build_term_structure(dtes: list, ivs: list):
 
 def _filter_exp_dates(dates: list) -> list:
     """Keep expiries from nearest to first date >= 45 days out."""
-    today   = datetime.today().date()
+    today   = et_today()
     cutoff  = today + timedelta(days=45)
     sorted_ = sorted(datetime.strptime(d, "%Y-%m-%d").date() for d in dates)
 
@@ -172,8 +175,7 @@ def _fetch_next_earnings_date(stock) -> Optional[str]:
     One retry with backoff on failure to ride out yfinance rate limiting.
     Tries get_earnings_dates(), falls back to .calendar."""
     import time as _t
-    from datetime import datetime as _dt
-    today = _dt.now().date()
+    today = et_today()
 
     def _as_date(x):
         return x.date() if hasattr(x, "date") else x
@@ -203,7 +205,8 @@ def _fetch_next_earnings_date(stock) -> Optional[str]:
     return None
 
 
-def is_sell_eligible(setup, max_days_to_earnings: int) -> bool:
+def is_sell_eligible(setup, max_days_to_earnings: int,
+                     now: Optional[datetime] = None) -> bool:
     """A scored setup is a real earnings sell-premium candidate only when:
       • it scores (recommendation != AVOID),
       • IV/RV is finite and positive (guards broken 0/NaN/∞ vol rows), and
@@ -219,10 +222,11 @@ def is_sell_eligible(setup, max_days_to_earnings: int) -> bool:
         return False
     if not math.isfinite(ivrv) or ivrv <= 0:
         return False
-    return is_near_earnings(setup, max_days_to_earnings)
+    return is_near_earnings(setup, max_days_to_earnings, now=now)
 
 
-def is_near_earnings(setup, max_days_to_earnings: int, now=None) -> bool:
+def is_near_earnings(setup, max_days_to_earnings: int,
+                     now: Optional[datetime] = None) -> bool:
     """A known, still-upcoming earnings print is within the window.
 
     This remains weaker than :func:`is_sell_eligible`: it ignores the three
@@ -230,13 +234,12 @@ def is_near_earnings(setup, max_days_to_earnings: int, now=None) -> bool:
     include a report that has already occurred, however; a same-day entry is
     valid only before a confirmed after-close print.
     """
-    from datetime import date as _d
     edate = getattr(setup, "next_earnings_date", None)
     if not edate:
         return False
     try:
-        today = now.date() if now is not None else _d.today()
-        days = (_d.fromisoformat(edate) - today).days
+        from datetime import date as _d
+        days = (_d.fromisoformat(edate) - et_today(now)).days
     except Exception:
         return False
     if days < 0 or days > max_days_to_earnings:
@@ -244,10 +247,7 @@ def is_near_earnings(setup, max_days_to_earnings: int, now=None) -> bool:
     if days > 0:
         return True
 
-    # Keep the baseline and execution paths under one timing rule. Importing
-    # locally avoids making the scanner's lightweight data helpers depend on
-    # the executor until the same-day edge case is actually evaluated.
-    from signals.iv_executor import is_pre_earnings_entry_window
+    # The baseline and execution paths must share this same-day safety rule.
     return is_pre_earnings_entry_window(
         edate, getattr(setup, "earnings_report_time", None),
         max_days_to_earnings, now=now)
@@ -373,7 +373,7 @@ def _compute_sync(ticker: str) -> Optional[EarningsSetup]:
         return None
 
     # ── DTE list + term spline ─────────────────────────────────────────
-    today = datetime.today().date()
+    today = et_today()
     dtes, ivs = [], []
     for exp, iv in atm_ivs.items():
         dte = (datetime.strptime(exp, "%Y-%m-%d").date() - today).days

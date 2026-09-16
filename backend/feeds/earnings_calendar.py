@@ -20,6 +20,8 @@ import urllib.request
 import urllib.error
 from datetime import date, timedelta
 
+from market_time import et_today
+
 logger = logging.getLogger(__name__)
 
 _HEADERS = {
@@ -55,7 +57,7 @@ def _fetch_nasdaq_day(d: date) -> list[tuple]:
 
 def _refresh(horizon: int = _HORIZON_DAYS) -> None:
     """Rebuild the {ticker: earliest-future date} map from Nasdaq. Polite pacing."""
-    today = date.today()
+    today = et_today()
     m: dict = {}
     got_any = False
     for i in range(horizon):

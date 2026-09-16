@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     # triple_confluence, etc.). Set false to pause it — e.g. after it proved to
     # be a losing edge (2026-09: triple_confluence went 0/5). Leaves the engine
     # infra intact for other signal paths.
-    auto_trade_flow_enabled: bool = Field(True, env="AUTO_TRADE_FLOW_ENABLED")
+    auto_trade_flow_enabled: bool = Field(False, env="AUTO_TRADE_FLOW_ENABLED")
 
     # --- IV/RV earnings execution (Phase 2 — defined-risk short premium) ---
     # The primary edge: sell an iron condor before an earnings print and collect

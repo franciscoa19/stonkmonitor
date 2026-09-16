@@ -1045,9 +1045,7 @@ async def daily_equity_loop():
     Upserts once per ET calendar day (keyed by date), refreshed hourly so
     'today' always holds the latest equity. Feeds the daily check-in report.
     """
-    from zoneinfo import ZoneInfo
-    from datetime import datetime
-    _ET = ZoneInfo("America/New_York")
+    from market_time import et_now
     await asyncio.sleep(20)  # let startup settle
     while True:
         try:
@@ -1059,7 +1057,7 @@ async def daily_equity_loop():
                 except Exception:
                     n_pos = 0
                 await db.record_daily_equity(
-                    date_str=datetime.now(_ET).strftime("%Y-%m-%d"),
+                    date_str=et_now().strftime("%Y-%m-%d"),
                     equity=equity,
                     cash=float(acct.get("cash", 0) or 0),
                     buying_power=float(acct.get("buying_power", 0) or 0),
@@ -1071,7 +1069,7 @@ async def daily_equity_loop():
         # Resolve any IV/RV evals whose window has elapsed: measure the realized
         # move vs the implied move logged at signal time (hypothetical straddle).
         try:
-            today = datetime.now(_ET).strftime("%Y-%m-%d")
+            today = et_now().strftime("%Y-%m-%d")
             for ev in await db.get_due_iv_evals(today):
                 q = feed.get_latest_quote(ev["ticker"])
                 bid, ask = float(q.get("bid") or 0), float(q.get("ask") or 0)
@@ -1088,7 +1086,7 @@ async def daily_equity_loop():
         # on their actual option expiry (no execution).
         try:
             from signals.iv_variants import variant_payoff, pin_risk
-            today = datetime.now(_ET).strftime("%Y-%m-%d")
+            today = et_now().strftime("%Y-%m-%d")
             due = await db.get_due_variant_evals(today)
             spot_cache: dict = {}
             loop = asyncio.get_running_loop()
@@ -1129,10 +1127,8 @@ async def maybe_execute_condor(setup):
     print is within iv_exec_entry_days_before, respecting position/day caps and a
     per-ticker one-condor rule. Logs its own outcome; returns None.
     """
-    from datetime import datetime as _datetime
-    from zoneinfo import ZoneInfo
+    from market_time import et_now, et_today
     from signals.iv_executor import build_iron_condor, is_pre_earnings_entry_window
-    _ET = ZoneInfo("America/New_York")
     s = settings
     if not s.iv_exec_enabled:
         return
@@ -1146,7 +1142,7 @@ async def maybe_execute_condor(setup):
         getattr(setup, "next_earnings_date", None),
         getattr(setup, "earnings_report_time", None),
         s.iv_exec_entry_days_before,
-        now=_datetime.now(_ET),
+        now=et_now(),
     ):
         logger.info(f"IV-exec skip {getattr(setup, 'ticker', '?')}: "
                     "earnings already occurred, timing unknown, or outside entry window")
@@ -1155,7 +1151,7 @@ async def maybe_execute_condor(setup):
     ticker = setup.ticker
     if await db.has_open_condor(ticker):
         return
-    today = _datetime.now(_ET).strftime("%Y-%m-%d")
+    today = et_today().isoformat()
     if await db.count_open_condors() >= s.iv_exec_max_positions:
         logger.info("IV-exec skip: max open condors reached")
         return
@@ -1301,7 +1297,8 @@ async def _manage_condor(c: dict):
         edate = _date.fromisoformat(c["earnings_date"]) if c.get("earnings_date") else None
     except Exception:
         edate = None
-    post_earnings = edate is not None and _date.today() > edate
+    from market_time import et_today
+    post_earnings = edate is not None and et_today() > edate
     tp_hit = debit <= (1 - settings.iv_exec_tp_pct) * credit
     if c["status"] == "open" and not (post_earnings or tp_hit):
         return
@@ -1417,7 +1414,8 @@ async def iv_scanner_loop():
                         # the realized move are both captured. Falls back to +7d when
                         # no earnings date is known.
                         try:
-                            from datetime import datetime as _dt, timedelta as _td, date as _date
+                            from datetime import timedelta as _td, date as _date
+                            from market_time import et_today
                             imp = float(str(setup.expected_move or "0").rstrip("%") or 0)
                             edate = setup.next_earnings_date
                             resolve_after = None
@@ -1429,7 +1427,7 @@ async def iv_scanner_loop():
                                 except Exception:
                                     resolve_after = None
                             if not resolve_after:
-                                resolve_after = (_dt.utcnow() + _td(days=7)).date().isoformat()
+                                resolve_after = (et_today() + _td(days=7)).isoformat()
                             if await db.record_iv_eval(
                                 ticker=ticker, recommendation=setup.recommendation,
                                 iv30_rv30=setup.iv30_rv30, implied_move_pct=imp,
