@@ -149,23 +149,61 @@ def build_variants(trader, setup, settings) -> list[dict]:
         if s.get("long_put") in pbs:  syms.add(pbs[s["long_put"]]["symbol"])
     quotes = trader.get_option_quotes(list(syms))
 
-    def mid(bystrike, strike):
+    # Fill assumption (VALIDATION_SPEC §3): never price the book at mid. We sell
+    # into the bid and buy at the ask, so the logged credit is one a real order
+    # could actually have collected. `credit_mid` is kept only for reference.
+    conservative = getattr(settings, "iv_conservative_fills", True)
+    fee = float(getattr(settings, "iv_fee_per_contract", 0.65) or 0)
+
+    def q(bystrike, strike, side):
+        """side 'sell' → bid (what we'd receive); 'buy' → ask (what we'd pay)."""
         sym = bystrike.get(strike, {}).get("symbol")
-        return quotes.get(sym, {}).get("mid", 0) if sym else 0
+        rec = quotes.get(sym, {}) if sym else {}
+        mid_px = rec.get("mid", 0) or 0
+        if not conservative:
+            return mid_px, mid_px
+        px = (rec.get("bid") if side == "sell" else rec.get("ask")) or 0
+        return (px or mid_px), mid_px
+
+    # Median gap between listed strikes — "one strike increment" for pin risk.
+    def _step(ks):
+        gaps = sorted(round(b - a, 4) for a, b in zip(ks, ks[1:]) if b > a)
+        return gaps[len(gaps) // 2] if gaps else None
+    strike_step = _step(calls) or _step(puts)
 
     out = []
     for name, s in specs.items():
-        c_short = mid(cbs, s["short_call"]) + mid(pbs, s["short_put"])
-        c_long = (mid(cbs, s["long_call"]) if s.get("long_call") else 0) + \
-                 (mid(pbs, s["long_put"]) if s.get("long_put") else 0)
-        credit = c_short - c_long
+        sc_fill, sc_mid = q(cbs, s["short_call"], "sell")
+        sp_fill, sp_mid = q(pbs, s["short_put"], "sell")
+        lc_fill, lc_mid = (q(cbs, s["long_call"], "buy") if s.get("long_call") else (0, 0))
+        lp_fill, lp_mid = (q(pbs, s["long_put"], "buy") if s.get("long_put") else (0, 0))
+
+        credit = (sc_fill + sp_fill) - (lc_fill + lp_fill)
+        credit_mid = (sc_mid + sp_mid) - (lc_mid + lp_mid)
         if credit <= 0:
-            continue
+            continue                      # no edge left once you pay the spread
+        n_legs = 4 if s.get("long_call") is not None else 2
+        fees = round(n_legs * fee * 2, 2)  # open + close, per contract-leg
+
         if s.get("long_call") is not None:
             width = max(s["long_call"] - s["short_call"], s["short_put"] - s["long_put"])
-            max_loss = round(max(0.0, width - credit) * _MULT, 2)
+            max_loss = round(max(0.0, width - credit) * _MULT + fees, 2)
         else:
-            max_loss = None            # undefined risk (straddle)
+            max_loss = None               # undefined risk (straddle)
         out.append({"variant": name, "expiry": exp_str, "strikes": s,
-                    "credit": round(credit, 2), "max_loss": max_loss})
+                    "credit": round(credit, 2), "credit_mid": round(credit_mid, 2),
+                    "fees": fees, "n_legs": n_legs, "strike_step": strike_step,
+                    "max_loss": max_loss})
     return out
+
+
+def pin_risk(row: dict, final_price: float, strike_step: Optional[float]) -> bool:
+    """True when the underlying settled within one strike increment of a short
+    strike — assignment/pin territory, which must be flagged rather than
+    silently assumed to be a clean cash settlement (VALIDATION_SPEC §3)."""
+    if not strike_step or strike_step <= 0:
+        return False
+    for k in (row.get("short_put"), row.get("short_call")):
+        if k is not None and abs(float(final_price) - float(k)) <= strike_step:
+            return True
+    return False

@@ -335,13 +335,20 @@ CREATE TABLE IF NOT EXISTS iv_variant_evals (
     implied_move_pct REAL,
     short_put      REAL, long_put  REAL,   -- long_* NULL for straddle/strangle
     short_call     REAL, long_call REAL,
-    credit         REAL NOT NULL,          -- credit collected per 1 spread ($ per share)
-    max_loss       REAL,                   -- per-spread $ (NULL = undefined risk)
+    credit         REAL NOT NULL,          -- credit at a CONSERVATIVE fill (short=bid, long=ask)
+    credit_mid     REAL,                   -- same structure priced at mid, for reference only
+    fees           REAL,                   -- round-trip commission ($ per spread)
+    strike_step    REAL,                   -- listed strike increment (pin-risk yardstick)
+    max_loss       REAL,                   -- per-spread $ incl. fees (NULL = undefined risk)
+    -- 1 = passed the three scanner gates, 0 = logged purely as the
+    -- "sell everything indiscriminately" baseline (VALIDATION_SPEC §4).
+    gate_passed    INTEGER DEFAULT 1,
     resolve_after  TEXT,
     resolved       INTEGER DEFAULT 0,
-    exit_spot      REAL,                   -- underlying at resolution
-    realized_pnl   REAL,                   -- $ per 1 spread at expiry intrinsic
+    exit_spot      REAL,                   -- underlying close on the option's expiry
+    realized_pnl   REAL,                   -- $ per 1 spread, expiry intrinsic NET of fees
     win            INTEGER,
+    pin_risk       INTEGER,                -- settled within one strike of a short leg
     created_at     TEXT NOT NULL,
     resolved_at    TEXT
 );
@@ -356,6 +363,8 @@ _MIGRATIONS = {
     "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL"},
     "daily_equity":      {"open_equity": "REAL"},
     "iv_rv_evals":       {"earnings_date": "TEXT"},
+    "iv_variant_evals":  {"credit_mid": "REAL", "fees": "REAL", "strike_step": "REAL",
+                          "gate_passed": "INTEGER", "pin_risk": "INTEGER"},
 }
 
 
@@ -672,18 +681,27 @@ class Database:
     async def record_variant_eval(self, ticker: str, earnings_date: Optional[str],
                                   expiry: Optional[str], variant: str, spot: float,
                                   implied_move_pct: float, strikes: dict, credit: float,
-                                  max_loss: Optional[float], resolve_after: str) -> None:
+                                  max_loss: Optional[float], resolve_after: str,
+                                  credit_mid: Optional[float] = None,
+                                  fees: Optional[float] = None,
+                                  strike_step: Optional[float] = None,
+                                  gate_passed: bool = True) -> None:
         now = datetime.utcnow().isoformat()
         await self._exec(
             """INSERT INTO iv_variant_evals
                  (ticker, earnings_date, signal_date, expiry, variant, spot,
                   implied_move_pct, short_put, long_put, short_call, long_call,
-                  credit, max_loss, resolve_after, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  credit, credit_mid, fees, strike_step, gate_passed,
+                  max_loss, resolve_after, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, earnings_date, now[:10], expiry, variant, round(spot, 2),
              round(implied_move_pct, 2), strikes.get("short_put"), strikes.get("long_put"),
              strikes.get("short_call"), strikes.get("long_call"),
-             round(credit, 2), (round(max_loss, 2) if max_loss is not None else None),
+             round(credit, 2),
+             (round(credit_mid, 2) if credit_mid is not None else None),
+             (round(fees, 2) if fees is not None else None),
+             strike_step, 1 if gate_passed else 0,
+             (round(max_loss, 2) if max_loss is not None else None),
              resolve_after, now))
 
     async def get_due_variant_evals(self, today: str) -> list[dict]:
@@ -691,27 +709,75 @@ class Database:
             "SELECT * FROM iv_variant_evals WHERE resolved=0 AND resolve_after <= ?", (today,))
 
     async def resolve_variant_eval(self, eval_id: int, exit_spot: float,
-                                   realized_pnl: float) -> None:
+                                   realized_pnl: float,
+                                   pin_risk: Optional[bool] = None) -> None:
         await self._exec(
             """UPDATE iv_variant_evals SET resolved=1, exit_spot=?, realized_pnl=?,
-                 win=?, resolved_at=? WHERE id=?""",
+                 win=?, pin_risk=?, resolved_at=? WHERE id=?""",
             (round(exit_spot, 2), round(realized_pnl, 2),
-             1 if realized_pnl > 0 else 0, datetime.utcnow().isoformat(), eval_id))
+             1 if realized_pnl > 0 else 0,
+             (None if pin_risk is None else (1 if pin_risk else 0)),
+             datetime.utcnow().isoformat(), eval_id))
 
-    async def get_variant_summary(self) -> list[dict]:
-        """Per-variant aggregates over resolved events, best expectancy first."""
+    async def get_variant_summary(self, gate_passed: Optional[bool] = True) -> list[dict]:
+        """Full metric set per variant over resolved events, best expectancy first.
+
+        `gate_passed=True` scores only setups that cleared the three scanner
+        gates; False scores the indiscriminate "sell everything" baseline; None
+        scores everything. Comparing True vs False is the experiment that decides
+        whether the gates earn their keep (VALIDATION_SPEC §4).
+        """
+        from backtest.metrics import compute_metrics
+        where = "WHERE resolved=1"
+        params: tuple = ()
+        if gate_passed is not None:
+            where += " AND COALESCE(gate_passed,1)=?"
+            params = (1 if gate_passed else 0,)
         rows = await self._query(
-            """SELECT variant,
-                      COUNT(*) AS n,
-                      SUM(win) AS wins,
-                      ROUND(AVG(realized_pnl), 2) AS avg_pnl,
-                      ROUND(SUM(realized_pnl), 2) AS total_pnl,
-                      ROUND(AVG(CASE WHEN max_loss>0 THEN realized_pnl/max_loss END)*100, 1) AS avg_ror_pct
-               FROM iv_variant_evals WHERE resolved=1
-               GROUP BY variant ORDER BY avg_pnl DESC""")
+            f"""SELECT variant, realized_pnl, max_loss, pin_risk, credit,
+                       implied_move_pct, spot, exit_spot
+                FROM iv_variant_evals {where}""", params)
+
+        by_variant: dict = {}
         for r in rows:
-            r["win_rate"] = round((r["wins"] or 0) / r["n"] * 100, 1) if r["n"] else 0.0
-        return rows
+            by_variant.setdefault(r["variant"], []).append(r)
+
+        out = []
+        for variant, evs in by_variant.items():
+            pnls = [float(e["realized_pnl"] or 0) for e in evs]
+            # Did the underlying move more than the premium implied at entry?
+            exceeded = []
+            for e in evs:
+                spot, exit_spot = e["spot"] or 0, e["exit_spot"] or 0
+                im = e["implied_move_pct"] or 0
+                exceeded.append(bool(spot and im and
+                                     abs(exit_spot / spot - 1) * 100 > im))
+            m = compute_metrics(pnls, exceeded_implied=exceeded)
+            rors = [float(e["realized_pnl"]) / float(e["max_loss"]) * 100
+                    for e in evs if e["max_loss"]]
+            m.update({
+                "variant": variant,
+                "avg_pnl": m["expectancy"],
+                "avg_ror_pct": (round(sum(rors) / len(rors), 1) if rors else None),
+                "n": m["n_events"],
+                "pin_events": sum(1 for e in evs if e["pin_risk"]),
+            })
+            out.append(m)
+        out.sort(key=lambda x: (x["expectancy"] is None, -(x["expectancy"] or 0)))
+        return out
+
+    async def get_gate_comparison(self) -> dict:
+        """Baseline 2: pooled metrics for gated vs ungated near-earnings events.
+        If selling everything matches the filtered set, the gates are noise."""
+        from backtest.metrics import compute_metrics
+        out = {}
+        for label, flag in (("gated", 1), ("ungated", 0)):
+            rows = await self._query(
+                """SELECT realized_pnl FROM iv_variant_evals
+                   WHERE resolved=1 AND COALESCE(gate_passed,1)=? AND variant=?""",
+                (flag, "condor_1.0sd"))
+            out[label] = compute_metrics([float(r["realized_pnl"] or 0) for r in rows])
+        return out
 
     # ── Write: Options Flow ──────────────────────────────────────────────
     async def save_options_flow(self, event: dict):

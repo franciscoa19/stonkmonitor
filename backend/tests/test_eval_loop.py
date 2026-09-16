@@ -300,6 +300,78 @@ def test_is_sell_eligible():
     assert is_sell_eligible(None, 7) is False                # no setup
 
 
+# ── Short-premium metric set (VALIDATION_SPEC §4) ───────────────────────
+def test_metrics_on_hand_built_fixture():
+    from backtest.metrics import compute_metrics
+    # 3 wins of +100, 2 losses of -50 and -200.
+    m = compute_metrics([100.0, -50.0, 100.0, 100.0, -200.0])
+    assert m["n_events"] == 5 and m["n_wins"] == 3
+    assert m["win_rate"] == 60.0
+    assert m["total_pnl"] == 50.0
+    assert m["expectancy"] == 10.0                      # 50 / 5
+    assert m["profit_factor"] == 1.2                    # 300 gross win / 250 gross loss
+    assert m["avg_win"] == 100.0 and m["avg_loss"] == -125.0
+    assert m["largest_single_loss"] == -200.0
+    # curve: 100, 50, 150, 250, 50 → peak 250, trough 50 → drawdown 200
+    assert m["max_drawdown"] == 200.0
+    assert m["sufficient_sample"] is False              # n=5 is not evidence
+    assert m["events_needed"] == 95
+
+
+def test_tail_ratio_exposes_hidden_negative_expectancy():
+    """The whole point of the metric set: a strong win rate hiding a fat tail."""
+    from backtest.metrics import compute_metrics
+    # 19 wins of +100, one loss of -3000 → 95% win rate, negative expectancy.
+    pnls = [100.0] * 19 + [-3000.0]
+    m = compute_metrics(pnls)
+    assert m["win_rate"] == 95.0                        # looks great
+    assert m["expectancy"] < 0                          # ...but loses money
+    assert m["profit_factor"] < 1
+    # worst 5% (1 event) vs the rest: -3000 / 100 = -30 typical wins erased
+    assert m["tail_ratio"] == -30.0
+
+
+def test_metrics_empty_and_all_wins():
+    from backtest.metrics import compute_metrics
+    e = compute_metrics([])
+    assert e["n_events"] == 0 and e["profit_factor"] is None and e["max_drawdown"] == 0.0
+    w = compute_metrics([10.0, 20.0])
+    assert w["profit_factor"] is None                   # no losses to divide by
+    assert w["max_drawdown"] == 0.0 and w["largest_single_loss"] is None
+
+
+def test_pct_events_exceeding_implied():
+    from backtest.metrics import compute_metrics
+    m = compute_metrics([10.0, -10.0, 10.0, 10.0], exceeded_implied=[False, True, False, False])
+    assert m["pct_events_exceeding_implied"] == 25.0
+
+
+def test_is_near_earnings_is_weaker_than_sell_eligible():
+    """Baseline 2 needs the ungated population: near-earnings regardless of gates."""
+    from signals.earnings_scanner import is_near_earnings, is_sell_eligible
+    from datetime import date as _d, timedelta as _td
+    import types as _t
+    avoid = _t.SimpleNamespace(recommendation="AVOID", iv30_rv30=0.6,
+                               next_earnings_date=(_d.today() + _td(days=2)).isoformat())
+    assert is_sell_eligible(avoid, 7) is False      # gates rejected it
+    assert is_near_earnings(avoid, 7) is True       # ...but it still gets measured
+    far = _t.SimpleNamespace(recommendation="AVOID", iv30_rv30=0.6,
+                             next_earnings_date=(_d.today() + _td(days=40)).isoformat())
+    assert is_near_earnings(far, 7) is False
+    etf = _t.SimpleNamespace(recommendation="SELL_PREMIUM", iv30_rv30=1.4,
+                             next_earnings_date=None)
+    assert is_near_earnings(etf, 7) is False
+
+
+def test_pin_risk_flag():
+    from signals.iv_variants import pin_risk
+    row = {"short_put": 90.0, "short_call": 110.0}
+    assert pin_risk(row, 110.5, 2.5) is True     # settled inside one strike of the short call
+    assert pin_risk(row, 89.0, 2.5) is True      # ...or the short put
+    assert pin_risk(row, 100.0, 2.5) is False    # comfortably between
+    assert pin_risk(row, 110.5, None) is False   # unknown increment → no claim
+
+
 # ── IV/RV strategy-variant logger (measurement only) ────────────────────
 def test_variant_payoff():
     from signals.iv_variants import expiry_settlement_date, variant_payoff
@@ -471,6 +543,62 @@ def test_build_iron_condor_happy_path():
     assert plan["credit"] > 0 and plan["limit_price"] < 0     # net credit = negative limit
     assert plan["expiry"] == exp.isoformat()
     assert len(plan["legs"]) == 4
+
+
+def test_variant_pricing_applies_slippage_and_fees():
+    """VALIDATION_SPEC §3: fills must be worse than mid and commission explicit."""
+    from signals.iv_variants import build_variants
+    from config import get_settings
+    exp = _date.today() + _timedelta(days=1)
+    strikes = [float(k) for k in range(80, 121)]
+    mids = {}
+    for k in strikes:
+        mids[("C", k)] = max(0.10, 3.0 - 0.12 * (k - 100)) if k >= 100 else 3.0
+        mids[("P", k)] = max(0.10, 3.0 - 0.12 * (100 - k)) if k <= 100 else 3.0
+    trader = FakeOptionTrader(exp, strikes, mids, equity=50000.0)
+    setup = _types.SimpleNamespace(
+        ticker="TEST", price=100.0, expected_move="10.0%", recommendation="SELL_PREMIUM",
+        next_earnings_date=_date.today().isoformat())
+    plans = {v["variant"]: v for v in build_variants(trader, setup, get_settings())}
+
+    condor = plans["condor_1.0sd"]
+    # Selling the bid and buying the ask must collect LESS than mid pricing.
+    assert condor["credit"] < condor["credit_mid"]
+    # 4 legs × $0.65 × 2 (open+close) = $5.20; straddle is 2 legs = $2.60.
+    assert condor["fees"] == 5.20 and condor["n_legs"] == 4
+    assert plans["straddle"]["fees"] == 2.60 and plans["straddle"]["n_legs"] == 2
+    # Max loss carries the commission drag too.
+    width = condor["strikes"]["long_call"] - condor["strikes"]["short_call"]
+    assert condor["max_loss"] == round((width - condor["credit"]) * 100 + 5.20, 2)
+    assert condor["strike_step"] == 1.0          # $1-wide fixture chain
+
+
+async def test_gate_comparison_scores_gated_vs_ungated(db):
+    """The experiment: do the three gates beat selling everything?"""
+    sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+
+    async def seed(ticker, gate_passed, pnl):
+        await db.record_variant_eval(ticker, "2026-09-16", "2026-09-18", "condor_1.0sd",
+                                     100.0, 8.0, sp, credit=1.20, max_loss=180.0,
+                                     resolve_after="2026-09-19", credit_mid=1.30,
+                                     fees=5.20, strike_step=1.0, gate_passed=gate_passed)
+        row = (await db._query(
+            "SELECT id FROM iv_variant_evals ORDER BY id DESC LIMIT 1"))[0]
+        await db.resolve_variant_eval(row["id"], 103.0, pnl)
+
+    await seed("AAA", True, 120.0)
+    await seed("BBB", True, 100.0)
+    await seed("CCC", False, -300.0)
+    await seed("DDD", False, 100.0)
+
+    cmp = await db.get_gate_comparison()
+    assert cmp["gated"]["n_events"] == 2 and cmp["gated"]["expectancy"] == 110.0
+    assert cmp["ungated"]["n_events"] == 2 and cmp["ungated"]["expectancy"] == -100.0
+    # Summary respects the gate filter too.
+    gated_only = await db.get_variant_summary(gate_passed=True)
+    assert gated_only[0]["n_events"] == 2
+    everything = await db.get_variant_summary(gate_passed=None)
+    assert everything[0]["n_events"] == 4
 
 
 def test_build_iron_condor_rejects_far_earnings():

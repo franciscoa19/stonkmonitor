@@ -98,6 +98,16 @@ class Settings(BaseSettings):
     # holds near earnings). Filters far-dated / cheap-IV / ETF noise from the
     # signal, the eval log, and execution. Execution still needs ≤ entry_days_before.
     iv_setup_max_days_to_earnings: int = Field(7, env="IV_SETUP_MAX_DAYS_TO_EARNINGS")
+    # Execution realism for the measurement layer (VALIDATION_SPEC §3): short
+    # premium dies on fills, not on signal quality. Price variants at a fill
+    # WORSE than mid — shorts at bid, longs at ask — and charge round-trip
+    # commission. Never default these to zero; mid-priced results flatter.
+    iv_conservative_fills: bool = Field(True, env="IV_CONSERVATIVE_FILLS")
+    iv_fee_per_contract: float = Field(0.65, env="IV_FEE_PER_CONTRACT")
+    # Also log structures for near-earnings names that FAIL the gates, so the
+    # gates can be tested against "sell everything indiscriminately" (spec §4
+    # Baseline 2). Measurement only — ungated rows are never executed.
+    iv_log_ungated_baseline: bool = Field(True, env="IV_LOG_UNGATED_BASELINE")
 
     # --- Daily report scheduler ---
     report_enabled: bool = Field(True, env="REPORT_ENABLED")

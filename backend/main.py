@@ -1087,7 +1087,7 @@ async def daily_equity_loop():
         # Resolve due strategy-variant evals from the historical underlying close
         # on their actual option expiry (no execution).
         try:
-            from signals.iv_variants import variant_payoff
+            from signals.iv_variants import variant_payoff, pin_risk
             today = datetime.now(_ET).strftime("%Y-%m-%d")
             due = await db.get_due_variant_evals(today)
             spot_cache: dict = {}
@@ -1105,8 +1105,13 @@ async def daily_equity_loop():
                         None, feed.get_daily_close, tk, expiry)
                 px = spot_cache[key]
                 if px:
-                    pnl = variant_payoff(ev, px)
-                    await db.resolve_variant_eval(ev["id"], px, pnl)
+                    # Net of round-trip commission — a gross-of-fees result
+                    # overstates every structure, and unevenly (a 4-leg condor
+                    # pays twice the commission of a 2-leg straddle).
+                    pnl = variant_payoff(ev, px) - float(ev["fees"] or 0)
+                    await db.resolve_variant_eval(
+                        ev["id"], px, pnl,
+                        pin_risk=pin_risk(ev, px, ev["strike_step"]))
                     resolved += 1
             if due:
                 logger.info(f"Variant evals resolved: {resolved}/{len(due)} rows across "
@@ -1187,11 +1192,15 @@ async def maybe_execute_condor(setup):
         f"risk ${plan['risk_usd']:.0f} exp {plan['expiry']} order={res.get('id')}")
 
 
-async def log_variant_evals(setup):
+async def log_variant_evals(setup, gate_passed: bool = True):
     """Measurement only: price several hypothetical structures for this earnings
     event and log them for later resolution vs the realized move. No execution.
     One set per ticker+event (deduped). Each variant settles only after its own
-    option expiry, using that session's historical underlying close."""
+    option expiry, using that session's historical underlying close.
+
+    `gate_passed` records whether the setup cleared the three scanner gates, so
+    filtered and indiscriminate selling can be scored against each other.
+    """
     from signals.iv_variants import build_variants, expiry_settlement_date
     if not settings.iv_variants_log_enabled:
         return
@@ -1217,10 +1226,13 @@ async def log_variant_evals(setup):
             ticker=setup.ticker, earnings_date=edate, expiry=v["expiry"],
             variant=v["variant"], spot=setup.price, implied_move_pct=im,
             strikes=v["strikes"], credit=v["credit"], max_loss=v["max_loss"],
-            resolve_after=resolve_after)
-        logged.append(f"{v['variant']}→{resolve_after}")
+            resolve_after=resolve_after, credit_mid=v.get("credit_mid"),
+            fees=v.get("fees"), strike_step=v.get("strike_step"),
+            gate_passed=gate_passed)
+        logged.append(v["variant"])
     if logged:
-        logger.info(f"Variant-log {setup.ticker}: {', '.join(logged)}")
+        logger.info(f"Variant-log {setup.ticker} ({'gated' if gate_passed else 'baseline'}): "
+                    f"{', '.join(logged)} → settle {resolve_after}")
 
 
 def _condor_close_debit(legs: list, quotes: dict) -> float:
@@ -1343,7 +1355,8 @@ async def iv_scanner_loop():
     from api.routes import _watchlist
     from feeds.uw_budget import current_session, budget
     from feeds.unusual_whales import iv_summary_from_termstructure
-    from signals.earnings_scanner import scan_ticker as earnings_scan, is_sell_eligible
+    from signals.earnings_scanner import (scan_ticker as earnings_scan,
+                                          is_sell_eligible, is_near_earnings)
     await asyncio.sleep(30)  # give server time to start
 
     _earnings_last_run: dict[str, float] = {}  # ticker → epoch of last scan
@@ -1384,7 +1397,9 @@ async def iv_scanner_loop():
                     # Only act on a scored setup when it's a real earnings play —
                     # a known print within the window, valid IV/RV. Filters the
                     # far-dated / cheap-IV / ETF noise from alerts, evals, and trades.
-                    if signal and is_sell_eligible(setup, settings.iv_setup_max_days_to_earnings):
+                    _max_days = settings.iv_setup_max_days_to_earnings
+                    eligible = bool(signal) and is_sell_eligible(setup, _max_days)
+                    if eligible:
                         await handle_signal(signal)
                         logger.info(
                             f"Earnings setup {ticker}: {setup.recommendation} "
@@ -1429,12 +1444,16 @@ async def iv_scanner_loop():
                         except Exception as e:
                             logger.warning(f"IV-exec {ticker} error: {e}")
 
-                        # Measurement: log hypothetical structure variants for
-                        # this event (no execution) to compare expectancy.
-                        try:
-                            await log_variant_evals(setup)
-                        except Exception as e:
-                            logger.debug(f"variant-log {ticker} skipped: {e}")
+                    # Measurement only (never executed): price the structures for
+                    # EVERY near-earnings name — gated or not — so the three gates
+                    # can be scored against "sell everything indiscriminately".
+                    # If the ungated baseline matches, the gates are noise.
+                    try:
+                        if is_near_earnings(setup, _max_days) and (
+                                eligible or settings.iv_log_ungated_baseline):
+                            await log_variant_evals(setup, gate_passed=eligible)
+                    except Exception as e:
+                        logger.debug(f"variant-log {ticker} skipped: {e}")
 
             except Exception as e:
                 logger.warning(f"IV scanner error for {ticker}: {e}")

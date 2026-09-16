@@ -230,6 +230,22 @@ def is_sell_eligible(setup, max_days_to_earnings: int) -> bool:
     return 0 <= days <= max_days_to_earnings
 
 
+def is_near_earnings(setup, max_days_to_earnings: int) -> bool:
+    """A known earnings print is within the window — regardless of whether the
+    three gates passed. Weaker than is_sell_eligible on purpose: it defines the
+    population for the "sell everything indiscriminately" baseline, which is the
+    only way to test whether the gates add value (VALIDATION_SPEC §4)."""
+    from datetime import date as _d
+    edate = getattr(setup, "next_earnings_date", None)
+    if not edate:
+        return False
+    try:
+        days = (_d.fromisoformat(edate) - _d.today()).days
+    except Exception:
+        return False
+    return 0 <= days <= max_days_to_earnings
+
+
 def _next_earnings_info(stock) -> tuple[Optional[str], Optional[str]]:
     """Nearest future earnings `(date, report_time)`.
 

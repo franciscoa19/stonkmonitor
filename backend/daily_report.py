@@ -96,6 +96,10 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         iv_variants = await db.get_variant_summary()
     except Exception:
         iv_variants = []
+    try:
+        iv_gate_cmp = await db.get_gate_comparison()
+    except Exception:
+        iv_gate_cmp = {}
 
     # ── Attribution: by entry hour (ET) ──────────────────────────────────
     by_hour = await db._query(
@@ -174,6 +178,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         "iv_rv": iv_rv,
         "iv_condors": iv_condors,
         "iv_variants": iv_variants,
+        "iv_gate_comparison": iv_gate_cmp,
         "by_strategy": [dict(r) for r in by_strategy],
         "by_hour": [dict(r) for r in by_hour],
         "recent": recent,
@@ -270,26 +275,62 @@ def render_html(d: dict) -> str:
     condors = d.get("iv_condors", {"closed": 0, "wins": 0, "win_rate": 0.0,
                                      "total_pnl": 0.0, "open": 0, "pending": 0})
     variants = d.get("iv_variants", []) or []
+    gate_cmp = d.get("iv_gate_comparison", {}) or {}
     if variants:
+        def _f(x, suffix=""):
+            return "—" if x is None else f"{x}{suffix}"
         _vrows = "".join(
             f"<tr><td style='padding:3px 12px 3px 0'>{_html.escape(str(v['variant']))}</td>"
-            f"<td style='text-align:right'>{v['n']}</td>"
-            f"<td style='text-align:right'>{round(v.get('win_rate') or 0)}%</td>"
-            f"<td style='text-align:right' class=\"{'up' if (v.get('avg_pnl') or 0)>=0 else 'down'}\">{_money(v.get('avg_pnl') or 0)}</td>"
-            f"<td style='text-align:right'>{(str(v['avg_ror_pct'])+'%') if v.get('avg_ror_pct') is not None else '—'}</td>"
-            f"<td style='text-align:right' class=\"{'up' if (v.get('total_pnl') or 0)>=0 else 'down'}\">{_money(v.get('total_pnl') or 0)}</td></tr>"
+            f"<td style='text-align:right'>{v['n_events']}</td>"
+            f"<td style='text-align:right'>{_f(v.get('win_rate'), '%')}</td>"
+            f"<td style='text-align:right' class=\"{'up' if (v.get('expectancy') or 0)>=0 else 'down'}\">{_money(v.get('expectancy') or 0)}</td>"
+            f"<td style='text-align:right'>{_f(v.get('profit_factor'))}</td>"
+            f"<td style='text-align:right' class=\"{'down' if (v.get('tail_ratio') or 0) < -3 else ''}\">{_f(v.get('tail_ratio'))}</td>"
+            f"<td style='text-align:right' class=\"down\">{_money(v.get('largest_single_loss') or 0)}</td>"
+            f"<td style='text-align:right'>{_f(v.get('avg_ror_pct'), '%')}</td></tr>"
             for v in variants)
+        _n = max((v["n_events"] for v in variants), default=0)
+        _need = max((v.get("events_needed") or 0 for v in variants), default=0)
+        _warn = ("" if all(v.get("sufficient_sample") for v in variants) else
+                 "<div style=\"margin-top:10px;padding:8px 10px;border-left:3px solid #c88;"
+                 "font-size:12px\"><b>Not yet evidence.</b> "
+                 f"{_n} resolved event(s); ~{_need} more needed before these numbers "
+                 "mean anything. An iron condor wins ~65–70% of the time by construction, "
+                 "so win rate is noise until the tail has shown up.</div>")
+        _cmp_html = ""
+        if gate_cmp.get("gated") or gate_cmp.get("ungated"):
+            g, u = gate_cmp.get("gated", {}), gate_cmp.get("ungated", {})
+            _cmp_html = (
+                "<div style=\"margin-top:14px\"><div class=\"mut\" style=\"font-size:10.5px;"
+                "text-transform:uppercase\">Do the gates earn their keep?</div>"
+                "<table style=\"width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px;margin-top:4px\">"
+                "<tr class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase;text-align:right\">"
+                "<th style=\"text-align:left\">Population</th><th>N</th><th>Expectancy</th>"
+                "<th>Profit factor</th><th>Tail ratio</th></tr>"
+                f"<tr><td>gated (passed all 3)</td><td style='text-align:right'>{g.get('n_events',0)}</td>"
+                f"<td style='text-align:right'>{_money(g.get('expectancy') or 0)}</td>"
+                f"<td style='text-align:right'>{_f(g.get('profit_factor'))}</td>"
+                f"<td style='text-align:right'>{_f(g.get('tail_ratio'))}</td></tr>"
+                f"<tr><td>ungated (sell everything)</td><td style='text-align:right'>{u.get('n_events',0)}</td>"
+                f"<td style='text-align:right'>{_money(u.get('expectancy') or 0)}</td>"
+                f"<td style='text-align:right'>{_f(u.get('profit_factor'))}</td>"
+                f"<td style='text-align:right'>{_f(u.get('tail_ratio'))}</td></tr></table>"
+                "<div class=\"mut\" style=\"font-size:12px;margin-top:6px\">If selling "
+                "indiscriminately matches the filtered set, the three gates are noise.</div></div>")
         _variant_card = (
             "<div class=\"card\"><h2>Strategy-variant comparison "
             "<span class=\"pill mut\" style=\"font-size:11px\">hypothetical · no execution</span></h2>"
             "<table style=\"width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px\">"
             "<tr class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase;text-align:right\">"
             "<th style=\"text-align:left\">Variant</th><th>N</th><th>Win%</th>"
-            "<th>Avg P&amp;L</th><th>Avg RoR</th><th>Total</th></tr>"
+            "<th>Expectancy</th><th>PF</th><th>Tail</th><th>Worst</th><th>RoR</th></tr>"
             f"{_vrows}</table>"
             "<div class=\"mut\" style=\"font-size:12px;margin-top:10px\">Same events, "
-            "different structures, priced off the live chain and scored at expiry vs the "
-            "realized move. Per 1 spread. Ranks which shape to actually trade.</div></div>")
+            "different structures, priced at a conservative fill (short=bid, long=ask) net "
+            "of commission and settled on the underlying's close at expiry. Per 1 spread. "
+            "<b>Tail</b> = worst 5% vs the rest — how many good events one bad one erases; "
+            "it is the number that catches a 70%-win-rate strategy that still loses money."
+            f"</div>{_warn}{_cmp_html}</div>")
     else:
         _variant_card = ""
     e = _html.escape
