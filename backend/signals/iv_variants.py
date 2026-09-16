@@ -30,6 +30,20 @@ VARIANTS = ["straddle", "condor_0.7sd", "condor_1.0sd", "condor_1.3sd", "fly"]
 _MULT = 100
 
 
+def expiry_settlement_date(expiry: str) -> Optional[str]:
+    """First calendar day on which an expiry close is safe to evaluate.
+
+    The evaluator retrieves the historical close for `expiry`, so waiting one
+    calendar day prevents a background pass earlier on expiration day from
+    treating an intraday price as the settlement price. Weekend/holiday passes
+    remain safe because they still query the completed expiration session.
+    """
+    try:
+        return (date.fromisoformat(str(expiry)) + timedelta(days=1)).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
 def _im_frac(setup) -> float:
     try:
         return float(str(setup.expected_move or "0").rstrip("%")) / 100.0

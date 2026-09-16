@@ -13,7 +13,7 @@ from alpaca.data.requests import (
 )
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.live import StockDataStream
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,31 @@ class AlpacaFeed:
         except Exception as e:
             logger.error(f"Alpaca bars error for {ticker}: {e}")
             return []
+
+    def get_daily_close(self, ticker: str, session_date: str) -> Optional[float]:
+        """Closing stock price for one completed market session.
+
+        This is deliberately historical rather than a latest quote: expiry-based
+        option evaluations must use the underlying's price *at expiration*, not
+        a later live price. Returns None until Alpaca has a bar for that session.
+        """
+        try:
+            target = date.fromisoformat(session_date)
+            start = datetime.combine(target, time.min)
+            req = StockBarsRequest(
+                symbol_or_symbols=ticker.upper(),
+                timeframe=TimeFrame.Day,
+                start=start,
+                end=start + timedelta(days=1),
+            )
+            bars = self.stock_client.get_stock_bars(req).get(ticker.upper(), [])
+            for bar in reversed(bars):
+                if bar.timestamp.date() == target:
+                    return float(bar.close)
+            logger.debug(f"No daily close yet for {ticker} on {session_date}")
+        except Exception as e:
+            logger.warning(f"Alpaca daily-close error for {ticker} {session_date}: {e}")
+        return None
 
     def get_option_chain(self, ticker: str, expiry_days: int = 45) -> list[dict]:
         """Get option chain with IV for a ticker."""

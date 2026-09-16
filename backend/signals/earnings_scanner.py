@@ -16,6 +16,7 @@ Run: once per 30 min per ticker to avoid rate limits
 """
 import logging
 import asyncio
+import math
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Optional
@@ -111,7 +112,10 @@ class EarningsSetup:
     iv_expensive:    bool        # iv30_rv30 >= 1.25
     ts_inverted:     bool        # ts_slope <= -0.00406
 
-    next_earnings_date: Optional[str] = None   # YYYY-MM-DD (yfinance calendar)
+    next_earnings_date: Optional[str] = None   # YYYY-MM-DD
+    # Nasdaq calendar timing when available: "pre" (before market) or "post"
+    # (after close). yfinance fallback has no reliable timing, so it is None.
+    earnings_report_time: Optional[str] = None
 
     @property
     def passes(self) -> int:
@@ -148,6 +152,7 @@ class EarningsSetup:
             "recommendation":self.recommendation,
             "score":         self.score,
             "next_earnings_date": self.next_earnings_date,
+            "earnings_report_time": self.earnings_report_time,
         }
 
 
@@ -201,7 +206,7 @@ def _fetch_next_earnings_date(stock) -> Optional[str]:
 def is_sell_eligible(setup, max_days_to_earnings: int) -> bool:
     """A scored setup is a real earnings sell-premium candidate only when:
       • it scores (recommendation != AVOID),
-      • IV/RV is valid (> 0 — guards the broken-vol iv30_rv30==0 rows), and
+      • IV/RV is finite and positive (guards broken 0/NaN/∞ vol rows), and
       • a KNOWN earnings print is within max_days_to_earnings.
     This filters the far-dated, cheap-IV, and no-earnings (ETF) noise that
     otherwise pollutes the signal feed, the eval log, and would mis-fire trades
@@ -209,8 +214,11 @@ def is_sell_eligible(setup, max_days_to_earnings: int) -> bool:
     from datetime import date as _d
     if getattr(setup, "recommendation", "AVOID") == "AVOID":
         return False
-    ivrv = getattr(setup, "iv30_rv30", 0) or 0
-    if ivrv <= 0:
+    try:
+        ivrv = float(getattr(setup, "iv30_rv30", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(ivrv) or ivrv <= 0:
         return False
     edate = getattr(setup, "next_earnings_date", None)
     if not edate:
@@ -222,21 +230,25 @@ def is_sell_eligible(setup, max_days_to_earnings: int) -> bool:
     return 0 <= days <= max_days_to_earnings
 
 
-def _next_earnings_date(stock) -> Optional[str]:
-    """Nearest-future earnings date (YYYY-MM-DD) or None. Free — no key.
+def _next_earnings_info(stock) -> tuple[Optional[str], Optional[str]]:
+    """Nearest future earnings `(date, report_time)`.
 
     Two independent sources for resilience:
       1. Nasdaq calendar (date-keyed, shared cache — no per-ticker rate limit),
       2. yfinance per-ticker (cached 5d + one retry) as fallback.
+
+    `report_time` is "pre"/"post" only when Nasdaq supplies it. The yfinance
+    fallback intentionally returns None rather than guessing, because same-day
+    execution must fail closed when the print timing is unknown.
     """
     sym = getattr(stock, "ticker", None) or ""
 
     # Primary: shared Nasdaq-backed calendar.
     try:
-        from feeds.earnings_calendar import get_next_earnings
+        from feeds.earnings_calendar import get_next_earnings, get_report_time
         d = get_next_earnings(sym)
         if d:
-            return d
+            return d, get_report_time(sym)
     except Exception:
         pass
 
@@ -248,11 +260,16 @@ def _next_earnings_date(stock) -> Optional[str]:
         val, ts = hit
         ttl = _ED_TTL_HIT if val else _ED_TTL_MISS
         if now - ts < ttl:
-            return val
+            return val, None
     val = _fetch_next_earnings_date(stock)
     if sym:
         _ED_CACHE[sym] = (val, now)
-    return val
+    return val, None
+
+
+def _next_earnings_date(stock) -> Optional[str]:
+    """Compatibility wrapper for callers that only need the date."""
+    return _next_earnings_info(stock)[0]
 
 
 # ── Main scanner ──────────────────────────────────────────────────────────────
@@ -365,6 +382,7 @@ def _compute_sync(ticker: str) -> Optional[EarningsSetup]:
         else None
     )
 
+    earnings_date, earnings_report_time = _next_earnings_info(stock)
     return EarningsSetup(
         ticker       = ticker,
         price        = underlying,
@@ -377,5 +395,6 @@ def _compute_sync(ticker: str) -> Optional[EarningsSetup]:
         vol_ok       = avg_vol   >= 1_500_000,
         iv_expensive = iv30_rv30 >= 1.25,
         ts_inverted  = ts_slope  <= -0.00406,
-        next_earnings_date = _next_earnings_date(stock),
+        next_earnings_date = earnings_date,
+        earnings_report_time = earnings_report_time,
     )

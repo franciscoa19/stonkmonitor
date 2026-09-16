@@ -292,6 +292,8 @@ def test_is_sell_eligible():
     assert is_sell_eligible(mk(), 7) is True                 # near, rich IV, scores
     assert is_sell_eligible(mk(rec="AVOID"), 7) is False     # doesn't score
     assert is_sell_eligible(mk(ivrv=0.0), 7) is False        # broken/zero IV/RV
+    assert is_sell_eligible(mk(ivrv=float("nan")), 7) is False
+    assert is_sell_eligible(mk(ivrv=float("inf")), 7) is False
     assert is_sell_eligible(mk(days=None), 7) is False       # no known earnings (ETF)
     assert is_sell_eligible(mk(days=30), 7) is False         # earnings too far out
     assert is_sell_eligible(mk(days=-2), 7) is False         # print already passed
@@ -300,7 +302,7 @@ def test_is_sell_eligible():
 
 # ── IV/RV strategy-variant logger (measurement only) ────────────────────
 def test_variant_payoff():
-    from signals.iv_variants import variant_payoff
+    from signals.iv_variants import expiry_settlement_date, variant_payoff
     condor = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0,
               "long_call": 113.0, "credit": 1.20}
     assert variant_payoff(condor, 100) == 120.0        # inside → full credit
@@ -315,6 +317,9 @@ def test_variant_payoff():
                 "long_call": None, "credit": 8.0}
     assert variant_payoff(straddle, 100) == 800.0
     assert variant_payoff(straddle, 90) == -200.0      # uncapped (moved 10 vs 8 credit)
+    # Never evaluate during the option's expiry session; use the completed close.
+    assert expiry_settlement_date("2026-09-18") == "2026-09-19"
+    assert expiry_settlement_date("not-a-date") is None
 
 
 async def test_variant_eval_lifecycle(db):
@@ -340,6 +345,34 @@ async def test_variant_eval_lifecycle(db):
     assert summ["condor_1.0sd"]["avg_ror_pct"] == round(120.0 / 180.0 * 100, 1)
     assert summ["straddle"]["avg_pnl"] == 500.0
     assert summ["straddle"]["avg_ror_pct"] is None      # undefined risk → no RoR
+
+
+async def test_open_variant_evals_are_rescheduled_to_after_expiry(db):
+    sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+    await db.record_variant_eval("NVDA", "2026-09-15", "2026-09-18", "condor_1.0sd",
+                                 100.0, 8.0, sp, credit=1.20, max_loss=180.0,
+                                 resolve_after="2026-09-17")
+    await db._repair_open_variant_resolution_dates()
+    assert await db.get_due_variant_evals("2026-09-18") == []
+    assert len(await db.get_due_variant_evals("2026-09-19")) == 1
+
+
+def test_daily_close_uses_the_requested_completed_session():
+    """The variant resolver must not substitute a later latest quote."""
+    from datetime import datetime as _dt
+    from types import SimpleNamespace
+    from feeds.alpaca_feed import AlpacaFeed
+
+    class FakeStockClient:
+        def get_stock_bars(self, _request):
+            return {"NVDA": [
+                SimpleNamespace(timestamp=_dt(2026, 9, 17), close=175.0),
+                SimpleNamespace(timestamp=_dt(2026, 9, 18), close=180.0),
+            ]}
+
+    feed = AlpacaFeed.__new__(AlpacaFeed)
+    feed.stock_client = FakeStockClient()
+    assert feed.get_daily_close("NVDA", "2026-09-18") == 180.0
 
 
 # ── Account-fetch failure detection (guards the $0/-100% bogus report) ──
@@ -450,6 +483,25 @@ def test_build_iron_condor_rejects_far_earnings():
         next_earnings_date=(_date.today() + _timedelta(days=40)).isoformat())
     plan = build_iron_condor(trader, setup, 50000.0, get_settings())
     assert not plan["ok"] and "DTE band" in plan["reason"]
+
+
+def test_pre_earnings_entry_window():
+    from datetime import datetime as _dt
+    from signals.iv_executor import is_pre_earnings_entry_window
+
+    # Future events can be entered regardless of whether a report-time source is
+    # available. Same-day events require a confirmed post-close report and must
+    # be entered before 16:00 ET; BMO and unknown reports fail closed.
+    assert is_pre_earnings_entry_window("2026-09-16", None, 2,
+                                        now=_dt(2026, 9, 15, 10, 0)) is True
+    assert is_pre_earnings_entry_window("2026-09-15", "post", 2,
+                                        now=_dt(2026, 9, 15, 15, 59)) is True
+    assert is_pre_earnings_entry_window("2026-09-15", "pre", 2,
+                                        now=_dt(2026, 9, 15, 10, 0)) is False
+    assert is_pre_earnings_entry_window("2026-09-15", None, 2,
+                                        now=_dt(2026, 9, 15, 10, 0)) is False
+    assert is_pre_earnings_entry_window("2026-09-15", "post", 2,
+                                        now=_dt(2026, 9, 15, 16, 0)) is False
 
 
 async def test_condor_db_lifecycle(db):

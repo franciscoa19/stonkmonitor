@@ -1084,26 +1084,33 @@ async def daily_equity_loop():
         except Exception as e:
             logger.warning(f"IV eval resolve error: {e}")
 
-        # Resolve due strategy-variant evals: score each hypothetical structure's
-        # expiry-intrinsic payoff at the realized underlying price (no execution).
+        # Resolve due strategy-variant evals from the historical underlying close
+        # on their actual option expiry (no execution).
         try:
             from signals.iv_variants import variant_payoff
             today = datetime.now(_ET).strftime("%Y-%m-%d")
             due = await db.get_due_variant_evals(today)
             spot_cache: dict = {}
+            loop = asyncio.get_running_loop()
+            resolved = 0
             for ev in due:
                 tk = ev["ticker"]
-                if tk not in spot_cache:
-                    q = feed.get_latest_quote(tk)
-                    bid, ask = float(q.get("bid") or 0), float(q.get("ask") or 0)
-                    spot_cache[tk] = (bid + ask) / 2 if (bid and ask) else (bid or ask)
-                px = spot_cache[tk]
+                expiry = ev.get("expiry")
+                if not expiry:
+                    logger.warning(f"Variant eval #{ev['id']} has no expiry; leaving unresolved")
+                    continue
+                key = (tk, expiry)
+                if key not in spot_cache:
+                    spot_cache[key] = await loop.run_in_executor(
+                        None, feed.get_daily_close, tk, expiry)
+                px = spot_cache[key]
                 if px:
                     pnl = variant_payoff(ev, px)
                     await db.resolve_variant_eval(ev["id"], px, pnl)
+                    resolved += 1
             if due:
-                logger.info(f"Variant evals resolved: {len(due)} rows across "
-                            f"{len(spot_cache)} events")
+                logger.info(f"Variant evals resolved: {resolved}/{len(due)} rows across "
+                            f"{len(spot_cache)} expiries")
         except Exception as e:
             logger.warning(f"Variant eval resolve error: {e}")
 
@@ -1117,9 +1124,9 @@ async def maybe_execute_condor(setup):
     print is within iv_exec_entry_days_before, respecting position/day caps and a
     per-ticker one-condor rule. Logs its own outcome; returns None.
     """
-    from datetime import date as _date, datetime as _datetime
+    from datetime import datetime as _datetime
     from zoneinfo import ZoneInfo
-    from signals.iv_executor import build_iron_condor
+    from signals.iv_executor import build_iron_condor, is_pre_earnings_entry_window
     _ET = ZoneInfo("America/New_York")
     s = settings
     if not s.iv_exec_enabled:
@@ -1127,17 +1134,17 @@ async def maybe_execute_condor(setup):
     rec = getattr(setup, "recommendation", "AVOID")
     if rec != "SELL_PREMIUM" and not (rec == "CONSIDER" and s.iv_exec_allow_consider):
         return
-    # Need a known print to time the crush exit, and it must be imminent.
-    edate = None
-    if getattr(setup, "next_earnings_date", None):
-        try:
-            edate = _date.fromisoformat(setup.next_earnings_date)
-        except Exception:
-            edate = None
-    if edate is None:
-        return
-    days_to = (edate - _date.today()).days
-    if days_to < 0 or days_to > s.iv_exec_entry_days_before:
+    # A same-day BMO print has already happened. Fail closed when report timing
+    # is unknown, and permit same-day entries only before a confirmed post-close
+    # report. This must remain independent of the broader alert/eval gate.
+    if not is_pre_earnings_entry_window(
+        getattr(setup, "next_earnings_date", None),
+        getattr(setup, "earnings_report_time", None),
+        s.iv_exec_entry_days_before,
+        now=_datetime.now(_ET),
+    ):
+        logger.info(f"IV-exec skip {getattr(setup, 'ticker', '?')}: "
+                    "earnings already occurred, timing unknown, or outside entry window")
         return
 
     ticker = setup.ticker
@@ -1183,24 +1190,14 @@ async def maybe_execute_condor(setup):
 async def log_variant_evals(setup):
     """Measurement only: price several hypothetical structures for this earnings
     event and log them for later resolution vs the realized move. No execution.
-    One set per ticker+event (deduped). Resolves on the same date the condor
-    would (earnings + 2d, or signal + 7d fallback)."""
-    from datetime import date as _date, timedelta as _td, datetime as _dt
-    from signals.iv_variants import build_variants
+    One set per ticker+event (deduped). Each variant settles only after its own
+    option expiry, using that session's historical underlying close."""
+    from signals.iv_variants import build_variants, expiry_settlement_date
     if not settings.iv_variants_log_enabled:
         return
     edate = getattr(setup, "next_earnings_date", None)
     if await db.has_variant_evals(setup.ticker, edate):
         return
-    resolve_after = None
-    if edate:
-        try:
-            resolve_after = (_date.fromisoformat(edate) + _td(days=2)).isoformat()
-        except Exception:
-            resolve_after = None
-    if not resolve_after:
-        resolve_after = (_dt.utcnow() + _td(days=7)).date().isoformat()
-
     loop = asyncio.get_event_loop()
     variants = await loop.run_in_executor(None, build_variants, trader, setup, settings)
     if not variants:
@@ -1210,14 +1207,20 @@ async def log_variant_evals(setup):
         im = float(str(setup.expected_move or "0").rstrip("%") or 0)
     except Exception:
         im = 0.0
+    logged = []
     for v in variants:
+        resolve_after = expiry_settlement_date(v.get("expiry"))
+        if not resolve_after:
+            logger.warning(f"Variant-log {setup.ticker} skipped {v['variant']}: invalid expiry")
+            continue
         await db.record_variant_eval(
             ticker=setup.ticker, earnings_date=edate, expiry=v["expiry"],
             variant=v["variant"], spot=setup.price, implied_move_pct=im,
             strikes=v["strikes"], credit=v["credit"], max_loss=v["max_loss"],
             resolve_after=resolve_after)
-    logger.info(f"Variant-log {setup.ticker}: {len(variants)} structures "
-                f"({', '.join(v['variant'] for v in variants)}) resolve {resolve_after}")
+        logged.append(f"{v['variant']}→{resolve_after}")
+    if logged:
+        logger.info(f"Variant-log {setup.ticker}: {', '.join(logged)}")
 
 
 def _condor_close_debit(legs: list, quotes: dict) -> float:

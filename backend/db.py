@@ -12,7 +12,7 @@ Tables (one per feed + signals + pattern_hits):
 import json
 import logging
 import aiosqlite
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -369,6 +369,7 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(SCHEMA)
         await self._migrate()
+        await self._repair_open_variant_resolution_dates()
         await self._conn.commit()
         logger.info(f"Database ready: {self.path}")
 
@@ -385,6 +386,33 @@ class Database:
                         logger.info(f"Migration: added {table}.{col}")
                     except Exception as e:
                         logger.error(f"Migration failed for {table}.{col}: {e}")
+
+    async def _repair_open_variant_resolution_dates(self):
+        """Move legacy variant rows to an expiry-based settlement schedule.
+
+        Earlier builds used earnings+2d, which can land before the selected
+        option expiry. Only unresolved records are changed; resolved historical
+        measurements remain intact for auditability.
+        """
+        try:
+            async with self._conn.execute(
+                "SELECT id, expiry, resolve_after FROM iv_variant_evals WHERE resolved=0"
+            ) as cur:
+                rows = await cur.fetchall()
+            updates = []
+            for row in rows:
+                try:
+                    target = (date.fromisoformat(str(row["expiry"])) + timedelta(days=1)).isoformat()
+                except (TypeError, ValueError):
+                    continue
+                if row["resolve_after"] != target:
+                    updates.append((target, row["id"]))
+            if updates:
+                await self._conn.executemany(
+                    "UPDATE iv_variant_evals SET resolve_after=? WHERE id=?", updates)
+                logger.info(f"Migration: rescheduled {len(updates)} open variant evals at expiry")
+        except Exception as e:
+            logger.error(f"Variant resolution migration failed: {e}")
 
     async def close(self):
         if self._conn:

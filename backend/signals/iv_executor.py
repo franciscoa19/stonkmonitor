@@ -13,7 +13,7 @@ reason it declined. main.py's iv_scanner_loop submits the plan when armed.
 """
 import json
 import logging
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -23,6 +23,35 @@ logger = logging.getLogger(__name__)
 MIN_CREDIT_WIDTH_RATIO = 0.10
 CONTRACT_MULTIPLIER = 100          # 1 option contract = 100 shares
 QTY_HARD_CAP = 20                  # never size beyond this many spreads
+
+
+def is_pre_earnings_entry_window(earnings_date: Optional[str],
+                                 report_time: Optional[str],
+                                 entry_days_before: int,
+                                 now: Optional[datetime] = None) -> bool:
+    """Whether a condor can still be opened before its known earnings print.
+
+    Calendar dates alone are insufficient on the event day: a before-market
+    report has already happened at the opening bell. Same-day entries therefore
+    fail closed unless Nasdaq identifies an after-close print and it is still
+    before the regular-session close. `now` makes the safety rule testable.
+    """
+    try:
+        edate = date.fromisoformat(str(earnings_date))
+    except (TypeError, ValueError):
+        return False
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    if now is None:
+        now = datetime.now(et)
+    elif now.tzinfo is not None:
+        now = now.astimezone(et)
+    days_to = (edate - now.date()).days
+    if days_to < 0 or days_to > entry_days_before:
+        return False
+    if days_to > 0:
+        return True
+    return report_time == "post" and now.time() < time(16, 0)
 
 
 def _implied_move_frac(setup) -> float:
