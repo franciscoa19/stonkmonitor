@@ -61,7 +61,14 @@ legs have real bids. A live pass found names that clear this check and still
 price zero structures once the strict-quote rule refuses to invent a fill. The
 post-quote conversion rate is unknown until the October wave supplies volume, so
 no completion date is projected from it. The rail stays at 100 events per arm
-and the report shows the remaining count rather than a forecast.
+and the report shows the remaining count rather than a forecast. Each event now
+also records structures attempted, structures priced, and dropped variants; the
+daily report surfaces that quote-coverage ratio. A priceable result is therefore
+conditional on entry liquidity, not a random draw from near-earnings events.
+
+Variant rows retain their source (`watchlist` or `measurement`) as well. The
+two populations have different selection rules, so gate results must be checked
+within each source before treating a pooled result as generalizable.
 
 ## What does NOT exist, and why
 

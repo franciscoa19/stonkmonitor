@@ -65,6 +65,7 @@ DB_PATH = Path(__file__).parent / "stonkmonitor.db"
 # explicit rather than mixing incompatible P&L series.
 VALIDATED_VARIANT_PRICING_MODEL = "conservative_bid_ask_v2"
 LEGACY_VARIANT_PRICING_MODEL = "legacy_excluded"
+VARIANT_SOURCES = ("watchlist", "measurement")
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -352,6 +353,9 @@ CREATE TABLE IF NOT EXISTS iv_variant_evals (
     -- 1 = passed the three scanner gates, 0 = logged purely as the
     -- "sell everything indiscriminately" baseline (VALIDATION_SPEC §4).
     gate_passed    INTEGER DEFAULT 1,
+    -- Curated execution universe or measurement-only expansion. Keeping this
+    -- provenance makes it possible to test the gates in each population.
+    source         TEXT NOT NULL DEFAULT 'watchlist',
     resolve_after  TEXT,
     resolved       INTEGER DEFAULT 0,
     exit_spot      REAL,                   -- underlying close on the option's expiry
@@ -363,6 +367,24 @@ CREATE TABLE IF NOT EXISTS iv_variant_evals (
 );
 CREATE INDEX IF NOT EXISTS idx_variant_open ON iv_variant_evals(resolved, resolve_after);
 CREATE INDEX IF NOT EXISTS idx_variant_kind ON iv_variant_evals(variant, resolved);
+
+-- One latest quote-coverage observation per event/source/methodology. This
+-- records skipped structures too, which the priceable rows above cannot do.
+CREATE TABLE IF NOT EXISTS iv_variant_attempts (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker               TEXT NOT NULL,
+    earnings_date        TEXT NOT NULL,
+    source               TEXT NOT NULL,
+    pricing_model        TEXT NOT NULL,
+    structures_attempted INTEGER NOT NULL,
+    structures_priced    INTEGER NOT NULL,
+    dropped_variants     TEXT NOT NULL DEFAULT '{}',
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    UNIQUE(ticker, earnings_date, source, pricing_model)
+);
+CREATE INDEX IF NOT EXISTS idx_variant_attempt_source
+    ON iv_variant_attempts(source, pricing_model);
 """
 
 # Columns added after initial release — applied by _migrate() on connect for
@@ -374,7 +396,8 @@ _MIGRATIONS = {
     "iv_rv_evals":       {"earnings_date": "TEXT"},
     "iv_variant_evals":  {"credit_mid": "REAL", "fees": "REAL", "strike_step": "REAL",
                           "gate_passed": "INTEGER", "pin_risk": "INTEGER",
-                          "pricing_model": "TEXT"},
+                          "pricing_model": "TEXT",
+                          "source": "TEXT NOT NULL DEFAULT 'watchlist'"},
 }
 
 
@@ -405,6 +428,13 @@ class Database:
                         logger.info(f"Migration: added {table}.{col}")
                     except Exception as e:
                         logger.error(f"Migration failed for {table}.{col}: {e}")
+        # This index references a migrated column, so it must be created after
+        # the column exists on databases from before source provenance.
+        try:
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_variant_source ON iv_variant_evals(source, resolved)")
+        except Exception as e:
+            logger.error(f"Migration failed for iv_variant_evals.source index: {e}")
         # Rows written before the strict bid/ask + fee model are not comparable
         # to the new forward test. Label them once so the raw audit trail stays
         # intact while aggregate metrics begin from a clean, known methodology.
@@ -711,21 +741,24 @@ class Database:
                                   fees: Optional[float] = None,
                                   strike_step: Optional[float] = None,
                                   gate_passed: bool = True,
-                                  pricing_model: Optional[str] = None) -> None:
+                                  pricing_model: Optional[str] = None,
+                                  source: str = "watchlist") -> None:
         # Do not accidentally certify a direct/legacy call that did not record
         # both the reference mid and explicit commission assumption.
         pricing_model = pricing_model or (
             VALIDATED_VARIANT_PRICING_MODEL
             if credit_mid is not None and fees is not None
             else LEGACY_VARIANT_PRICING_MODEL)
+        if source not in VARIANT_SOURCES:
+            raise ValueError(f"unknown variant source: {source}")
         now = datetime.utcnow().isoformat()
         await self._exec(
             """INSERT INTO iv_variant_evals
                  (ticker, earnings_date, signal_date, expiry, variant, spot,
                   implied_move_pct, short_put, long_put, short_call, long_call,
                   credit, credit_mid, fees, strike_step, pricing_model, gate_passed,
-                  max_loss, resolve_after, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  source, max_loss, resolve_after, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, earnings_date, now[:10], expiry, variant, round(spot, 2),
              round(implied_move_pct, 2), strikes.get("short_put"), strikes.get("long_put"),
              strikes.get("short_call"), strikes.get("long_call"),
@@ -733,8 +766,72 @@ class Database:
              (round(credit_mid, 2) if credit_mid is not None else None),
              (round(fees, 2) if fees is not None else None),
              strike_step, pricing_model, 1 if gate_passed else 0,
+             source,
              (round(max_loss, 2) if max_loss is not None else None),
              resolve_after, now))
+
+    async def record_variant_attempt(self, ticker: str, earnings_date: str,
+                                     structures_attempted: int, structures_priced: int,
+                                     dropped_variants: dict[str, str],
+                                     source: str = "watchlist",
+                                     pricing_model: str = VALIDATED_VARIANT_PRICING_MODEL) -> None:
+        """Store the latest quote-coverage outcome for one event.
+
+        A retry updates the same event instead of counting its five structures
+        repeatedly; the daily coverage ratio therefore measures events, not
+        scheduler retries.
+        """
+        if source not in VARIANT_SOURCES:
+            raise ValueError(f"unknown variant source: {source}")
+        if not earnings_date:
+            raise ValueError("variant attempt requires an earnings date")
+        now = datetime.utcnow().isoformat()
+        await self._exec(
+            """INSERT INTO iv_variant_attempts
+                 (ticker, earnings_date, source, pricing_model,
+                  structures_attempted, structures_priced, dropped_variants,
+                  created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(ticker, earnings_date, source, pricing_model) DO UPDATE SET
+                 structures_attempted=excluded.structures_attempted,
+                 structures_priced=excluded.structures_priced,
+                 dropped_variants=excluded.dropped_variants,
+                 updated_at=excluded.updated_at""",
+            (ticker, earnings_date, source, pricing_model,
+             max(0, int(structures_attempted)), max(0, int(structures_priced)),
+             json.dumps(dropped_variants, sort_keys=True), now, now))
+
+    async def get_variant_quote_coverage(self, source: Optional[str] = None) -> dict:
+        """Latest per-event priceability, including variants skipped for quotes."""
+        if source is not None and source not in VARIANT_SOURCES:
+            raise ValueError(f"unknown variant source: {source}")
+        where = "WHERE pricing_model=?"
+        params: tuple = (VALIDATED_VARIANT_PRICING_MODEL,)
+        if source is not None:
+            where += " AND source=?"
+            params += (source,)
+        rows = await self._query(
+            f"""SELECT structures_attempted, structures_priced, dropped_variants
+                FROM iv_variant_attempts {where}""", params)
+        attempted = sum(int(r["structures_attempted"] or 0) for r in rows)
+        priced = sum(int(r["structures_priced"] or 0) for r in rows)
+        dropped: dict[str, int] = {}
+        for row in rows:
+            try:
+                variants = json.loads(row.get("dropped_variants") or "{}")
+            except (TypeError, ValueError):
+                variants = {}
+            if not isinstance(variants, dict):
+                continue
+            for variant in variants:
+                dropped[str(variant)] = dropped.get(str(variant), 0) + 1
+        return {
+            "events": len(rows),
+            "structures_attempted": attempted,
+            "structures_priced": priced,
+            "priced_pct": round(priced / attempted * 100, 1) if attempted else None,
+            "dropped_variants": dropped,
+        }
 
     async def get_due_variant_evals(self, today: str) -> list[dict]:
         return await self._query(
@@ -753,7 +850,8 @@ class Database:
              (None if pin_risk is None else (1 if pin_risk else 0)),
              datetime.utcnow().isoformat(), eval_id))
 
-    async def get_variant_summary(self, gate_passed: Optional[bool] = True) -> list[dict]:
+    async def get_variant_summary(self, gate_passed: Optional[bool] = True,
+                                  source: Optional[str] = None) -> list[dict]:
         """Full metric set per variant over resolved events, best expectancy first.
 
         `gate_passed=True` scores only setups that cleared the three scanner
@@ -767,6 +865,11 @@ class Database:
         if gate_passed is not None:
             where += " AND COALESCE(gate_passed,1)=?"
             params += (1 if gate_passed else 0,)
+        if source is not None:
+            if source not in VARIANT_SOURCES:
+                raise ValueError(f"unknown variant source: {source}")
+            where += " AND source=?"
+            params += (source,)
         rows = await self._query(
             # max_drawdown is path-dependent, so this event order is part of
             # the metric definition rather than cosmetic presentation sorting.
@@ -803,19 +906,27 @@ class Database:
         out.sort(key=lambda x: (x["expectancy"] is None, -(x["expectancy"] or 0)))
         return out
 
-    async def get_gate_comparison(self) -> dict:
+    async def get_gate_comparison(self, source: Optional[str] = None) -> dict:
         """Baseline 2: pooled metrics for gated vs ungated near-earnings events.
         If selling everything matches the filtered set, the gates are noise."""
         from backtest.metrics import compute_metrics
+        if source is not None and source not in VARIANT_SOURCES:
+            raise ValueError(f"unknown variant source: {source}")
         out = {}
         for label, flag in (("gated", 1), ("ungated", 0)):
+            source_where = ""
+            params: tuple = (VALIDATED_VARIANT_PRICING_MODEL, flag, "condor_1.0sd")
+            if source is not None:
+                source_where = " AND source=?"
+                params += (source,)
             rows = await self._query(
                 # Keep the gated/ungated drawdown paths chronological too.
                 """SELECT realized_pnl FROM iv_variant_evals
                    WHERE resolved=1 AND pricing_model=?
                      AND COALESCE(gate_passed,1)=? AND variant=?
-                   ORDER BY COALESCE(expiry, resolved_at, signal_date), id""",
-                (VALIDATED_VARIANT_PRICING_MODEL, flag, "condor_1.0sd"))
+                   """ + source_where +
+                " ORDER BY COALESCE(expiry, resolved_at, signal_date), id",
+                params)
             out[label] = compute_metrics([float(r["realized_pnl"] or 0) for r in rows])
         return out
 

@@ -100,6 +100,12 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         iv_gate_cmp = await db.get_gate_comparison()
     except Exception:
         iv_gate_cmp = {}
+    try:
+        iv_quote_coverage = await db.get_variant_quote_coverage()
+    except Exception:
+        iv_quote_coverage = {"events": 0, "structures_attempted": 0,
+                             "structures_priced": 0, "priced_pct": None,
+                             "dropped_variants": {}}
 
     # ── Attribution: by entry hour (ET) ──────────────────────────────────
     by_hour = await db._query(
@@ -179,6 +185,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         "iv_condors": iv_condors,
         "iv_variants": iv_variants,
         "iv_gate_comparison": iv_gate_cmp,
+        "iv_quote_coverage": iv_quote_coverage,
         "by_strategy": [dict(r) for r in by_strategy],
         "by_hour": [dict(r) for r in by_hour],
         "recent": recent,
@@ -206,10 +213,29 @@ async def export_history(db, reports_dir) -> dict:
     rd.mkdir(exist_ok=True)
 
     curve = await db.get_daily_equity(3650)
+    iv_rv = await db.get_iv_eval_summary()
     hist_path = rd / "history.jsonl"
+    existing: dict[str, dict] = {}
+    if hist_path.exists():
+        for line in hist_path.read_text().splitlines():
+            try:
+                row = _json.loads(line)
+                if row.get("date"):
+                    existing[row["date"]] = row
+            except (TypeError, ValueError):
+                continue
+    from market_time import et_today
+    today = et_today().isoformat()
     with open(hist_path, "w") as f:
         for r in curve:
-            f.write(_json.dumps({k: r[k] for k in r.keys()}, default=str) + "\n")
+            row = {k: r[k] for k in r.keys()}
+            # Preserve earlier daily snapshots while recording today's IV/RV
+            # state. The export is rewritten daily from the equity curve.
+            if existing.get(row["date"], {}).get("iv_rv") is not None:
+                row["iv_rv"] = existing[row["date"]]["iv_rv"]
+            if row["date"] == today:
+                row["iv_rv"] = iv_rv
+            f.write(_json.dumps(row, default=str) + "\n")
 
     closed = await db._query(
         "SELECT * FROM trade_performance WHERE realized_pnl IS NOT NULL ORDER BY updated_at")
@@ -276,6 +302,7 @@ def render_html(d: dict) -> str:
                                      "total_pnl": 0.0, "open": 0, "pending": 0})
     variants = d.get("iv_variants", []) or []
     gate_cmp = d.get("iv_gate_comparison", {}) or {}
+    quote_coverage = d.get("iv_quote_coverage", {}) or {}
     gated, ungated = gate_cmp.get("gated", {}), gate_cmp.get("ungated", {})
 
     def _sample_rail() -> str:
@@ -289,6 +316,28 @@ def render_html(d: dict) -> str:
             f"ungated: {ungated.get('n_events', 0)} resolved / {u_need} more needed. "
             "Both arms need 100 events; no completion date is projected until a real "
             "collection rate exists.</div>")
+
+    def _quote_coverage() -> str:
+        attempted = int(quote_coverage.get("structures_attempted") or 0)
+        priced = int(quote_coverage.get("structures_priced") or 0)
+        if not attempted:
+            return (
+                "<div class=\"mut\" style=\"font-size:12px;margin-top:10px\">"
+                "<b>Quote coverage.</b> No near-earnings structures attempted yet; "
+                "entry-liquidity selection is not measured yet.</div>")
+        pct = quote_coverage.get("priced_pct")
+        pct_text = f" ({pct:.1f}%)" if isinstance(pct, (int, float)) else ""
+        dropped = quote_coverage.get("dropped_variants") or {}
+        dropped_text = ""
+        if dropped:
+            names = ", ".join(
+                f"{_html.escape(str(name))} ({count})"
+                for name, count in sorted(dropped.items()))
+            dropped_text = f" Dropped in at least one event: {names}."
+        return (
+            "<div class=\"mut\" style=\"font-size:12px;margin-top:10px\">"
+            f"<b>Quote coverage.</b> {priced}/{attempted} structures priceable{pct_text}."
+            f"{dropped_text}</div>")
 
     if variants:
         def _f(x, suffix=""):
@@ -354,7 +403,7 @@ def render_html(d: dict) -> str:
             "<b>Tail</b> = worst 5% vs the rest — how many good events one bad one erases; "
             "it is the number that catches a 70%-win-rate strategy that still loses money. "
             f"Effective tail: {_tail_basis}."
-            f"</div>{_warn}{_cmp_html}</div>")
+            f"</div>{_quote_coverage()}{_warn}{_cmp_html}</div>")
     else:
         _variant_card = (
             "<div class=\"card\"><h2>Strategy-variant comparison "
@@ -362,7 +411,7 @@ def render_html(d: dict) -> str:
             "<div class=\"mut\" style=\"font-size:12px\">No resolved evaluations under the "
             "current conservative pricing model yet. Earlier methodology is retained for audit "
             "but is not evidence.</div>"
-            f"{_sample_rail()}</div>")
+            f"{_quote_coverage()}{_sample_rail()}</div>")
     e = _html.escape
     pnl_cls = "up" if a["total_pnl"] >= 0 else "down"
     pnl_sign = "+" if a["total_pnl"] >= 0 else ""

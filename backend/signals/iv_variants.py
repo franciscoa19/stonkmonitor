@@ -104,15 +104,29 @@ def _front_expiry_chain(trader, setup, settings):
     return exp_str, cbs, pbs
 
 
-def build_variants(trader, setup, settings) -> list[dict]:
+def build_variants(trader, setup, settings, diagnostics: Optional[dict] = None) -> list[dict]:
     """Price every variant off one chain fetch. Returns a list of
-    {variant, expiry, strikes{}, credit, max_loss}. Empty on any data gap."""
+    {variant, expiry, strikes{}, credit, max_loss}. When ``diagnostics`` is
+    supplied, it records every intended structure, including ones rejected for
+    unavailable strikes or executable-side quotes. Empty on any data gap."""
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update({"attempted": len(VARIANTS), "priced": 0, "dropped": {}})
+
+    def drop(variant: str, reason: str) -> None:
+        if diagnostics is not None:
+            diagnostics["dropped"][variant] = reason
+
     spot = float(getattr(setup, "price", 0) or 0)
     em = _im_frac(setup)
     if spot <= 0 or em <= 0:
+        for name in VARIANTS:
+            drop(name, "invalid_input")
         return []
     chain = _front_expiry_chain(trader, setup, settings)
     if not chain:
+        for name in VARIANTS:
+            drop(name, "no_front_expiry_chain")
         return []
     exp_str, cbs, pbs = chain
     calls, puts = sorted(cbs), sorted(pbs)
@@ -141,6 +155,9 @@ def build_variants(trader, setup, settings) -> list[dict]:
     # straddle: ATM shorts, no wings
     if atm_c and atm_p:
         specs["straddle"] = dict(short_call=atm_c, long_call=None, short_put=atm_p, long_put=None)
+    for name in VARIANTS:
+        if name not in specs:
+            drop(name, "unavailable_strikes")
 
     # One quotes call for every symbol we touched.
     syms = set()
@@ -192,11 +209,13 @@ def build_variants(trader, setup, settings) -> list[dict]:
         lp_fill, lp_mid = (q(pbs, s["long_put"], "buy") if s.get("long_put") else (0, 0))
         if any(px is None for px in (sc_fill, sp_fill, lc_fill, lp_fill)):
             logger.debug("Variant %s skipped: missing executable-side option quote", name)
+            drop(name, "missing_executable_quote")
             continue
 
         credit = (sc_fill + sp_fill) - (lc_fill + lp_fill)
         credit_mid = (sc_mid + sp_mid) - (lc_mid + lp_mid)
         if credit <= 0:
+            drop(name, "nonpositive_credit")
             continue                      # no edge left once you pay the spread
         n_legs = 4 if s.get("long_call") is not None else 2
         fees = round(n_legs * fee * 2, 2)  # open + close, per contract-leg
@@ -210,6 +229,8 @@ def build_variants(trader, setup, settings) -> list[dict]:
                     "credit": round(credit, 2), "credit_mid": round(credit_mid, 2),
                     "fees": fees, "n_legs": n_legs, "strike_step": strike_step,
                     "max_loss": max_loss})
+    if diagnostics is not None:
+        diagnostics["priced"] = len(out)
     return out
 
 

@@ -15,6 +15,8 @@ from alpaca.data.timeframe import TimeFrame
 from alpaca.data.live import StockDataStream
 from datetime import date, datetime, time, timedelta
 
+from market_time import et_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,7 +57,7 @@ class AlpacaFeed:
                 "1Day": TimeFrame.Day,
             }
             tf = tf_map.get(timeframe, TimeFrame.Day)
-            end = datetime.now()
+            end = et_now()
             start = end - timedelta(days=days)
 
             req = StockBarsRequest(
@@ -109,7 +111,7 @@ class AlpacaFeed:
     def get_option_chain(self, ticker: str, expiry_days: int = 45) -> list[dict]:
         """Get option chain with IV for a ticker."""
         try:
-            exp_date = (datetime.now() + timedelta(days=expiry_days)).strftime("%Y-%m-%d")
+            exp_date = (et_now() + timedelta(days=expiry_days)).strftime("%Y-%m-%d")
             req = OptionChainRequest(
                 underlying_symbol=ticker.upper(),
                 expiration_date_lte=exp_date,

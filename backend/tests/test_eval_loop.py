@@ -430,13 +430,14 @@ def test_market_cap_parsing():
 def test_measurement_universe_selection():
     """Measurement candidates: near the print first, liquid, watchlist excluded."""
     import feeds.earnings_calendar as cal
-    from datetime import date as _d, timedelta as _td
-    today = _d.today()
+    from datetime import timedelta as _td
+    import time as _time
+    today = et_today()
 
     def day(n):
         return (today + _td(days=n)).isoformat()
 
-    original = cal._cache["map"]
+    original, original_ts = cal._cache["map"], cal._cache["ts"]
     cal._cache["map"] = {
         "SOON_BIG":   {"date": day(1), "time": "time-after-hours", "market_cap": 50e9},
         "SOON_SMALL": {"date": day(1), "time": "time-pre-market",   "market_cap": 1e8},
@@ -445,7 +446,7 @@ def test_measurement_universe_selection():
         "ONWATCH":    {"date": day(1), "time": "",                  "market_cap": 80e9},
         "NOCAP":      {"date": day(2), "time": "",                  "market_cap": 0.0},
     }
-    cal._cache["ts"] = __import__("time").time()     # keep the cache "fresh"
+    cal._cache["ts"] = _time.time()     # keep the cache "fresh"
     try:
         got = cal.get_upcoming_reporters(7, min_market_cap=2e9, exclude={"ONWATCH"})
         names = [r["ticker"] for r in got]
@@ -462,6 +463,7 @@ def test_measurement_universe_selection():
         assert len(cal.get_upcoming_reporters(7, exclude={"ONWATCH"})) == 4
     finally:
         cal._cache["map"] = original
+        cal._cache["ts"] = original_ts
 
 
 def test_pin_risk_flag():
@@ -551,6 +553,36 @@ def test_daily_close_uses_the_requested_completed_session():
     assert feed.get_daily_close("NVDA", "2026-09-18") == 180.0
 
 
+def test_alpaca_feed_uses_the_et_clock_for_market_date_bounds(monkeypatch):
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from zoneinfo import ZoneInfo
+    import feeds.alpaca_feed as feed_module
+
+    fixed = _dt(2026, 9, 15, 23, 30, tzinfo=ZoneInfo("America/New_York"))
+    monkeypatch.setattr(feed_module, "et_now", lambda: fixed)
+
+    class FakeStockClient:
+        request = None
+        def get_stock_bars(self, request):
+            self.request = request
+            return {"NVDA": []}
+
+    class FakeOptionClient:
+        request = None
+        def get_option_chain(self, request):
+            self.request = request
+            return {}
+
+    feed = feed_module.AlpacaFeed.__new__(feed_module.AlpacaFeed)
+    feed.stock_client, feed.option_client = FakeStockClient(), FakeOptionClient()
+    assert feed.get_bars("NVDA", days=2) == []
+    # alpaca-py serializes timezone-aware request bounds to naive UTC.
+    assert feed.stock_client.request.end == fixed.astimezone(_tz.utc).replace(tzinfo=None)
+    assert feed.stock_client.request.start == (fixed - _td(days=2)).astimezone(_tz.utc).replace(tzinfo=None)
+    assert feed.get_option_chain("NVDA", expiry_days=45) == []
+    assert str(feed.option_client.request.expiration_date_lte) == "2026-10-30"
+
+
 # ── Account-fetch failure detection (guards the $0/-100% bogus report) ──
 async def test_report_flags_account_fetch_failure(db):
     class FailingTrader:
@@ -584,6 +616,22 @@ async def test_export_history(db, tmp_path):
     csv_rows = (tmp_path / "trades.csv").read_text().strip().splitlines()
     assert len(csv_rows) == 2
     assert "triple_confluence" in csv_rows[1] and "-300" in csv_rows[1]
+
+
+async def test_export_history_records_today_iv_rv_snapshot(db, tmp_path):
+    today = et_today().isoformat()
+    await db.record_daily_equity(today, 50000.0)
+    await db.record_iv_eval("NVDA", "SELL_PREMIUM", 1.4, 8.0, 100.0,
+                            resolve_after="2099-01-01", earnings_date=today)
+
+    await export_history(db, tmp_path)
+    import json
+    row = json.loads((tmp_path / "history.jsonl").read_text().strip())
+    assert row["date"] == today
+    assert row["iv_rv"] == {
+        "resolved": 0, "wins": 0, "win_rate": 0.0,
+        "avg_edge_pct": 0.0, "open": 1,
+    }
 
 
 # ── IV/RV Phase 2 execution: iron-condor builder + DB lifecycle ──────────
@@ -699,8 +747,13 @@ def test_variant_pricing_rejects_a_missing_executable_side_quote():
     setup = _types.SimpleNamespace(
         ticker="TEST", price=100.0, expected_move="10.0%", recommendation="SELL_PREMIUM",
         next_earnings_date=et_today().isoformat())
-    plans = {v["variant"]: v for v in build_variants(trader, setup, get_settings())}
+    diagnostics = {}
+    plans = {v["variant"]: v for v in build_variants(
+        trader, setup, get_settings(), diagnostics)}
     assert "condor_1.0sd" not in plans
+    assert diagnostics["attempted"] == 5
+    assert diagnostics["priced"] == len(plans)
+    assert diagnostics["dropped"]["condor_1.0sd"] == "missing_executable_quote"
 
 
 async def test_gate_comparison_scores_gated_vs_ungated(db):
@@ -729,6 +782,72 @@ async def test_gate_comparison_scores_gated_vs_ungated(db):
     assert gated_only[0]["n_events"] == 2
     everything = await db.get_variant_summary(gate_passed=None)
     assert everything[0]["n_events"] == 4
+
+
+async def test_variant_provenance_filters_and_quote_coverage(db):
+    """Gate effects and quote coverage remain attributable to each population."""
+    sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+
+    async def seed(ticker, source, gate_passed, pnl):
+        await db.record_variant_eval(
+            ticker, "2026-09-16", "2026-09-18", "condor_1.0sd", 100.0, 8.0, sp,
+            credit=1.20, max_loss=180.0, resolve_after="2026-09-19",
+            credit_mid=1.30, fees=5.20, strike_step=1.0,
+            gate_passed=gate_passed, source=source)
+        row = (await db._query(
+            "SELECT id FROM iv_variant_evals ORDER BY id DESC LIMIT 1"))[0]
+        await db.resolve_variant_eval(row["id"], 103.0, pnl)
+
+    await seed("WATCH", "watchlist", True, 100.0)
+    await seed("MEASURE", "measurement", False, -100.0)
+    assert (await db.get_variant_summary(source="watchlist"))[0]["n_events"] == 1
+    assert (await db.get_variant_summary(source="measurement", gate_passed=False))[0]["expectancy"] == -100.0
+    assert (await db.get_gate_comparison(source="measurement"))["ungated"]["n_events"] == 1
+
+    await db.record_variant_attempt(
+        "MEASURE", "2026-09-16", 5, 3,
+        {"condor_1.0sd": "missing_executable_quote", "fly": "nonpositive_credit"},
+        source="measurement")
+    # Retries replace an event's observation instead of inflating the denominator.
+    await db.record_variant_attempt(
+        "MEASURE", "2026-09-16", 5, 4,
+        {"fly": "nonpositive_credit"}, source="measurement")
+    coverage = await db.get_variant_quote_coverage(source="measurement")
+    assert coverage == {
+        "events": 1, "structures_attempted": 5, "structures_priced": 4,
+        "priced_pct": 80.0, "dropped_variants": {"fly": 1},
+    }
+    report = render_html(await build_report_data(db, FakeTrader()))
+    assert "4/5 structures priceable (80.0%)" in report
+    assert "Dropped in at least one event: fly (1)." in report
+
+
+async def test_variant_source_migrates_an_existing_database(tmp_path):
+    """The source index must wait until legacy rows gain the source column."""
+    import sqlite3
+    from db import Database
+
+    path = tmp_path / "legacy.db"
+    initial = Database(path=path)
+    await initial.connect()
+    await initial.close()
+
+    # Simulate the pre-provenance database shape that a deployed instance has.
+    raw = sqlite3.connect(path)
+    raw.execute("DROP INDEX idx_variant_source")
+    raw.execute("ALTER TABLE iv_variant_evals DROP COLUMN source")
+    raw.commit()
+    raw.close()
+
+    migrated = Database(path=path)
+    await migrated.connect()
+    try:
+        columns = {r["name"] for r in await migrated._query("PRAGMA table_info(iv_variant_evals)")}
+        indexes = await migrated._query(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_variant_source'")
+        assert "source" in columns and indexes
+    finally:
+        await migrated.close()
 
 
 async def test_variant_metrics_exclude_legacy_rows_and_order_by_expiry(db):

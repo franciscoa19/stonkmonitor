@@ -1188,7 +1188,8 @@ async def maybe_execute_condor(setup):
         f"risk ${plan['risk_usd']:.0f} exp {plan['expiry']} order={res.get('id')}")
 
 
-async def log_variant_evals(setup, gate_passed: bool = True):
+async def log_variant_evals(setup, gate_passed: bool = True,
+                            source: str = "watchlist"):
     """Measurement only: price several hypothetical structures for this earnings
     event and log them for later resolution vs the realized move. No execution.
     One set per ticker+event (deduped). Each variant settles only after its own
@@ -1196,6 +1197,8 @@ async def log_variant_evals(setup, gate_passed: bool = True):
 
     `gate_passed` records whether the setup cleared the three scanner gates, so
     filtered and indiscriminate selling can be scored against each other.
+    `source` keeps the curated watchlist distinct from the measurement-only
+    universe when the evidence is later analyzed.
     """
     from signals.earnings_scanner import is_near_earnings
     from signals.iv_variants import build_variants, expiry_settlement_date
@@ -1209,7 +1212,12 @@ async def log_variant_evals(setup, gate_passed: bool = True):
     if await db.has_variant_evals(setup.ticker, edate):
         return
     loop = asyncio.get_event_loop()
-    variants = await loop.run_in_executor(None, build_variants, trader, setup, settings)
+    diagnostics: dict = {}
+    variants = await loop.run_in_executor(
+        None, build_variants, trader, setup, settings, diagnostics)
+    await db.record_variant_attempt(
+        setup.ticker, edate, diagnostics.get("attempted", 0),
+        diagnostics.get("priced", 0), diagnostics.get("dropped", {}), source=source)
     if not variants:
         return
     im = 0.0
@@ -1229,7 +1237,7 @@ async def log_variant_evals(setup, gate_passed: bool = True):
             strikes=v["strikes"], credit=v["credit"], max_loss=v["max_loss"],
             resolve_after=resolve_after, credit_mid=v.get("credit_mid"),
             fees=v.get("fees"), strike_step=v.get("strike_step"),
-            gate_passed=gate_passed)
+            gate_passed=gate_passed, source=source)
         logged.append(v["variant"])
     if logged:
         logger.info(f"Variant-log {setup.ticker} ({'gated' if gate_passed else 'baseline'}): "
@@ -1311,8 +1319,12 @@ async def measurement_universe_loop():
                 # monthlies only, so after their print the next expiry is weeks
                 # out and no front-month structure exists at all. One contracts
                 # call answers that directly; skipping here saves a full scan.
-                if not await loop.run_in_executor(
-                        None, _has_front_expiry, tk, c["date"], s):
+                has_front_expiry = await loop.run_in_executor(
+                    None, _has_front_expiry, tk, c["date"], s)
+                # This still hits the broker even when the candidate fails, so
+                # pace every preflight request rather than only successful scans.
+                await asyncio.sleep(3)
+                if not has_front_expiry:
                     logger.debug(f"Measure-universe {tk} skipped: no expiry after the print")
                     continue
                 try:
@@ -1322,12 +1334,12 @@ async def measurement_universe_loop():
                         continue
                     n = await log_variant_evals(
                         setup,
-                        gate_passed=is_sell_eligible(setup, s.iv_setup_max_days_to_earnings))
+                        gate_passed=is_sell_eligible(setup, s.iv_setup_max_days_to_earnings),
+                        source="measurement")
                     if n:
                         logged += 1
                 except Exception as e:
                     logger.debug(f"Measure-universe {tk} skipped: {e}")
-                await asyncio.sleep(3)    # pace yfinance/Alpaca
             if scanned:
                 logger.info(f"Measurement universe: {logged} event(s) logged from "
                             f"{scanned} scanned ({len(cands)} candidates)")

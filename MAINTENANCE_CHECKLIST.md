@@ -26,6 +26,9 @@ Nothing gets pushed until the code is reviewed, vetted for secrets, and verified
 - [ ] For earnings-timing changes, run the backend tests with both `TZ=UTC` and
       `TZ=America/New_York`. Earnings eligibility must use the code's ET clock,
       not depend on the host timezone.
+- [ ] For market-date changes, `rg -n "datetime\\.now\\(\\)" backend --glob '*.py'`
+      must return no hits. Use `market_time.et_now()` / `et_today()` rather than
+      the host-local clock.
 
 ## 4. Propose changes → wait for approval
 - [ ] Summarize proposed changes (what, why, risk) and **prompt the user**.
