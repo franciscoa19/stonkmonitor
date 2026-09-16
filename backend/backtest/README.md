@@ -35,15 +35,33 @@ the gates reject most of those. Below ~100 resolved events, the honest output is
 the shortfall, not a curve through a handful of trades. The daily report surfaces
 this so a 2-for-2 start is never read as evidence.
 
-### Sample-size decision pending
-The current 78-name forward test can collect roughly 312 ungated events/year,
-but only an estimated 50–90 events/year pass all three gates. Both arms need 100
-resolved events, so the gated comparison is unlikely to clear its rail before
-late 2027–2028. The methodology reset to `conservative_bid_ask_v2` deliberately
-starts this sample at zero. The owner must choose and record one of: licensed
-historical options data, a wider measurement-only universe, or a pre-registered
-lower evidence threshold. Until then, the report shows the remaining count but
-does not infer a completion date from an unobserved collection rate.
+### Sample size: measured, not estimated
+The 78-name tradeable watchlist collects roughly 312 ungated events/year, of
+which only ~50–90 pass all three gates — which would leave the gated arm of the
+comparison years short of its 100-event rail. That is why the measurement-only
+universe exists (`measurement_universe_loop`): the logger risks no capital, so
+it can price prints we would never trade.
+
+Measured against the live 60-day Nasdaq calendar (2026-09-16):
+
+| Cap floor | Extra names | With a usable front expiry |
+|---|---|---|
+| $10B+ | 729 | **133 (18%)** |
+| $30B+ | 328 | **102 (31%)** |
+
+Two things follow. First, most large caps **cannot** host this structure: they
+list monthlies only, so after a print the next expiry is weeks past the
+front-month band. Market cap is not a proxy for options liquidity. Second, the
+$10B–$30B band contributes 401 extra candidates for only 31 extra usable names
+(a 7.7% hit rate), so `_has_front_expiry` runs first and rejects them for the
+price of one contracts call instead of a full scan.
+
+**Upper bound only.** "Usable front expiry" means an expiry exists, not that the
+legs have real bids. A live pass found names that clear this check and still
+price zero structures once the strict-quote rule refuses to invent a fill. The
+post-quote conversion rate is unknown until the October wave supplies volume, so
+no completion date is projected from it. The rail stays at 100 events per arm
+and the report shows the remaining count rather than a forecast.
 
 ## What does NOT exist, and why
 
