@@ -108,6 +108,19 @@ class Settings(BaseSettings):
     # gates can be tested against "sell everything indiscriminately" (spec §4
     # Baseline 2). Measurement only — ungated rows are never executed.
     iv_log_ungated_baseline: bool = Field(True, env="IV_LOG_UNGATED_BASELINE")
+    # Measurement-only universe. The tradeable watchlist is 78 names (~312 prints
+    # a year, of which only ~50-90 pass the gates), which puts the gated arm of
+    # the comparison years from its 100-event rail. The logger risks no capital,
+    # so it can price far more prints than we would ever trade. These names are
+    # NEVER executed — they exist purely to reach a usable sample this season.
+    iv_measure_universe_enabled: bool = Field(True, env="IV_MEASURE_UNIVERSE_ENABLED")
+    # Market cap is only a coarse pre-filter — it does not imply *options*
+    # liquidity. A live check of $2B+ reporters found none could be priced: most
+    # list monthlies only (no expiry in the band after the print) or have no bid
+    # on the wings. $10B+ plus the front-expiry pre-check is where yield starts.
+    iv_measure_min_market_cap: float = Field(10e9, env="IV_MEASURE_MIN_MARKET_CAP")
+    iv_measure_max_per_cycle: int = Field(25, env="IV_MEASURE_MAX_PER_CYCLE")        # bounded scan load
+    iv_measure_interval_hours: int = Field(6, env="IV_MEASURE_INTERVAL_HOURS")
 
     # --- Daily report scheduler ---
     report_enabled: bool = Field(True, env="REPORT_ENABLED")

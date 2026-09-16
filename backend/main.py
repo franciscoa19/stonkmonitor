@@ -1234,6 +1234,106 @@ async def log_variant_evals(setup, gate_passed: bool = True):
     if logged:
         logger.info(f"Variant-log {setup.ticker} ({'gated' if gate_passed else 'baseline'}): "
                     f"{', '.join(logged)} → settle {resolve_after}")
+    return len(logged)
+
+
+def _has_front_expiry(ticker: str, earnings_date: str, s) -> bool:
+    """Is there a listed expiry after the print and inside the DTE band?
+
+    Names without weekly options fail this: their next expiry after a print is
+    typically the following monthly, weeks past the front-month window the
+    strategy depends on. Blocking synthetic fills for names whose options are
+    effectively untradeable keeps the measurement sample honest.
+    """
+    from datetime import date as _d, timedelta as _td
+    from market_time import et_today
+    try:
+        edate = _d.fromisoformat(str(earnings_date))
+    except (TypeError, ValueError):
+        return False
+    today = et_today()
+    start = max(today + _td(days=s.iv_exec_min_dte), edate + _td(days=1))
+    end = today + _td(days=s.iv_exec_max_dte)
+    if start > end:
+        return False
+    try:
+        return bool(trader.get_option_contracts(ticker, start, end, "call", limit=5))
+    except Exception:
+        return False
+
+
+async def measurement_universe_loop():
+    """Price structures for near-earnings names BEYOND the tradeable watchlist.
+
+    MEASUREMENT ONLY: these names are never alerted on and never executed — the
+    loop calls nothing but the variant logger. The watchlist is 78 names (~312
+    prints/yr, of which only ~50-90 clear the gates), which leaves the gated arm
+    of the gates-vs-baseline comparison years short of its 100-event rail. The
+    logger risks no capital, so it can cover far more prints than we would ever
+    trade, and that is the cheapest way to make the comparison answerable this
+    season rather than in 2028.
+
+    Candidates come from the Nasdaq calendar already in memory, filtered by
+    market cap as a free liquidity proxy and ordered by proximity to the print
+    (where front-month IV is actually inflated), then capped per cycle so the
+    scan load stays bounded.
+    """
+    from feeds.earnings_calendar import get_upcoming_reporters
+    from feeds.uw_budget import current_session
+    from signals.earnings_scanner import (scan_ticker as earnings_scan,
+                                          is_sell_eligible, is_near_earnings)
+    from api.routes import _watchlist
+    s = settings
+    await asyncio.sleep(90)          # let startup + the calendar warm-up finish
+    while True:
+        try:
+            if not (s.iv_measure_universe_enabled and s.iv_variants_log_enabled):
+                await asyncio.sleep(3600)
+                continue
+            if current_session() == "weekend":
+                await asyncio.sleep(3600)
+                continue
+            loop = asyncio.get_event_loop()
+            cands = await loop.run_in_executor(None, lambda: get_upcoming_reporters(
+                s.iv_setup_max_days_to_earnings,
+                min_market_cap=s.iv_measure_min_market_cap,
+                limit=s.iv_measure_max_per_cycle * 4,   # headroom for dedup skips
+                exclude=set(_watchlist)))
+            logged = scanned = 0
+            for c in cands:
+                if logged >= s.iv_measure_max_per_cycle:
+                    break
+                tk = c["ticker"]
+                if await db.has_variant_evals(tk, c["date"]):
+                    continue
+                # Cheap pre-filter before the expensive yfinance scan: market cap
+                # is a poor proxy for OPTIONS liquidity. Plenty of $2B+ names list
+                # monthlies only, so after their print the next expiry is weeks
+                # out and no front-month structure exists at all. One contracts
+                # call answers that directly; skipping here saves a full scan.
+                if not await loop.run_in_executor(
+                        None, _has_front_expiry, tk, c["date"], s):
+                    logger.debug(f"Measure-universe {tk} skipped: no expiry after the print")
+                    continue
+                try:
+                    setup = await earnings_scan(tk)
+                    scanned += 1
+                    if not setup or not is_near_earnings(setup, s.iv_setup_max_days_to_earnings):
+                        continue
+                    n = await log_variant_evals(
+                        setup,
+                        gate_passed=is_sell_eligible(setup, s.iv_setup_max_days_to_earnings))
+                    if n:
+                        logged += 1
+                except Exception as e:
+                    logger.debug(f"Measure-universe {tk} skipped: {e}")
+                await asyncio.sleep(3)    # pace yfinance/Alpaca
+            if scanned:
+                logger.info(f"Measurement universe: {logged} event(s) logged from "
+                            f"{scanned} scanned ({len(cands)} candidates)")
+        except Exception as e:
+            logger.warning(f"Measurement universe error: {e}")
+        await asyncio.sleep(max(1, s.iv_measure_interval_hours) * 3600)
 
 
 def _condor_close_debit(legs: list, quotes: dict) -> float:
@@ -1680,6 +1780,7 @@ async def lifespan(app: FastAPI):
     iv_task = asyncio.create_task(iv_scanner_loop())
     alpaca_monitor_task = asyncio.create_task(alpaca_position_monitor())
     condor_monitor_task = asyncio.create_task(iv_condor_monitor_loop())
+    measure_task = asyncio.create_task(measurement_universe_loop())
 
     async def _warm_earnings_calendar():
         try:
@@ -1749,6 +1850,7 @@ async def lifespan(app: FastAPI):
         uw_budget_task.cancel()
     iv_task.cancel()
     condor_monitor_task.cancel()
+    measure_task.cancel()
     if kalshi_task:
         kalshi_task.cancel()
     if kalshi_monitor_task:

@@ -19,6 +19,7 @@ import threading
 import urllib.request
 import urllib.error
 from datetime import date, timedelta
+from typing import Iterable, Optional
 
 from market_time import et_today
 
@@ -36,8 +37,18 @@ _cache = {"map": {}, "ts": 0.0}   # {ticker: {"date": iso, "time": str}}
 _lock = threading.Lock()
 
 
-def _fetch_nasdaq_day(d: date) -> list[tuple]:
-    """Return [(symbol, time_str)] for one calendar day, or [] on any failure."""
+def _parse_market_cap(raw) -> float:
+    """Nasdaq ships market cap as a display string ('$399,729,623,000'). Returns
+    0.0 for 'N/A'/blank so an unknown cap simply fails a minimum-size filter."""
+    try:
+        s = str(raw or "").replace("$", "").replace(",", "").strip()
+        return float(s) if s else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fetch_nasdaq_day(d: date) -> list[dict]:
+    """Return [{symbol, time, market_cap}] for one calendar day, or [] on failure."""
     url = f"https://api.nasdaq.com/api/calendar/earnings?date={d.isoformat()}"
     try:
         req = urllib.request.Request(url, headers=_HEADERS)
@@ -48,7 +59,8 @@ def _fetch_nasdaq_day(d: date) -> list[tuple]:
         for row in rows:
             sym = (row.get("symbol") or "").strip().upper()
             if sym:
-                out.append((sym, row.get("time") or ""))
+                out.append({"symbol": sym, "time": row.get("time") or "",
+                            "market_cap": _parse_market_cap(row.get("marketCap"))})
         return out
     except Exception as e:
         logger.debug(f"nasdaq earnings {d}: {e}")
@@ -67,9 +79,11 @@ def _refresh(horizon: int = _HORIZON_DAYS) -> None:
         rows = _fetch_nasdaq_day(d)
         if rows:
             got_any = True
-        for sym, tm in rows:
+        for row in rows:
+            sym = row["symbol"]
             if sym not in m:          # dates iterate ascending → first is earliest
-                m[sym] = {"date": d.isoformat(), "time": tm}
+                m[sym] = {"date": d.isoformat(), "time": row["time"],
+                          "market_cap": row["market_cap"]}
         time.sleep(0.25)              # be polite to the endpoint
     if got_any:
         _cache["map"] = m
@@ -103,6 +117,43 @@ def get_next_earnings(ticker: str):
         return None
     rec = _cache["map"].get(ticker.strip().upper())
     return rec["date"] if rec else None
+
+
+def get_upcoming_reporters(max_days: int, min_market_cap: float = 0.0,
+                           limit: Optional[int] = None,
+                           exclude: Iterable[str] = ()) -> list[dict]:
+    """Names reporting within `max_days`, soonest first then largest cap.
+
+    This is the measurement-only universe: the tradeable watchlist is 78 names,
+    but the *logger* risks no capital, so it can price structures for far more
+    prints than we would ever trade. Sorting by proximity first keeps the sample
+    near the print, where the front-month IV the thesis depends on is actually
+    inflated. Market cap is a free liquidity proxy — it rides along on the
+    calendar rows, so filtering costs no extra request.
+    """
+    try:
+        _ensure_fresh()
+    except Exception as e:
+        logger.debug(f"earnings calendar refresh failed: {e}")
+        return []
+    today = et_today()
+    skip = {t.strip().upper() for t in exclude}
+    out = []
+    for sym, rec in _cache["map"].items():
+        if sym in skip:
+            continue
+        cap = rec.get("market_cap") or 0.0
+        if cap < min_market_cap:
+            continue
+        try:
+            days = (date.fromisoformat(rec["date"]) - today).days
+        except (TypeError, ValueError):
+            continue
+        if 0 <= days <= max_days:
+            out.append({"ticker": sym, "date": rec["date"], "days": days,
+                        "report_time": rec.get("time") or "", "market_cap": cap})
+    out.sort(key=lambda r: (r["days"], -r["market_cap"]))
+    return out[:limit] if limit else out
 
 
 def get_report_time(ticker: str):

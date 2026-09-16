@@ -418,6 +418,52 @@ def test_auto_trade_flow_is_opt_in_by_default():
     assert Settings.model_fields["auto_trade_flow_enabled"].default is False
 
 
+def test_market_cap_parsing():
+    from feeds.earnings_calendar import _parse_market_cap
+    assert _parse_market_cap("$399,729,623,000") == 399_729_623_000.0
+    assert _parse_market_cap("$1,400,530,690") == 1_400_530_690.0
+    assert _parse_market_cap("N/A") == 0.0        # unknown cap fails a size filter
+    assert _parse_market_cap("") == 0.0
+    assert _parse_market_cap(None) == 0.0
+
+
+def test_measurement_universe_selection():
+    """Measurement candidates: near the print first, liquid, watchlist excluded."""
+    import feeds.earnings_calendar as cal
+    from datetime import date as _d, timedelta as _td
+    today = _d.today()
+
+    def day(n):
+        return (today + _td(days=n)).isoformat()
+
+    original = cal._cache["map"]
+    cal._cache["map"] = {
+        "SOON_BIG":   {"date": day(1), "time": "time-after-hours", "market_cap": 50e9},
+        "SOON_SMALL": {"date": day(1), "time": "time-pre-market",   "market_cap": 1e8},
+        "LATER_BIG":  {"date": day(3), "time": "time-after-hours", "market_cap": 90e9},
+        "FAR":        {"date": day(30), "time": "",                 "market_cap": 90e9},
+        "ONWATCH":    {"date": day(1), "time": "",                  "market_cap": 80e9},
+        "NOCAP":      {"date": day(2), "time": "",                  "market_cap": 0.0},
+    }
+    cal._cache["ts"] = __import__("time").time()     # keep the cache "fresh"
+    try:
+        got = cal.get_upcoming_reporters(7, min_market_cap=2e9, exclude={"ONWATCH"})
+        names = [r["ticker"] for r in got]
+        # Soonest first, then largest cap; sub-threshold, unknown-cap, far-dated
+        # and watchlist names are all excluded.
+        assert names == ["SOON_BIG", "LATER_BIG"]
+        assert got[0]["days"] == 1 and got[0]["report_time"] == "time-after-hours"
+        capped = cal.get_upcoming_reporters(7, min_market_cap=2e9, limit=1,
+                                            exclude={"ONWATCH"})
+        assert [r["ticker"] for r in capped] == ["SOON_BIG"]
+        # Without the exclude, a larger same-day name outranks it on cap.
+        assert cal.get_upcoming_reporters(7, min_market_cap=2e9, limit=1)[0]["ticker"] == "ONWATCH"
+        # Without a cap floor the small and unknown-cap names come back too.
+        assert len(cal.get_upcoming_reporters(7, exclude={"ONWATCH"})) == 4
+    finally:
+        cal._cache["map"] = original
+
+
 def test_pin_risk_flag():
     from signals.iv_variants import pin_risk
     row = {"short_put": 90.0, "short_call": 110.0}
