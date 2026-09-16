@@ -59,6 +59,13 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "stonkmonitor.db"
 
+# The first validation implementation priced some unavailable bid/ask sides at
+# mid and did not consistently charge fees. Its rows are retained for audit but
+# excluded from forward-test reporting. A new model version makes the reset
+# explicit rather than mixing incompatible P&L series.
+VALIDATED_VARIANT_PRICING_MODEL = "conservative_bid_ask_v2"
+LEGACY_VARIANT_PRICING_MODEL = "legacy_excluded"
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -339,6 +346,8 @@ CREATE TABLE IF NOT EXISTS iv_variant_evals (
     credit_mid     REAL,                   -- same structure priced at mid, for reference only
     fees           REAL,                   -- round-trip commission ($ per spread)
     strike_step    REAL,                   -- listed strike increment (pin-risk yardstick)
+    pricing_model  TEXT NOT NULL DEFAULT 'legacy_excluded',
+                                             -- comparable fill/fee methodology version
     max_loss       REAL,                   -- per-spread $ incl. fees (NULL = undefined risk)
     -- 1 = passed the three scanner gates, 0 = logged purely as the
     -- "sell everything indiscriminately" baseline (VALIDATION_SPEC §4).
@@ -364,7 +373,8 @@ _MIGRATIONS = {
     "daily_equity":      {"open_equity": "REAL"},
     "iv_rv_evals":       {"earnings_date": "TEXT"},
     "iv_variant_evals":  {"credit_mid": "REAL", "fees": "REAL", "strike_step": "REAL",
-                          "gate_passed": "INTEGER", "pin_risk": "INTEGER"},
+                          "gate_passed": "INTEGER", "pin_risk": "INTEGER",
+                          "pricing_model": "TEXT"},
 }
 
 
@@ -395,6 +405,19 @@ class Database:
                         logger.info(f"Migration: added {table}.{col}")
                     except Exception as e:
                         logger.error(f"Migration failed for {table}.{col}: {e}")
+        # Rows written before the strict bid/ask + fee model are not comparable
+        # to the new forward test. Label them once so the raw audit trail stays
+        # intact while aggregate metrics begin from a clean, known methodology.
+        try:
+            cur = await self._conn.execute(
+                """UPDATE iv_variant_evals SET pricing_model=?
+                   WHERE pricing_model IS NULL OR pricing_model=''""",
+                (LEGACY_VARIANT_PRICING_MODEL,))
+            if cur.rowcount:
+                logger.info("Migration: excluded %s legacy variant evals from validated metrics",
+                            cur.rowcount)
+        except Exception as e:
+            logger.error(f"Variant pricing-model migration failed: {e}")
 
     async def _repair_open_variant_resolution_dates(self):
         """Move legacy variant rows to an expiry-based settlement schedule.
@@ -405,7 +428,9 @@ class Database:
         """
         try:
             async with self._conn.execute(
-                "SELECT id, expiry, resolve_after FROM iv_variant_evals WHERE resolved=0"
+                """SELECT id, expiry, resolve_after FROM iv_variant_evals
+                   WHERE resolved=0 AND pricing_model=?""",
+                (VALIDATED_VARIANT_PRICING_MODEL,)
             ) as cur:
                 rows = await cur.fetchall()
             updates = []
@@ -670,12 +695,12 @@ class Database:
 
     # ── IV/RV strategy-variant logger (measurement only) ────────────────
     async def has_variant_evals(self, ticker: str, earnings_date: Optional[str]) -> bool:
-        """True if this ticker+event already has variants logged (dedup)."""
+        """True if this ticker+event has a current-model open evaluation."""
         r = await self._query(
             """SELECT id FROM iv_variant_evals
-               WHERE ticker=? AND resolved=0
+               WHERE ticker=? AND resolved=0 AND pricing_model=?
                  AND (earnings_date IS ? OR earnings_date=?) LIMIT 1""",
-            (ticker, earnings_date, earnings_date))
+            (ticker, VALIDATED_VARIANT_PRICING_MODEL, earnings_date, earnings_date))
         return bool(r)
 
     async def record_variant_eval(self, ticker: str, earnings_date: Optional[str],
@@ -685,28 +710,37 @@ class Database:
                                   credit_mid: Optional[float] = None,
                                   fees: Optional[float] = None,
                                   strike_step: Optional[float] = None,
-                                  gate_passed: bool = True) -> None:
+                                  gate_passed: bool = True,
+                                  pricing_model: Optional[str] = None) -> None:
+        # Do not accidentally certify a direct/legacy call that did not record
+        # both the reference mid and explicit commission assumption.
+        pricing_model = pricing_model or (
+            VALIDATED_VARIANT_PRICING_MODEL
+            if credit_mid is not None and fees is not None
+            else LEGACY_VARIANT_PRICING_MODEL)
         now = datetime.utcnow().isoformat()
         await self._exec(
             """INSERT INTO iv_variant_evals
                  (ticker, earnings_date, signal_date, expiry, variant, spot,
                   implied_move_pct, short_put, long_put, short_call, long_call,
-                  credit, credit_mid, fees, strike_step, gate_passed,
+                  credit, credit_mid, fees, strike_step, pricing_model, gate_passed,
                   max_loss, resolve_after, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, earnings_date, now[:10], expiry, variant, round(spot, 2),
              round(implied_move_pct, 2), strikes.get("short_put"), strikes.get("long_put"),
              strikes.get("short_call"), strikes.get("long_call"),
              round(credit, 2),
              (round(credit_mid, 2) if credit_mid is not None else None),
              (round(fees, 2) if fees is not None else None),
-             strike_step, 1 if gate_passed else 0,
+             strike_step, pricing_model, 1 if gate_passed else 0,
              (round(max_loss, 2) if max_loss is not None else None),
              resolve_after, now))
 
     async def get_due_variant_evals(self, today: str) -> list[dict]:
         return await self._query(
-            "SELECT * FROM iv_variant_evals WHERE resolved=0 AND resolve_after <= ?", (today,))
+            """SELECT * FROM iv_variant_evals
+               WHERE resolved=0 AND pricing_model=? AND resolve_after <= ?""",
+            (VALIDATED_VARIANT_PRICING_MODEL, today))
 
     async def resolve_variant_eval(self, eval_id: int, exit_spot: float,
                                    realized_pnl: float,
@@ -728,15 +762,16 @@ class Database:
         whether the gates earn their keep (VALIDATION_SPEC §4).
         """
         from backtest.metrics import compute_metrics
-        where = "WHERE resolved=1"
-        params: tuple = ()
+        where = "WHERE resolved=1 AND pricing_model=?"
+        params: tuple = (VALIDATED_VARIANT_PRICING_MODEL,)
         if gate_passed is not None:
             where += " AND COALESCE(gate_passed,1)=?"
-            params = (1 if gate_passed else 0,)
+            params += (1 if gate_passed else 0,)
         rows = await self._query(
             f"""SELECT variant, realized_pnl, max_loss, pin_risk, credit,
                        implied_move_pct, spot, exit_spot
-                FROM iv_variant_evals {where}""", params)
+                FROM iv_variant_evals {where}
+                ORDER BY COALESCE(expiry, resolved_at, signal_date), id""", params)
 
         by_variant: dict = {}
         for r in rows:
@@ -774,8 +809,10 @@ class Database:
         for label, flag in (("gated", 1), ("ungated", 0)):
             rows = await self._query(
                 """SELECT realized_pnl FROM iv_variant_evals
-                   WHERE resolved=1 AND COALESCE(gate_passed,1)=? AND variant=?""",
-                (flag, "condor_1.0sd"))
+                   WHERE resolved=1 AND pricing_model=?
+                     AND COALESCE(gate_passed,1)=? AND variant=?
+                   ORDER BY COALESCE(expiry, resolved_at, signal_date), id""",
+                (VALIDATED_VARIANT_PRICING_MODEL, flag, "condor_1.0sd"))
             out[label] = compute_metrics([float(r["realized_pnl"] or 0) for r in rows])
         return out
 

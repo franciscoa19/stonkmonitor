@@ -16,7 +16,10 @@ a parameter (spec: "explicitly out of scope").
 
 Today it runs over **live forward-test data** — `iv_variant_evals` (hypothetical
 structures priced on the real chain and settled at expiry) and `iv_condors`
-(actual paper fills). The same module would serve a historical harness unchanged.
+(actual paper fills). Variant aggregates include only rows tagged with the
+current `conservative_bid_ask_v2` pricing model; earlier rows remain in SQLite
+for audit, but are excluded because they used a different fill/fee methodology.
+The same module would serve a historical harness unchanged.
 
 ### Why `tail_ratio` is the one to read
 Selling premium produces a tidy equity curve punctuated by one disaster. An iron
@@ -61,7 +64,7 @@ and the parts of the spec that do not need history are implemented:
 |---|---|
 | §4 full metric set, incl. `tail_ratio` | `metrics.py`, surfaced in the daily report |
 | §4 Baseline 2 — *sell everything indiscriminately* | `gate_passed` on `iv_variant_evals`; every near-earnings name is priced, gated or not |
-| §3 fees and slippage are mandatory, never zero | `iv_variants.build_variants` — shorts filled at bid, longs at ask, plus round-trip commission |
+| §3 fees and slippage are mandatory, never zero | `iv_variants.build_variants` — shorts filled at bid and longs at ask (a missing executable quote skips the structure), plus round-trip commission |
 | §3 pin / assignment risk flagged, not assumed away | `pin_risk` on resolved variant rows |
 | §5 the value of a gate is an empirical question | gated-vs-ungated comparison in the report |
 | §1 no look-ahead | variants settle on the underlying's **close on the option's expiry**, never a live quote |

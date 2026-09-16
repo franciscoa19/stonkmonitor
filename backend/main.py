@@ -1201,8 +1201,13 @@ async def log_variant_evals(setup, gate_passed: bool = True):
     `gate_passed` records whether the setup cleared the three scanner gates, so
     filtered and indiscriminate selling can be scored against each other.
     """
+    from signals.earnings_scanner import is_near_earnings
     from signals.iv_variants import build_variants, expiry_settlement_date
     if not settings.iv_variants_log_enabled:
+        return
+    if not is_near_earnings(setup, settings.iv_setup_max_days_to_earnings):
+        logger.debug("Variant-log %s skipped: earnings has occurred or is outside the window",
+                     getattr(setup, "ticker", "?"))
         return
     edate = getattr(setup, "next_earnings_date", None)
     if await db.has_variant_evals(setup.ticker, edate):

@@ -156,14 +156,25 @@ def build_variants(trader, setup, settings) -> list[dict]:
     fee = float(getattr(settings, "iv_fee_per_contract", 0.65) or 0)
 
     def q(bystrike, strike, side):
-        """side 'sell' → bid (what we'd receive); 'buy' → ask (what we'd pay)."""
+        """Return the executable-side fill and mid, or ``None`` without a fill.
+
+        A missing bid/ask is not permission to replace that side with mid.  That
+        would turn an untradeable option into an optimistic simulated fill, which
+        is exactly the liquidity bias the conservative model is meant to avoid.
+        """
         sym = bystrike.get(strike, {}).get("symbol")
         rec = quotes.get(sym, {}) if sym else {}
-        mid_px = rec.get("mid", 0) or 0
+        try:
+            mid_px = float(rec.get("mid") or 0)
+        except (TypeError, ValueError):
+            mid_px = 0.0
         if not conservative:
-            return mid_px, mid_px
-        px = (rec.get("bid") if side == "sell" else rec.get("ask")) or 0
-        return (px or mid_px), mid_px
+            return (mid_px, mid_px) if mid_px > 0 else (None, None)
+        try:
+            px = float(rec.get("bid") if side == "sell" else rec.get("ask"))
+        except (TypeError, ValueError):
+            px = 0.0
+        return (px, mid_px) if px > 0 else (None, mid_px)
 
     # Median gap between listed strikes — "one strike increment" for pin risk.
     def _step(ks):
@@ -177,6 +188,9 @@ def build_variants(trader, setup, settings) -> list[dict]:
         sp_fill, sp_mid = q(pbs, s["short_put"], "sell")
         lc_fill, lc_mid = (q(cbs, s["long_call"], "buy") if s.get("long_call") else (0, 0))
         lp_fill, lp_mid = (q(pbs, s["long_put"], "buy") if s.get("long_put") else (0, 0))
+        if any(px is None for px in (sc_fill, sp_fill, lc_fill, lp_fill)):
+            logger.debug("Variant %s skipped: missing executable-side option quote", name)
+            continue
 
         credit = (sc_fill + sp_fill) - (lc_fill + lp_fill)
         credit_mid = (sc_mid + sp_mid) - (lc_mid + lp_mid)

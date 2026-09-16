@@ -207,11 +207,10 @@ def is_sell_eligible(setup, max_days_to_earnings: int) -> bool:
     """A scored setup is a real earnings sell-premium candidate only when:
       • it scores (recommendation != AVOID),
       • IV/RV is finite and positive (guards broken 0/NaN/∞ vol rows), and
-      • a KNOWN earnings print is within max_days_to_earnings.
+      • a KNOWN, still-upcoming earnings print is within max_days_to_earnings.
     This filters the far-dated, cheap-IV, and no-earnings (ETF) noise that
     otherwise pollutes the signal feed, the eval log, and would mis-fire trades
     if the tight execution window weren't there. Returns False for None setups."""
-    from datetime import date as _d
     if getattr(setup, "recommendation", "AVOID") == "AVOID":
         return False
     try:
@@ -220,30 +219,38 @@ def is_sell_eligible(setup, max_days_to_earnings: int) -> bool:
         return False
     if not math.isfinite(ivrv) or ivrv <= 0:
         return False
-    edate = getattr(setup, "next_earnings_date", None)
-    if not edate:
-        return False
-    try:
-        days = (_d.fromisoformat(edate) - _d.today()).days
-    except Exception:
-        return False
-    return 0 <= days <= max_days_to_earnings
+    return is_near_earnings(setup, max_days_to_earnings)
 
 
-def is_near_earnings(setup, max_days_to_earnings: int) -> bool:
-    """A known earnings print is within the window — regardless of whether the
-    three gates passed. Weaker than is_sell_eligible on purpose: it defines the
-    population for the "sell everything indiscriminately" baseline, which is the
-    only way to test whether the gates add value (VALIDATION_SPEC §4)."""
+def is_near_earnings(setup, max_days_to_earnings: int, now=None) -> bool:
+    """A known, still-upcoming earnings print is within the window.
+
+    This remains weaker than :func:`is_sell_eligible`: it ignores the three
+    signal-quality gates to define the "sell everything" baseline. It does not
+    include a report that has already occurred, however; a same-day entry is
+    valid only before a confirmed after-close print.
+    """
     from datetime import date as _d
     edate = getattr(setup, "next_earnings_date", None)
     if not edate:
         return False
     try:
-        days = (_d.fromisoformat(edate) - _d.today()).days
+        today = now.date() if now is not None else _d.today()
+        days = (_d.fromisoformat(edate) - today).days
     except Exception:
         return False
-    return 0 <= days <= max_days_to_earnings
+    if days < 0 or days > max_days_to_earnings:
+        return False
+    if days > 0:
+        return True
+
+    # Keep the baseline and execution paths under one timing rule. Importing
+    # locally avoids making the scanner's lightweight data helpers depend on
+    # the executor until the same-day edge case is actually evaluated.
+    from signals.iv_executor import is_pre_earnings_entry_window
+    return is_pre_earnings_entry_window(
+        edate, getattr(setup, "earnings_report_time", None),
+        max_days_to_earnings, now=now)
 
 
 def _next_earnings_info(stock) -> tuple[Optional[str], Optional[str]]:

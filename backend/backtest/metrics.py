@@ -102,8 +102,11 @@ def compute_metrics(pnls: Sequence[float],
     gross_loss = abs(sum(losses))
     mean = sum(pnls) / n
     sd = _stdev(pnls, mean)
-    downside = [p for p in pnls if p < mean]
-    dsd = _stdev(downside, mean) if len(downside) >= 2 else 0.0
+    # Sortino measures returns below a target, not the sample deviation of
+    # observations below their own mean. For per-event dollar P&L the target is
+    # breakeven ($0); non-loss events contribute a zero downside deviation.
+    downside_deviation = math.sqrt(
+        sum(min(0.0, p) ** 2 for p in pnls) / n)
 
     pct_exceed = None
     if exceeded_implied is not None and len(exceeded_implied) == n and n:
@@ -121,7 +124,8 @@ def compute_metrics(pnls: Sequence[float],
         "largest_single_loss": (round(min(losses), 2) if losses else None),
         "max_drawdown":        max_drawdown(pnls),
         "sharpe":              (round(mean / sd, 2) if sd else None),
-        "sortino":             (round(mean / dsd, 2) if dsd else None),
+        "sortino":             (round(mean / downside_deviation, 2)
+                                if downside_deviation else None),
         "tail_ratio":          tail_ratio(pnls),
         "pct_events_exceeding_implied": pct_exceed,
         # Honesty rail: below this, decline to draw conclusions.

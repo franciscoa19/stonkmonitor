@@ -340,6 +340,17 @@ def test_metrics_empty_and_all_wins():
     assert w["max_drawdown"] == 0.0 and w["largest_single_loss"] is None
 
 
+def test_sortino_uses_breakeven_as_the_downside_target():
+    from backtest.metrics import compute_metrics
+    # One loss must contribute to downside deviation even though it is the only
+    # observation below the sample mean. The old sample-stdev implementation
+    # returned None here.
+    m = compute_metrics([10.0, -10.0, 10.0])
+    assert m["sortino"] == 0.58
+    # A consistently losing series has a defined negative Sortino, not None.
+    assert compute_metrics([-10.0, -10.0])["sortino"] == -1.0
+
+
 def test_pct_events_exceeding_implied():
     from backtest.metrics import compute_metrics
     m = compute_metrics([10.0, -10.0, 10.0, 10.0], exceeded_implied=[False, True, False, False])
@@ -349,7 +360,7 @@ def test_pct_events_exceeding_implied():
 def test_is_near_earnings_is_weaker_than_sell_eligible():
     """Baseline 2 needs the ungated population: near-earnings regardless of gates."""
     from signals.earnings_scanner import is_near_earnings, is_sell_eligible
-    from datetime import date as _d, timedelta as _td
+    from datetime import date as _d, datetime as _dt, time as _time, timedelta as _td
     import types as _t
     avoid = _t.SimpleNamespace(recommendation="AVOID", iv30_rv30=0.6,
                                next_earnings_date=(_d.today() + _td(days=2)).isoformat())
@@ -361,6 +372,18 @@ def test_is_near_earnings_is_weaker_than_sell_eligible():
     etf = _t.SimpleNamespace(recommendation="SELL_PREMIUM", iv30_rv30=1.4,
                              next_earnings_date=None)
     assert is_near_earnings(etf, 7) is False
+    # The ungated baseline must not price an event after a same-day BMO/unknown
+    # release. A confirmed after-close release is still valid before 16:00 ET.
+    bmo = _t.SimpleNamespace(recommendation="SELL_PREMIUM", iv30_rv30=1.4,
+                             next_earnings_date=_d.today().isoformat(),
+                             earnings_report_time="pre")
+    post = _t.SimpleNamespace(recommendation="SELL_PREMIUM", iv30_rv30=1.4,
+                              next_earnings_date=_d.today().isoformat(),
+                              earnings_report_time="post")
+    assert is_near_earnings(bmo, 7, now=_dt.combine(_d.today(), _time(10, 0))) is False
+    assert is_sell_eligible(bmo, 7) is False
+    assert is_near_earnings(post, 7, now=_dt.combine(_d.today(), _time(15, 59))) is True
+    assert is_near_earnings(post, 7, now=_dt.combine(_d.today(), _time(16, 0))) is False
 
 
 def test_pin_risk_flag():
@@ -398,10 +421,12 @@ async def test_variant_eval_lifecycle(db):
     sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
     await db.record_variant_eval("NVDA", "2026-09-16", "2026-09-18", "condor_1.0sd",
                                  100.0, 8.0, sp, credit=1.20, max_loss=180.0,
-                                 resolve_after="2026-09-18")
+                                 resolve_after="2026-09-18", credit_mid=1.30,
+                                 fees=5.20, strike_step=1.0)
     await db.record_variant_eval("NVDA", "2026-09-16", "2026-09-18", "straddle",
                                  100.0, 8.0, {"short_put": 100.0, "short_call": 100.0},
-                                 credit=8.0, max_loss=None, resolve_after="2026-09-18")
+                                 credit=8.0, max_loss=None, resolve_after="2026-09-18",
+                                 credit_mid=8.10, fees=2.60, strike_step=1.0)
     assert await db.has_variant_evals("NVDA", "2026-09-16") is True
     assert await db.has_variant_evals("AAPL", "2026-09-16") is False
 
@@ -423,7 +448,8 @@ async def test_open_variant_evals_are_rescheduled_to_after_expiry(db):
     sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
     await db.record_variant_eval("NVDA", "2026-09-15", "2026-09-18", "condor_1.0sd",
                                  100.0, 8.0, sp, credit=1.20, max_loss=180.0,
-                                 resolve_after="2026-09-17")
+                                 resolve_after="2026-09-17", credit_mid=1.30,
+                                 fees=5.20, strike_step=1.0)
     await db._repair_open_variant_resolution_dates()
     assert await db.get_due_variant_evals("2026-09-18") == []
     assert len(await db.get_due_variant_evals("2026-09-19")) == 1
@@ -573,6 +599,32 @@ def test_variant_pricing_applies_slippage_and_fees():
     assert condor["strike_step"] == 1.0          # $1-wide fixture chain
 
 
+def test_variant_pricing_rejects_a_missing_executable_side_quote():
+    """A zero bid must not be silently replaced with the option's mid price."""
+    from signals.iv_variants import build_variants
+    from config import get_settings
+    exp = _date.today() + _timedelta(days=1)
+    strikes = [float(k) for k in range(80, 121)]
+    mids = {}
+    for k in strikes:
+        mids[("C", k)] = max(0.10, 3.0 - 0.12 * (k - 100)) if k >= 100 else 3.0
+        mids[("P", k)] = max(0.10, 3.0 - 0.12 * (100 - k)) if k <= 100 else 3.0
+
+    class NoShortCallBidTrader(FakeOptionTrader):
+        def get_option_quotes(self, symbols):
+            quotes = super().get_option_quotes(symbols)
+            # The 1.0σ condor shorts the 110 call for this fixture.
+            quotes[_occ("TEST", exp, "C", 110.0)]["bid"] = 0.0
+            return quotes
+
+    trader = NoShortCallBidTrader(exp, strikes, mids, equity=50000.0)
+    setup = _types.SimpleNamespace(
+        ticker="TEST", price=100.0, expected_move="10.0%", recommendation="SELL_PREMIUM",
+        next_earnings_date=_date.today().isoformat())
+    plans = {v["variant"]: v for v in build_variants(trader, setup, get_settings())}
+    assert "condor_1.0sd" not in plans
+
+
 async def test_gate_comparison_scores_gated_vs_ungated(db):
     """The experiment: do the three gates beat selling everything?"""
     sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
@@ -599,6 +651,35 @@ async def test_gate_comparison_scores_gated_vs_ungated(db):
     assert gated_only[0]["n_events"] == 2
     everything = await db.get_variant_summary(gate_passed=None)
     assert everything[0]["n_events"] == 4
+
+
+async def test_variant_metrics_exclude_legacy_rows_and_order_by_expiry(db):
+    """Validated metrics use one pricing model and an actual event sequence."""
+    from db import LEGACY_VARIANT_PRICING_MODEL
+    sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+
+    async def seed(ticker, expiry, pnl, pricing_model=None):
+        await db.record_variant_eval(
+            ticker, "2026-09-16", expiry, "condor_1.0sd", 100.0, 8.0, sp,
+            credit=1.20, max_loss=180.0, resolve_after="2026-09-25",
+            credit_mid=1.30, fees=5.20, strike_step=1.0, pricing_model=pricing_model)
+        row = (await db._query("SELECT id FROM iv_variant_evals ORDER BY id DESC LIMIT 1"))[0]
+        await db.resolve_variant_eval(row["id"], 103.0, pnl)
+
+    # Insertion order would be +100, +100, -100, -100 (drawdown 200).
+    # Expiry order is +100, -100, +100, -100 (drawdown 100).
+    await seed("AAA", "2026-09-18", 100.0)
+    await seed("BBB", "2026-09-20", 100.0)
+    await seed("CCC", "2026-09-19", -100.0)
+    await seed("DDD", "2026-09-21", -100.0)
+    await seed("OLD", "2026-09-17", 999.0, LEGACY_VARIANT_PRICING_MODEL)
+
+    summary = (await db.get_variant_summary())[0]
+    assert summary["n_events"] == 4
+    assert summary["max_drawdown"] == 100.0
+    comparison = await db.get_gate_comparison()
+    assert comparison["gated"]["n_events"] == 4
+    assert comparison["gated"]["max_drawdown"] == 100.0
 
 
 def test_build_iron_condor_rejects_far_earnings():
