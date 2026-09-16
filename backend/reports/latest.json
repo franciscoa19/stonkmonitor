@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-15T12:00:21.235555+00:00",
+  "generated": "2026-09-16T12:08:41.214558+00:00",
   "account": {
     "equity": 50261.51,
     "cash": 50261.51,
@@ -8,7 +8,7 @@
     "total_pnl": 268.7099999999991,
     "total_pnl_pct": 0.5374973996255442,
     "open_positions": 0,
-    "days_running": 7,
+    "days_running": 8,
     "error": null
   },
   "metrics": {
@@ -56,6 +56,10 @@
     {
       "date": "2026-09-15",
       "equity": 50261.51
+    },
+    {
+      "date": "2026-09-16",
+      "equity": 50261.51
     }
   ],
   "iv_rv": {
@@ -63,7 +67,7 @@
     "wins": 0,
     "win_rate": 0.0,
     "avg_edge_pct": 0.0,
-    "open": 18
+    "open": 0
   },
   "iv_condors": {
     "closed": 2,
@@ -74,11 +78,49 @@
     "pending": 0
   },
   "iv_variants": [],
+  "iv_gate_comparison": {
+    "gated": {
+      "n_events": 0,
+      "n_wins": 0,
+      "win_rate": null,
+      "total_pnl": 0.0,
+      "expectancy": null,
+      "profit_factor": null,
+      "avg_win": null,
+      "avg_loss": null,
+      "largest_single_loss": null,
+      "max_drawdown": 0.0,
+      "sharpe": null,
+      "sortino": null,
+      "tail_ratio": null,
+      "pct_events_exceeding_implied": null,
+      "sufficient_sample": false,
+      "events_needed": 100
+    },
+    "ungated": {
+      "n_events": 0,
+      "n_wins": 0,
+      "win_rate": null,
+      "total_pnl": 0.0,
+      "expectancy": null,
+      "profit_factor": null,
+      "avg_win": null,
+      "avg_loss": null,
+      "largest_single_loss": null,
+      "max_drawdown": 0.0,
+      "sharpe": null,
+      "sortino": null,
+      "tail_ratio": null,
+      "pct_events_exceeding_implied": null,
+      "sufficient_sample": false,
+      "events_needed": 100
+    }
+  },
   "by_strategy": [],
   "by_hour": [],
   "recent": [],
   "open_positions": [],
   "proposals": [
-    "No closed trades in 7 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
+    "No closed trades in 8 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
   ]
 }
