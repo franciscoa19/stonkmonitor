@@ -756,6 +756,79 @@ def test_variant_pricing_rejects_a_missing_executable_side_quote():
     assert diagnostics["dropped"]["condor_1.0sd"] == "missing_executable_quote"
 
 
+def test_collapsed_variants_are_tagged_on_a_coarse_strike_grid():
+    """CTAS priced 1.0σ and 1.3σ identically — $5-wide strikes, small implied
+    move, both targets rounding to the same four legs. The later shape must be
+    tagged so it is not counted as independent evidence about shape."""
+    from signals.iv_variants import build_variants
+    from config import get_settings
+    exp = et_today() + _timedelta(days=1)
+    strikes = [float(k) for k in range(100, 301, 5)]     # $5 grid, like CTAS
+    mids = {}
+    for k in strikes:
+        mids[("C", k)] = max(0.10, 12.0 - 0.10 * (k - 200)) if k >= 200 else 12.0
+        mids[("P", k)] = max(0.10, 12.0 - 0.10 * (200 - k)) if k <= 200 else 12.0
+    trader = FakeOptionTrader(exp, strikes, mids, equity=50000.0)
+    setup = _types.SimpleNamespace(
+        ticker="TEST", price=200.0, expected_move="3.0%",   # move = $6 on a $5 grid
+        recommendation="SELL_PREMIUM", next_earnings_date=et_today().isoformat())
+    plans = {v["variant"]: v for v in build_variants(trader, setup, get_settings())}
+
+    # 1.0σ ($206) and 1.3σ ($207.80) both round up to the 210 call / 190 put,
+    # while 0.7σ ($204.20) still lands on its own 205/195 — the CTAS pattern.
+    assert plans["condor_1.0sd"]["strikes"] == plans["condor_1.3sd"]["strikes"]
+    assert plans["condor_0.7sd"]["strikes"] != plans["condor_1.0sd"]["strikes"]
+    assert plans["condor_1.0sd"]["collapsed_with"] is None      # first wins, stays canonical
+    assert plans["condor_1.3sd"]["collapsed_with"] == "condor_1.0sd"
+    # Genuinely distinct shapes are untouched.
+    assert plans["condor_0.7sd"]["collapsed_with"] is None
+    assert plans["straddle"]["collapsed_with"] is None
+
+
+async def test_collapsed_backfill_tags_preexisting_rows(db):
+    """Rows written before the column existed must still be tagged — the
+    collapse was always true of them, only the column is new."""
+    same = {"short_put": 195.0, "long_put": 185.0, "short_call": 205.0, "long_call": 215.0}
+    other = {"short_put": 197.5, "long_put": 190.0, "short_call": 202.5, "long_call": 210.0}
+    for variant, sk in (("condor_0.7sd", other), ("condor_1.0sd", same),
+                        ("condor_1.3sd", same)):
+        await db.record_variant_eval(
+            "CTAS", "2026-09-23", "2026-09-25", variant, 200.0, 2.0, sk,
+            credit=1.14, max_loss=391.0, resolve_after="2026-09-26",
+            credit_mid=2.88, fees=5.20, strike_step=2.5)   # no collapsed_with
+    await db._backfill_collapsed_variants()
+
+    got = {r["variant"]: r["collapsed_with"] for r in await db._query(
+        "SELECT variant, collapsed_with FROM iv_variant_evals WHERE ticker='CTAS'")}
+    assert got["condor_1.3sd"] == "condor_1.0sd"   # later duplicate tagged
+    assert got["condor_1.0sd"] is None             # canonical untouched
+    assert got["condor_0.7sd"] is None             # genuinely distinct
+
+
+async def test_collapsed_rows_excluded_from_shape_comparison(db):
+    sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+
+    async def seed(variant, pnl, collapsed_with=None):
+        await db.record_variant_eval(
+            "AAA", "2026-09-16", "2026-09-18", variant, 100.0, 8.0, sp,
+            credit=1.20, max_loss=180.0, resolve_after="2026-09-19",
+            credit_mid=1.30, fees=5.20, strike_step=1.0,
+            collapsed_with=collapsed_with)
+        row = (await db._query("SELECT id FROM iv_variant_evals ORDER BY id DESC LIMIT 1"))[0]
+        await db.resolve_variant_eval(row["id"], 103.0, pnl)
+
+    await seed("condor_1.0sd", 120.0)
+    await seed("condor_1.3sd", 120.0, collapsed_with="condor_1.0sd")
+
+    full = {v["variant"]: v for v in await db.get_variant_summary()}
+    assert full["condor_1.3sd"]["n_events"] == 1
+    assert full["condor_1.3sd"]["collapsed_n"] == 1     # visible either way
+    assert full["condor_1.0sd"]["collapsed_n"] == 0
+
+    distinct = {v["variant"] for v in await db.get_variant_summary(distinct_only=True)}
+    assert "condor_1.0sd" in distinct and "condor_1.3sd" not in distinct
+
+
 async def test_gate_comparison_scores_gated_vs_ungated(db):
     """The experiment: do the three gates beat selling everything?"""
     sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}

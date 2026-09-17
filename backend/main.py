@@ -1237,7 +1237,8 @@ async def log_variant_evals(setup, gate_passed: bool = True,
             strikes=v["strikes"], credit=v["credit"], max_loss=v["max_loss"],
             resolve_after=resolve_after, credit_mid=v.get("credit_mid"),
             fees=v.get("fees"), strike_step=v.get("strike_step"),
-            gate_passed=gate_passed, source=source)
+            gate_passed=gate_passed, source=source,
+            collapsed_with=v.get("collapsed_with"))
         logged.append(v["variant"])
     if logged:
         logger.info(f"Variant-log {setup.ticker} ({'gated' if gate_passed else 'baseline'}): "

@@ -159,6 +159,26 @@ def build_variants(trader, setup, settings, diagnostics: Optional[dict] = None) 
         if name not in specs:
             drop(name, "unavailable_strikes")
 
+    # Collapsed shapes. When the listed strike grid is coarse relative to the
+    # implied move, different target multiples round onto the SAME four strikes —
+    # CTAS priced 1.0σ and 1.3σ identically ($1.14 credit, $391 max loss). Those
+    # rows are still honest observations of what each shape achieved, but they
+    # carry no information about which shape is better, and leaving them
+    # untagged biases the comparison toward "distance doesn't matter". Tag the
+    # later duplicate so the analysis can exclude non-discriminating events.
+    collapsed: dict = {}
+    seen: dict = {}
+    for name in VARIANTS:                      # fixed order ⇒ deterministic canonical pick
+        s = specs.get(name)
+        if not s:
+            continue
+        key = (s.get("short_put"), s.get("long_put"),
+               s.get("short_call"), s.get("long_call"))
+        if key in seen:
+            collapsed[name] = seen[key]
+        else:
+            seen[key] = name
+
     # One quotes call for every symbol we touched.
     syms = set()
     for s in specs.values():
@@ -228,9 +248,11 @@ def build_variants(trader, setup, settings, diagnostics: Optional[dict] = None) 
         out.append({"variant": name, "expiry": exp_str, "strikes": s,
                     "credit": round(credit, 2), "credit_mid": round(credit_mid, 2),
                     "fees": fees, "n_legs": n_legs, "strike_step": strike_step,
-                    "max_loss": max_loss})
+                    "max_loss": max_loss, "collapsed_with": collapsed.get(name)})
     if diagnostics is not None:
         diagnostics["priced"] = len(out)
+        diagnostics["collapsed"] = {k: v for k, v in collapsed.items()
+                                    if k in {o["variant"] for o in out}}
     return out
 
 

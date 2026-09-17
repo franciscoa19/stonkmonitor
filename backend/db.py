@@ -356,6 +356,10 @@ CREATE TABLE IF NOT EXISTS iv_variant_evals (
     -- Curated execution universe or measurement-only expansion. Keeping this
     -- provenance makes it possible to test the gates in each population.
     source         TEXT NOT NULL DEFAULT 'watchlist',
+    -- Set when a coarse strike grid rounded this shape onto strikes already
+    -- used by an earlier variant: a real observation, but one that says nothing
+    -- about which shape is better. Excluded from shape-vs-shape comparisons.
+    collapsed_with TEXT,
     resolve_after  TEXT,
     resolved       INTEGER DEFAULT 0,
     exit_spot      REAL,                   -- underlying close on the option's expiry
@@ -397,7 +401,8 @@ _MIGRATIONS = {
     "iv_variant_evals":  {"credit_mid": "REAL", "fees": "REAL", "strike_step": "REAL",
                           "gate_passed": "INTEGER", "pin_risk": "INTEGER",
                           "pricing_model": "TEXT",
-                          "source": "TEXT NOT NULL DEFAULT 'watchlist'"},
+                          "source": "TEXT NOT NULL DEFAULT 'watchlist'",
+                          "collapsed_with": "TEXT"},
 }
 
 
@@ -412,6 +417,7 @@ class Database:
         await self._conn.executescript(SCHEMA)
         await self._migrate()
         await self._repair_open_variant_resolution_dates()
+        await self._backfill_collapsed_variants()
         await self._conn.commit()
         logger.info(f"Database ready: {self.path}")
 
@@ -448,6 +454,43 @@ class Database:
                             cur.rowcount)
         except Exception as e:
             logger.error(f"Variant pricing-model migration failed: {e}")
+
+    async def _backfill_collapsed_variants(self):
+        """Tag pre-existing rows whose strikes duplicate an earlier shape.
+
+        The collapse was always a property of these rows — only the column is
+        new. Without the backfill the first logged events (CTAS priced 1.0σ and
+        1.3σ on identical 195/205 strikes) would silently count as independent
+        evidence about which shape is better.
+        """
+        try:
+            from signals.iv_variants import VARIANTS
+            order = {v: i for i, v in enumerate(VARIANTS)}
+            async with self._conn.execute(
+                """SELECT id, ticker, earnings_date, expiry, variant,
+                          short_put, long_put, short_call, long_call
+                   FROM iv_variant_evals WHERE collapsed_with IS NULL"""
+            ) as cur:
+                rows = await cur.fetchall()
+            groups: dict = {}
+            for r in rows:
+                groups.setdefault(
+                    (r["ticker"], r["earnings_date"], r["expiry"]), []).append(r)
+            updates = []
+            for grp in groups.values():
+                seen: dict = {}
+                for r in sorted(grp, key=lambda x: order.get(x["variant"], 99)):
+                    key = (r["short_put"], r["long_put"], r["short_call"], r["long_call"])
+                    if key in seen:
+                        updates.append((seen[key], r["id"]))
+                    else:
+                        seen[key] = r["variant"]
+            if updates:
+                await self._conn.executemany(
+                    "UPDATE iv_variant_evals SET collapsed_with=? WHERE id=?", updates)
+                logger.info(f"Migration: tagged {len(updates)} collapsed variant rows")
+        except Exception as e:
+            logger.error(f"Collapsed-variant backfill failed: {e}")
 
     async def _repair_open_variant_resolution_dates(self):
         """Move legacy variant rows to an expiry-based settlement schedule.
@@ -742,7 +785,8 @@ class Database:
                                   strike_step: Optional[float] = None,
                                   gate_passed: bool = True,
                                   pricing_model: Optional[str] = None,
-                                  source: str = "watchlist") -> None:
+                                  source: str = "watchlist",
+                                  collapsed_with: Optional[str] = None) -> None:
         # Do not accidentally certify a direct/legacy call that did not record
         # both the reference mid and explicit commission assumption.
         pricing_model = pricing_model or (
@@ -757,8 +801,8 @@ class Database:
                  (ticker, earnings_date, signal_date, expiry, variant, spot,
                   implied_move_pct, short_put, long_put, short_call, long_call,
                   credit, credit_mid, fees, strike_step, pricing_model, gate_passed,
-                  source, max_loss, resolve_after, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  source, collapsed_with, max_loss, resolve_after, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, earnings_date, now[:10], expiry, variant, round(spot, 2),
              round(implied_move_pct, 2), strikes.get("short_put"), strikes.get("long_put"),
              strikes.get("short_call"), strikes.get("long_call"),
@@ -766,7 +810,7 @@ class Database:
              (round(credit_mid, 2) if credit_mid is not None else None),
              (round(fees, 2) if fees is not None else None),
              strike_step, pricing_model, 1 if gate_passed else 0,
-             source,
+             source, collapsed_with,
              (round(max_loss, 2) if max_loss is not None else None),
              resolve_after, now))
 
@@ -851,13 +895,20 @@ class Database:
              datetime.utcnow().isoformat(), eval_id))
 
     async def get_variant_summary(self, gate_passed: Optional[bool] = True,
-                                  source: Optional[str] = None) -> list[dict]:
+                                  source: Optional[str] = None,
+                                  distinct_only: bool = False) -> list[dict]:
         """Full metric set per variant over resolved events, best expectancy first.
 
         `gate_passed=True` scores only setups that cleared the three scanner
         gates; False scores the indiscriminate "sell everything" baseline; None
         scores everything. Comparing True vs False is the experiment that decides
         whether the gates earn their keep (VALIDATION_SPEC §4).
+
+        `distinct_only` drops rows whose strikes collapsed onto an earlier
+        shape. Use it when comparing shapes against each other: a collapsed row
+        is the same structure under two names, so including it drags the
+        comparison toward "no difference" for reasons of strike granularity
+        rather than strategy. Each result reports `collapsed_n` either way.
         """
         from backtest.metrics import compute_metrics
         where = "WHERE resolved=1 AND pricing_model=?"
@@ -870,11 +921,13 @@ class Database:
                 raise ValueError(f"unknown variant source: {source}")
             where += " AND source=?"
             params += (source,)
+        if distinct_only:
+            where += " AND collapsed_with IS NULL"
         rows = await self._query(
             # max_drawdown is path-dependent, so this event order is part of
             # the metric definition rather than cosmetic presentation sorting.
             f"""SELECT variant, realized_pnl, max_loss, pin_risk, credit,
-                       implied_move_pct, spot, exit_spot
+                       implied_move_pct, spot, exit_spot, collapsed_with
                 FROM iv_variant_evals {where}
                 ORDER BY COALESCE(expiry, resolved_at, signal_date), id""", params)
 
@@ -901,6 +954,9 @@ class Database:
                 "avg_ror_pct": (round(sum(rors) / len(rors), 1) if rors else None),
                 "n": m["n_events"],
                 "pin_events": sum(1 for e in evs if e["pin_risk"]),
+                # How many of these events were the same structure under
+                # another name — i.e. carried no shape information.
+                "collapsed_n": sum(1 for e in evs if e["collapsed_with"]),
             })
             out.append(m)
         out.sort(key=lambda x: (x["expectancy"] is None, -(x["expectancy"] or 0)))
