@@ -99,7 +99,12 @@ class AlpacaFeed:
                 start=start,
                 end=start + timedelta(days=1),
             )
-            bars = self.stock_client.get_stock_bars(req).get(ticker.upper(), [])
+            # get_stock_bars returns a BarSet — dict-like through .data, with
+            # no .get() of its own. Reaching for .get() on the BarSet silently
+            # raised and left every expiry-based evaluation unresolved.
+            resp = self.stock_client.get_stock_bars(req)
+            data = getattr(resp, "data", resp) or {}
+            bars = data.get(ticker.upper(), []) if hasattr(data, "get") else []
             for bar in reversed(bars):
                 if bar.timestamp.date() == target:
                     return float(bar.close)

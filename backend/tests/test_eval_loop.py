@@ -541,12 +541,17 @@ def test_daily_close_uses_the_requested_completed_session():
     from types import SimpleNamespace
     from feeds.alpaca_feed import AlpacaFeed
 
+    class FakeBarSet:
+        """Mirrors the real BarSet: dict access via .data, and NO .get()."""
+        def __init__(self, data):
+            self.data = data
+
     class FakeStockClient:
         def get_stock_bars(self, _request):
-            return {"NVDA": [
+            return FakeBarSet({"NVDA": [
                 SimpleNamespace(timestamp=_dt(2026, 9, 17), close=175.0),
                 SimpleNamespace(timestamp=_dt(2026, 9, 18), close=180.0),
-            ]}
+            ]})
 
     feed = AlpacaFeed.__new__(AlpacaFeed)
     feed.stock_client = FakeStockClient()
