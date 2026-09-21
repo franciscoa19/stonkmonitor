@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-18T12:15:07.274548+00:00",
+  "generated": "2026-09-21T12:02:36.997707+00:00",
   "account": {
     "equity": 50261.51,
     "cash": 50261.51,
@@ -8,7 +8,7 @@
     "total_pnl": 268.7099999999991,
     "total_pnl_pct": 0.5374973996255442,
     "open_positions": 0,
-    "days_running": 10,
+    "days_running": 13,
     "error": null
   },
   "metrics": {
@@ -68,6 +68,18 @@
     {
       "date": "2026-09-18",
       "equity": 50261.51
+    },
+    {
+      "date": "2026-09-19",
+      "equity": 50261.51
+    },
+    {
+      "date": "2026-09-20",
+      "equity": 50261.51
+    },
+    {
+      "date": "2026-09-21",
+      "equity": 50261.51
     }
   ],
   "iv_rv": {
@@ -85,27 +97,158 @@
     "open": 0,
     "pending": 0
   },
-  "iv_variants": [],
-  "iv_gate_comparison": {
-    "gated": {
-      "n_events": 0,
-      "n_wins": 0,
-      "win_rate": null,
-      "total_pnl": 0.0,
-      "expectancy": null,
+  "iv_variants": [
+    {
+      "n_events": 1,
+      "n_wins": 1,
+      "win_rate": 100.0,
+      "total_pnl": 29.8,
+      "expectancy": 29.8,
       "profit_factor": null,
-      "avg_win": null,
+      "avg_win": 29.8,
       "avg_loss": null,
       "largest_single_loss": null,
       "max_drawdown": 0.0,
       "sharpe": null,
       "sortino": null,
       "tail_ratio": null,
-      "tail_events": 0,
-      "tail_pct_effective": null,
+      "tail_events": 1,
+      "tail_pct_effective": 100.0,
+      "pct_events_exceeding_implied": 0.0,
+      "sufficient_sample": false,
+      "events_needed": 99,
+      "variant": "condor_1.0sd",
+      "avg_pnl": 29.8,
+      "avg_ror_pct": 17.5,
+      "n": 1,
+      "pin_events": 0,
+      "collapsed_n": 0
+    },
+    {
+      "n_events": 1,
+      "n_wins": 1,
+      "win_rate": 100.0,
+      "total_pnl": 20.4,
+      "expectancy": 20.4,
+      "profit_factor": null,
+      "avg_win": 20.4,
+      "avg_loss": null,
+      "largest_single_loss": null,
+      "max_drawdown": 0.0,
+      "sharpe": null,
+      "sortino": null,
+      "tail_ratio": null,
+      "tail_events": 1,
+      "tail_pct_effective": 100.0,
+      "pct_events_exceeding_implied": 0.0,
+      "sufficient_sample": false,
+      "events_needed": 99,
+      "variant": "straddle",
+      "avg_pnl": 20.4,
+      "avg_ror_pct": null,
+      "n": 1,
+      "pin_events": 0,
+      "collapsed_n": 0
+    },
+    {
+      "n_events": 1,
+      "n_wins": 1,
+      "win_rate": 100.0,
+      "total_pnl": 8.8,
+      "expectancy": 8.8,
+      "profit_factor": null,
+      "avg_win": 8.8,
+      "avg_loss": null,
+      "largest_single_loss": null,
+      "max_drawdown": 0.0,
+      "sharpe": null,
+      "sortino": null,
+      "tail_ratio": null,
+      "tail_events": 1,
+      "tail_pct_effective": 100.0,
+      "pct_events_exceeding_implied": 0.0,
+      "sufficient_sample": false,
+      "events_needed": 99,
+      "variant": "condor_1.3sd",
+      "avg_pnl": 8.8,
+      "avg_ror_pct": 4.6,
+      "n": 1,
+      "pin_events": 0,
+      "collapsed_n": 0
+    },
+    {
+      "n_events": 1,
+      "n_wins": 0,
+      "win_rate": 0.0,
+      "total_pnl": -11.2,
+      "expectancy": -11.2,
+      "profit_factor": 0.0,
+      "avg_win": null,
+      "avg_loss": -11.2,
+      "largest_single_loss": -11.2,
+      "max_drawdown": 11.2,
+      "sharpe": null,
+      "sortino": -1.0,
+      "tail_ratio": null,
+      "tail_events": 1,
+      "tail_pct_effective": 100.0,
+      "pct_events_exceeding_implied": 0.0,
+      "sufficient_sample": false,
+      "events_needed": 99,
+      "variant": "condor_0.7sd",
+      "avg_pnl": -11.2,
+      "avg_ror_pct": -7.3,
+      "n": 1,
+      "pin_events": 1,
+      "collapsed_n": 0
+    },
+    {
+      "n_events": 1,
+      "n_wins": 0,
+      "win_rate": 0.0,
+      "total_pnl": -177.2,
+      "expectancy": -177.2,
+      "profit_factor": 0.0,
+      "avg_win": null,
+      "avg_loss": -177.2,
+      "largest_single_loss": -177.2,
+      "max_drawdown": 177.2,
+      "sharpe": null,
+      "sortino": -1.0,
+      "tail_ratio": null,
+      "tail_events": 1,
+      "tail_pct_effective": 100.0,
+      "pct_events_exceeding_implied": 0.0,
+      "sufficient_sample": false,
+      "events_needed": 99,
+      "variant": "fly",
+      "avg_pnl": -177.2,
+      "avg_ror_pct": -80.5,
+      "n": 1,
+      "pin_events": 0,
+      "collapsed_n": 0
+    }
+  ],
+  "iv_gate_comparison": {
+    "gated": {
+      "n_events": 1,
+      "n_wins": 1,
+      "win_rate": 100.0,
+      "total_pnl": 29.8,
+      "expectancy": 29.8,
+      "profit_factor": null,
+      "avg_win": 29.8,
+      "avg_loss": null,
+      "largest_single_loss": null,
+      "max_drawdown": 0.0,
+      "sharpe": null,
+      "sortino": null,
+      "tail_ratio": null,
+      "tail_events": 1,
+      "tail_pct_effective": 100.0,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": false,
-      "events_needed": 100
+      "events_needed": 99
     },
     "ungated": {
       "n_events": 0,
@@ -140,6 +283,11 @@
   "recent": [],
   "open_positions": [],
   "proposals": [
-    "No closed trades in 10 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
+    "Watchlist ADD: PDD \u2014 52 signals in 14d, not watchlisted.",
+    "Watchlist ADD: TSM \u2014 52 signals in 14d, not watchlisted.",
+    "Watchlist ADD: GEV \u2014 19 signals in 14d, not watchlisted.",
+    "Watchlist ADD: NEM \u2014 15 signals in 14d, not watchlisted.",
+    "Watchlist ADD: WDC \u2014 15 signals in 14d, not watchlisted.",
+    "No closed trades in 13 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
   ]
 }
