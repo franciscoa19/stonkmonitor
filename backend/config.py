@@ -79,8 +79,14 @@ class Settings(BaseSettings):
     # is useful for plumbing and research, but is not evidence of an IV/RV edge.
     iv_exec_allow_consider: bool = Field(False, env="IV_EXEC_ALLOW_CONSIDER")
     iv_exec_entry_days_before: int = Field(2, env="IV_EXEC_ENTRY_DAYS_BEFORE")   # enter when earnings ≤ N days out
-    iv_exec_risk_pct: float = Field(0.015, env="IV_EXEC_RISK_PCT")               # 1.5% of equity max loss per condor (defined risk)
-    iv_exec_max_risk_usd: float = Field(1500.0, env="IV_EXEC_MAX_RISK_USD")      # absolute max-loss cap per condor
+    # 10% of equity max loss per condor (owner's call, 2026-09-22). Defined risk,
+    # so the loss really is capped — but note iv_exec_max_positions multiplies it:
+    # 10% x 5 concurrent = 50% of the account at risk at once, and earnings
+    # condors are NOT independent (a macro gap can hit several together).
+    iv_exec_risk_pct: float = Field(0.10, env="IV_EXEC_RISK_PCT")
+    # Absolute ceiling. Must stay above equity*risk_pct or it silently binds and
+    # the configured percentage quietly does nothing.
+    iv_exec_max_risk_usd: float = Field(6000.0, env="IV_EXEC_MAX_RISK_USD")
     iv_exec_wing_width_pct: float = Field(0.03, env="IV_EXEC_WING_WIDTH_PCT")    # protective wing = 3% of underlying beyond short
     iv_exec_short_move_mult: float = Field(1.0, env="IV_EXEC_SHORT_MOVE_MULT")   # short strikes at 1.0× the implied move
     iv_exec_max_positions: int = Field(5, env="IV_EXEC_MAX_POSITIONS")           # concurrent condors

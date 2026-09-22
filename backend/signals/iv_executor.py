@@ -107,9 +107,17 @@ def build_iron_condor(trader, setup, equity: float, settings) -> dict:
     if len(call_strikes) < 2 or len(put_strikes) < 2:
         return {"ok": False, "reason": "thin chain"}
 
-    # Short strikes at the implied move; long wings a fixed % of spot beyond them.
+    # Short strikes at the implied move; long wings beyond them.
     move = spot * em * settings.iv_exec_short_move_mult
-    wing = spot * settings.iv_exec_wing_width_pct
+    # Wing width IS the risk knob: max loss = (width - credit) * 100. Taking a
+    # flat % of spot makes that scale with share price, so a $943 stock demanded
+    # a $28-wide spread (~$2,830 at risk) while a $160 one needed $4.80 — which
+    # silently rejected every expensive name regardless of how good the setup
+    # was. Cap the wing at what the risk budget can actually carry so the
+    # structure is sized to the account, not to the share price.
+    risk_budget = min(equity * settings.iv_exec_risk_pct, settings.iv_exec_max_risk_usd)
+    affordable_wing = risk_budget / CONTRACT_MULTIPLIER
+    wing = min(spot * settings.iv_exec_wing_width_pct, affordable_wing)
     short_call = _nearest([k for k in call_strikes if k >= spot + move], spot + move) \
         or _nearest([k for k in call_strikes if k > spot], spot + move)
     short_put = _nearest([k for k in put_strikes if k <= spot - move], spot - move) \
@@ -146,7 +154,6 @@ def build_iron_condor(trader, setup, equity: float, settings) -> dict:
     max_loss_per = (width - credit) * CONTRACT_MULTIPLIER
     if max_loss_per <= 0:
         return {"ok": False, "reason": "non-positive max loss"}
-    risk_budget = min(equity * settings.iv_exec_risk_pct, settings.iv_exec_max_risk_usd)
     qty = int(risk_budget // max_loss_per)
     if qty < 1:
         return {"ok": False, "reason": f"one spread (${max_loss_per:.0f}) exceeds risk budget ${risk_budget:.0f}"}
