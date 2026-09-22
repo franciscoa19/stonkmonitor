@@ -89,7 +89,11 @@ class Settings(BaseSettings):
     iv_exec_max_risk_usd: float = Field(6000.0, env="IV_EXEC_MAX_RISK_USD")
     iv_exec_wing_width_pct: float = Field(0.03, env="IV_EXEC_WING_WIDTH_PCT")    # protective wing = 3% of underlying beyond short
     iv_exec_short_move_mult: float = Field(1.0, env="IV_EXEC_SHORT_MOVE_MULT")   # short strikes at 1.0× the implied move
-    iv_exec_max_positions: int = Field(5, env="IV_EXEC_MAX_POSITIONS")           # concurrent condors
+    # 3, not 5: at 10% risk per condor this caps simultaneous exposure at 30% of
+    # the account rather than 50%. Earnings condors are not independent — a macro
+    # gap can push several toward max loss at once — so the concurrency limit is
+    # the real portfolio control, not the per-trade cap.
+    iv_exec_max_positions: int = Field(3, env="IV_EXEC_MAX_POSITIONS")
     iv_exec_max_per_day: int = Field(4, env="IV_EXEC_MAX_PER_DAY")               # new condors per day
     iv_exec_tp_pct: float = Field(0.5, env="IV_EXEC_TP_PCT")                     # close at 50% of max credit captured
     iv_exec_min_credit: float = Field(0.10, env="IV_EXEC_MIN_CREDIT")           # skip if net credit < $0.10 (not worth it)
