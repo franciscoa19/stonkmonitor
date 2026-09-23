@@ -1,14 +1,14 @@
 {
-  "generated": "2026-09-22T12:14:30.887610+00:00",
+  "generated": "2026-09-23T12:04:30.368799+00:00",
   "account": {
-    "equity": 50261.51,
-    "cash": 50261.51,
-    "buying_power": 201046.04,
+    "equity": 49987.13,
+    "cash": 51289.13,
+    "buying_power": 185156.52,
     "start_equity": 49992.8,
-    "total_pnl": 268.7099999999991,
-    "total_pnl_pct": 0.5374973996255442,
-    "open_positions": 0,
-    "days_running": 14,
+    "total_pnl": -5.67000000000553,
+    "total_pnl_pct": -0.011341633195191166,
+    "open_positions": 4,
+    "days_running": 15,
     "error": null
   },
   "metrics": {
@@ -83,7 +83,11 @@
     },
     {
       "date": "2026-09-22",
-      "equity": 50261.51
+      "equity": 49987.31
+    },
+    {
+      "date": "2026-09-23",
+      "equity": 49987.13
     }
   ],
   "iv_rv": {
@@ -98,7 +102,7 @@
     "wins": 2,
     "win_rate": 100.0,
     "total_pnl": 270.0,
-    "open": 0,
+    "open": 1,
     "pending": 0
   },
   "iv_variants": [
@@ -276,17 +280,44 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 3,
-    "structures_attempted": 15,
-    "structures_priced": 15,
-    "priced_pct": 100.0,
-    "dropped_variants": {}
+    "events": 6,
+    "structures_attempted": 30,
+    "structures_priced": 20,
+    "priced_pct": 66.7,
+    "dropped_variants": {
+      "condor_0.7sd": 2,
+      "condor_1.0sd": 2,
+      "condor_1.3sd": 2,
+      "fly": 2,
+      "straddle": 2
+    }
   },
   "by_strategy": [],
   "by_hour": [],
   "recent": [],
-  "open_positions": [],
+  "open_positions": [
+    {
+      "symbol": "COST260925C00930000",
+      "qty": -2.0,
+      "pnl": 0.0
+    },
+    {
+      "symbol": "COST260925C00955000",
+      "qty": 2.0,
+      "pnl": 0.0
+    },
+    {
+      "symbol": "COST260925P00845000",
+      "qty": 2.0,
+      "pnl": 0.0
+    },
+    {
+      "symbol": "COST260925P00870000",
+      "qty": -2.0,
+      "pnl": 0.0
+    }
+  ],
   "proposals": [
-    "No closed trades in 14 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
+    "No closed trades in 15 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
   ]
 }
