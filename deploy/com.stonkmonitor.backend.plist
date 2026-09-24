@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.stonkmonitor.backend</string>
+
+    <!-- WorkingDirectory matters: config.py reads .env relative to cwd. -->
+    <key>WorkingDirectory</key>
+    <string>/Users/franciscoesqueda/Claude/stonkmonitor/backend</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/franciscoesqueda/Claude/stonkmonitor/backend/venv/bin/uvicorn</string>
+        <string>main:app</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
+        <string>--port</string>
+        <string>8000</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Restart whether it crashed or exited cleanly: an earnings condor left
+         unmanaged through its post-print exit is the failure this prevents. -->
+    <key>KeepAlive</key>
+    <true/>
+    <!-- Don't hot-loop if it dies on startup (bad .env, port taken, etc.). -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/franciscoesqueda/Claude/stonkmonitor/backend/logs/backend.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/franciscoesqueda/Claude/stonkmonitor/backend/logs/backend.log</string>
+</dict>
+</plist>
