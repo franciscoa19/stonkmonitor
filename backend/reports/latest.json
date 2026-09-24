@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-24T02:41:24.411317+00:00",
+  "generated": "2026-09-24T12:05:05.048996+00:00",
   "account": {
     "equity": 49787.13,
     "cash": 51289.13,
@@ -8,7 +8,7 @@
     "total_pnl": -205.67000000000553,
     "total_pnl_pct": -0.41139924149078566,
     "open_positions": 4,
-    "days_running": 15,
+    "days_running": 16,
     "error": null
   },
   "metrics": {
@@ -87,6 +87,10 @@
     },
     {
       "date": "2026-09-23",
+      "equity": 49787.13
+    },
+    {
+      "date": "2026-09-24",
       "equity": 49787.13
     }
   ],
@@ -280,15 +284,21 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 6,
-    "structures_attempted": 30,
+    "events": 8,
+    "structures_attempted": 40,
     "structures_priced": 30,
-    "priced_pct": 100.0,
-    "dropped_variants": {}
+    "priced_pct": 75.0,
+    "dropped_variants": {
+      "condor_0.7sd": 2,
+      "condor_1.0sd": 2,
+      "condor_1.3sd": 2,
+      "fly": 2,
+      "straddle": 2
+    }
   },
   "heartbeat": {
-    "last_seen": "2026-09-24T02:34:31.935924",
-    "age_minutes": 6.9,
+    "last_seen": "2026-09-24T11:23:14.012838",
+    "age_minutes": 41.9,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -319,6 +329,6 @@
     }
   ],
   "proposals": [
-    "No closed trades in 15 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
+    "No closed trades in 16 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
   ]
 }
