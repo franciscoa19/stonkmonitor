@@ -56,3 +56,6 @@ desktop.ini
 # Generated daily report HTML (regenerable); the data exports below are tracked
 # as the durable history/backup: history.jsonl, trades.csv, latest.json.
 backend/reports/*.html
+
+# runtime logs (was /tmp, which the OS wipes on reboot)
+backend/logs/
