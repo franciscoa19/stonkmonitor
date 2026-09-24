@@ -132,6 +132,11 @@ class Settings(BaseSettings):
     iv_measure_max_per_cycle: int = Field(25, env="IV_MEASURE_MAX_PER_CYCLE")        # bounded scan load
     iv_measure_interval_hours: int = Field(6, env="IV_MEASURE_INTERVAL_HOURS")
 
+    # Liveness rail. The equity loop writes hourly; if its last write is older
+    # than this the daily report says so loudly instead of rendering a normal
+    # page over a dead backend.
+    heartbeat_stale_minutes: int = Field(180, env="HEARTBEAT_STALE_MINUTES")
+
     # --- Daily report scheduler ---
     report_enabled: bool = Field(True, env="REPORT_ENABLED")
     report_hour_et: int = Field(8, env="REPORT_HOUR_ET")   # weekday hour (ET) for the daily check-in

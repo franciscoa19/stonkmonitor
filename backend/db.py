@@ -298,7 +298,11 @@ CREATE TABLE IF NOT EXISTS daily_equity (
     buying_power  REAL,
     open_positions INTEGER,
     realized_pnl_day REAL,            -- realized P&L booked that day (from trade_performance)
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    -- Touched on EVERY hourly upsert (created_at only marks the day's first).
+    -- This is the liveness heartbeat: a process that is up but wedged stops
+    -- moving this while looking identical to a quiet day.
+    updated_at    TEXT
 );
 
 -- ── IV/RV earnings execution (Phase 2): defined-risk iron condors ──
@@ -396,7 +400,7 @@ CREATE INDEX IF NOT EXISTS idx_variant_attempt_source
 _MIGRATIONS = {
     "pending_trades":    {"strategy": "TEXT"},
     "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL"},
-    "daily_equity":      {"open_equity": "REAL"},
+    "daily_equity":      {"open_equity": "REAL", "updated_at": "TEXT"},
     "iv_rv_evals":       {"earnings_date": "TEXT"},
     "iv_variant_evals":  {"credit_mid": "REAL", "fees": "REAL", "strike_step": "REAL",
                           "gate_passed": "INTEGER", "pin_risk": "INTEGER",
@@ -571,19 +575,51 @@ class Database:
                                   buying_power: float = 0.0, open_positions: int = 0,
                                   realized_pnl_day: float = 0.0) -> None:
         """Upsert one day's equity snapshot (idempotent on date)."""
+        now = datetime.utcnow().isoformat()
         # open_equity is set on the first snapshot of the day and never updated,
         # so it preserves the day's true open (the hourly upsert only moves `equity`).
         await self._exec(
             """INSERT INTO daily_equity
-                 (date, equity, open_equity, cash, buying_power, open_positions, realized_pnl_day, created_at)
-               VALUES (?,?,?,?,?,?,?,?)
+                 (date, equity, open_equity, cash, buying_power, open_positions, realized_pnl_day, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
                ON CONFLICT(date) DO UPDATE SET
                  equity=excluded.equity, cash=excluded.cash,
                  buying_power=excluded.buying_power, open_positions=excluded.open_positions,
-                 realized_pnl_day=excluded.realized_pnl_day""",
+                 realized_pnl_day=excluded.realized_pnl_day,
+                 updated_at=excluded.updated_at""",
             (date_str, equity, equity, cash, buying_power, open_positions, realized_pnl_day,
-             datetime.utcnow().isoformat()),
+             now, now),
         )
+
+    async def get_heartbeat(self, stale_after_minutes: int = 180) -> dict:
+        """Is the hourly loop actually running?
+
+        launchd restarts a process that DIES. It cannot tell that a process
+        which is still up has stopped doing work — a wedged event loop, a hung
+        broker call. That failure is invisible: the report renders, the account
+        still reads, and a silent outage looks exactly like a quiet day. The
+        equity upsert runs hourly, so the age of its updated_at is the cheapest
+        honest liveness signal we have.
+        """
+        row = await self._scalar(
+            "SELECT MAX(COALESCE(updated_at, created_at)) AS last_seen FROM daily_equity")
+        last = (row or {}).get("last_seen")
+        if not last:
+            return {"last_seen": None, "age_minutes": None, "stale": True,
+                    "threshold_minutes": stale_after_minutes,
+                    "note": "no equity snapshot has ever been written"}
+        try:
+            age = (datetime.utcnow() - datetime.fromisoformat(last)).total_seconds() / 60.0
+        except (TypeError, ValueError):
+            return {"last_seen": last, "age_minutes": None, "stale": True,
+                    "threshold_minutes": stale_after_minutes,
+                    "note": "unparseable heartbeat timestamp"}
+        age = max(0.0, age)
+        stale = age > stale_after_minutes
+        return {"last_seen": last, "age_minutes": round(age, 1), "stale": stale,
+                "threshold_minutes": stale_after_minutes,
+                "note": (f"hourly loop last wrote {age/60:.1f}h ago — expected hourly"
+                         if stale else "hourly loop is current")}
 
     async def get_daily_equity(self, limit: int = 60) -> list[dict]:
         rows = await self._query(

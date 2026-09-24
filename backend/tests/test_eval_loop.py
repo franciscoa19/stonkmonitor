@@ -1026,3 +1026,47 @@ async def test_condor_db_lifecycle(db):
     assert await db.has_open_condor("NVDA") is False
     s = await db.get_condor_summary()
     assert s["closed"] == 1 and s["wins"] == 1 and s["total_pnl"] == 55.0 and s["open"] == 0
+
+
+# ── Liveness heartbeat (launchd restarts a dead process; this catches a wedged one) ──
+async def test_heartbeat_detects_a_stalled_loop(db):
+    from datetime import datetime as _dtm, timedelta as _tdm
+    # Nothing written yet → stale, and say so rather than implying health.
+    cold = await db.get_heartbeat(180)
+    assert cold["stale"] is True and cold["last_seen"] is None
+
+    await db.record_daily_equity("2026-09-23", 50000.0)
+    fresh = await db.get_heartbeat(180)
+    assert fresh["stale"] is False and fresh["age_minutes"] < 5
+
+    # The hourly upsert must move updated_at, not just created_at — otherwise a
+    # wedged loop looks alive forever because the day's first write never ages.
+    stale_ts = (_dtm.utcnow() - _tdm(hours=9)).isoformat()
+    await db._exec("UPDATE daily_equity SET updated_at=? WHERE date=?",
+                   (stale_ts, "2026-09-23"))
+    stalled = await db.get_heartbeat(180)
+    assert stalled["stale"] is True
+    assert 530 < stalled["age_minutes"] < 550        # ~9h
+    assert "expected hourly" in stalled["note"]
+
+    # A later pass clears it.
+    await db.record_daily_equity("2026-09-23", 50123.0)
+    assert (await db.get_heartbeat(180))["stale"] is False
+
+
+async def test_stale_heartbeat_renders_a_warning_banner(db):
+    """A silent outage must not render as a normal-looking report.
+
+    Built from a real build_report_data payload rather than a hand-rolled dict,
+    so this cannot rot into a KeyError chase every time the report grows a field.
+    """
+    await db.record_daily_equity("2026-09-23", 50000.0)
+    base = await build_report_data(db, FakeTrader())
+
+    stale = render_html({**base, "heartbeat": {"stale": True, "age_minutes": 540.0,
+                                               "threshold_minutes": 180, "last_seen": "x"}})
+    assert "BACKEND MAY BE DOWN" in stale and "9.0 hours ago" in stale
+
+    ok = render_html({**base, "heartbeat": {"stale": False, "age_minutes": 12.0,
+                                            "threshold_minutes": 180, "last_seen": "x"}})
+    assert "BACKEND MAY BE DOWN" not in ok and "heartbeat OK" in ok

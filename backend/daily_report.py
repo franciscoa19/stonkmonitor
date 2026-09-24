@@ -101,6 +101,12 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
     except Exception:
         iv_gate_cmp = {}
     try:
+        from config import get_settings as _gs
+        heartbeat = await db.get_heartbeat(_gs().heartbeat_stale_minutes)
+    except Exception as e:
+        heartbeat = {"last_seen": None, "age_minutes": None, "stale": True,
+                     "threshold_minutes": 180, "note": f"heartbeat unavailable: {e}"}
+    try:
         iv_quote_coverage = await db.get_variant_quote_coverage()
     except Exception:
         iv_quote_coverage = {"events": 0, "structures_attempted": 0,
@@ -186,6 +192,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         "iv_variants": iv_variants,
         "iv_gate_comparison": iv_gate_cmp,
         "iv_quote_coverage": iv_quote_coverage,
+        "heartbeat": heartbeat,
         "by_strategy": [dict(r) for r in by_strategy],
         "by_hour": [dict(r) for r in by_hour],
         "recent": recent,
@@ -302,6 +309,23 @@ def render_html(d: dict) -> str:
                                      "total_pnl": 0.0, "open": 0, "pending": 0})
     variants = d.get("iv_variants", []) or []
     gate_cmp = d.get("iv_gate_comparison", {}) or {}
+    hb = d.get("heartbeat", {}) or {}
+    if hb.get("stale"):
+        age = hb.get("age_minutes")
+        age_txt = (f"{age/60:.1f} hours ago" if isinstance(age, (int, float))
+                   else "never")
+        _hb_banner = (
+            "<div style=\"background:#7f1d1d;color:#fff;padding:12px 14px;border-radius:6px;"
+            "margin-bottom:16px;font-size:14px\"><b>&#9888; BACKEND MAY BE DOWN.</b> "
+            f"The hourly equity loop last wrote <b>{_html.escape(age_txt)}</b> "
+            f"(threshold {hb.get('threshold_minutes')} min). "
+            "Numbers below are STALE and open positions may be unmanaged. "
+            "Check the backend before trusting this report.</div>")
+    else:
+        age = hb.get("age_minutes")
+        _hb_banner = ("<div class=\"mut\" style=\"font-size:11px;margin-bottom:10px\">"
+                      f"heartbeat OK &middot; equity loop wrote {age:.0f} min ago</div>"
+                      if isinstance(age, (int, float)) else "")
     quote_coverage = d.get("iv_quote_coverage", {}) or {}
     gated, ungated = gate_cmp.get("gated", {}), gate_cmp.get("ungated", {})
 
@@ -477,6 +501,7 @@ def render_html(d: dict) -> str:
   .note{{font-size:11px;color:var(--muted);border-top:1px solid var(--border);padding-top:14px;margin-top:8px;line-height:1.6}}
 </style>
 <div class="wrap">
+  {_hb_banner}
   <header>
     <div><div class="eyebrow">StonkMonitor · Paper Eval Loop</div><h1>Daily Check-in — {e(date_label)}</h1></div>
     <div style="text-align:right"><span class="pill {act_cls}">{e(act['tag'])}</span>
