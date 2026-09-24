@@ -20,13 +20,31 @@ The local backend generates its report at 08:00 ET and git-pushes it. This
 routine reads that pushed data and delivers it. Do NOT try to reach localhost —
 it is not reachable from here. Git is the only bridge.
 
-=== STEP 1: READ THE DATA ===
-From the checked-out repo:
+=== STEP 1: GET THE REPO — DO NOT ASSUME A CHECKOUT EXISTS ===
+This scheduled session may start with no repo checked out. Do not wait for one
+and do not ask. Acquire it yourself, every run:
+
+  If a stonkmonitor checkout is already present, cd into it and run:
+      git pull --ff-only
+  Otherwise clone it fresh:
+      git clone --depth 1 https://github.com/franciscoa19/stonkmonitor.git
+      cd stonkmonitor
+
+The repo is PUBLIC (~400 KB) so no credentials, token, or SSH key is needed —
+an anonymous HTTPS clone works. Use --depth 1; history is irrelevant here and a
+shallow clone is fast.
+
+If the clone fails, do not stop silently: send the email anyway with
+*** WARNING: COULD NOT REACH THE REPO — no data available today. *** as the
+first line, and say what the git error was.
+
+=== STEP 2: READ THE DATA ===
+From that checkout:
   backend/reports/latest.json    — today's full report payload
   backend/reports/history.jsonl  — one row per day (equity curve)
   backend/reports/trades.csv     — every closed trade, attributed
 
-=== STEP 2: FRESHNESS CHECK — DO THIS FIRST, BEFORE WRITING ANYTHING ===
+=== STEP 3: FRESHNESS CHECK — DO THIS FIRST, BEFORE WRITING ANYTHING ===
 The backend runs on a Mac that can reboot, crash, or wedge. A silent outage
 looks exactly like a quiet trading day, so check explicitly:
 
@@ -47,7 +65,7 @@ If both are fine, add one quiet line near the bottom:
 Never omit these checks. A normal-looking email over stale data is the single
 worst failure mode of this system.
 
-=== STEP 3: COMPOSE THE EMAIL ===
+=== STEP 4: COMPOSE THE EMAIL ===
 Send to francisco.esqueda@gmail.com via the Gmail connector.
 Subject: StonkMonitor Daily — <YYYY-MM-DD> — equity $<equity> (<total_pnl_pct>%)
 
@@ -58,7 +76,7 @@ indentation only. This has broken before — do not let it regress.
 
 Include, in this order:
 
-1. Any freshness/heartbeat warning from STEP 2.
+1. Any freshness/heartbeat warning from STEP 3.
 
 2. ACCOUNT — from "account":
    equity, total_pnl, total_pnl_pct vs start_equity, cash, days_running.
@@ -103,7 +121,7 @@ Include, in this order:
 
 10. Dashboard link: https://claude.ai/code/artifact/2eac4200-625d-4669-bed0-dc5abebceb22
 
-=== STEP 4: BACK UP TO GOOGLE DRIVE ===
+=== STEP 5: BACK UP TO GOOGLE DRIVE ===
 Upload to the "StonkMonitor Backups" folder via the Google Drive connector:
   https://drive.google.com/drive/folders/1_P_jIun1bE26KydhgX0MJoJVmYJi5918
   trades_<YYYY-MM-DD>.csv    from backend/reports/trades.csv
