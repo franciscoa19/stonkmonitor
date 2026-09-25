@@ -1,14 +1,14 @@
 {
-  "generated": "2026-09-24T12:05:05.048996+00:00",
+  "generated": "2026-09-25T12:20:02.545374+00:00",
   "account": {
-    "equity": 49787.13,
+    "equity": 50015.13,
     "cash": 51289.13,
-    "buying_power": 185156.52,
+    "buying_power": 180452.52,
     "start_equity": 49992.8,
-    "total_pnl": -205.67000000000553,
-    "total_pnl_pct": -0.41139924149078566,
+    "total_pnl": 22.32999999999447,
+    "total_pnl_pct": 0.04466643196619207,
     "open_positions": 4,
-    "days_running": 16,
+    "days_running": 17,
     "error": null
   },
   "metrics": {
@@ -91,7 +91,11 @@
     },
     {
       "date": "2026-09-24",
-      "equity": 49787.13
+      "equity": 50015.13
+    },
+    {
+      "date": "2026-09-25",
+      "equity": 50015.13
     }
   ],
   "iv_rv": {
@@ -286,19 +290,15 @@
   "iv_quote_coverage": {
     "events": 8,
     "structures_attempted": 40,
-    "structures_priced": 30,
-    "priced_pct": 75.0,
+    "structures_priced": 39,
+    "priced_pct": 97.5,
     "dropped_variants": {
-      "condor_0.7sd": 2,
-      "condor_1.0sd": 2,
-      "condor_1.3sd": 2,
-      "fly": 2,
-      "straddle": 2
+      "condor_1.0sd": 1
     }
   },
   "heartbeat": {
-    "last_seen": "2026-09-24T11:23:14.012838",
-    "age_minutes": 41.9,
+    "last_seen": "2026-09-25T12:20:03.991925",
+    "age_minutes": 0.0,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -329,6 +329,6 @@
     }
   ],
   "proposals": [
-    "No closed trades in 16 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
+    "No closed trades in 17 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
   ]
 }
