@@ -107,6 +107,14 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         heartbeat = {"last_seen": None, "age_minutes": None, "stale": True,
                      "threshold_minutes": 180, "note": f"heartbeat unavailable: {e}"}
     try:
+        from config import get_settings as _gs2
+        _s = _gs2()
+        risk_state = await db.get_risk_state(_s.iv_risk_loss_factor, _s.iv_risk_win_factor,
+                                             _s.iv_risk_floor, _s.iv_risk_halt_streak)
+    except Exception as e:
+        risk_state = {"multiplier": None, "loss_streak": None, "halted": False,
+                      "halted_reason": f"risk state unavailable: {e}"}
+    try:
         implied_vs_realized = await db.get_implied_vs_realized()
     except Exception:
         implied_vs_realized = {"n_events": 0, "pct_exceeding_implied": None,
@@ -199,6 +207,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         "iv_gate_comparison": iv_gate_cmp,
         "iv_quote_coverage": iv_quote_coverage,
         "implied_vs_realized": implied_vs_realized,
+        "risk_state": risk_state,
         "heartbeat": heartbeat,
         "by_strategy": [dict(r) for r in by_strategy],
         "by_hour": [dict(r) for r in by_hour],
@@ -316,6 +325,23 @@ def render_html(d: dict) -> str:
                                      "total_pnl": 0.0, "open": 0, "pending": 0})
     variants = d.get("iv_variants", []) or []
     gate_cmp = d.get("iv_gate_comparison", {}) or {}
+    rs = d.get("risk_state", {}) or {}
+    if rs.get("halted"):
+        _risk_banner = (
+            "<div style=\"background:#7f1d1d;color:#fff;padding:12px 14px;border-radius:6px;"
+            "margin-bottom:16px;font-size:14px\"><b>&#9940; TRADING HALTED.</b> "
+            f"{_html.escape(str(rs.get('halted_reason') or 'circuit breaker tripped'))}. "
+            "No new condors will open until this is cleared deliberately. Open positions "
+            "are still managed to their exits.</div>")
+    elif (rs.get("multiplier") or 1.0) < 1.0:
+        _risk_banner = (
+            "<div style=\"background:#78350f;color:#fff;padding:10px 14px;border-radius:6px;"
+            "margin-bottom:16px;font-size:13px\"><b>Risk throttled to "
+            f"{(rs.get('multiplier') or 0)*100:.0f}% of normal size</b> after "
+            f"{rs.get('loss_streak')} consecutive loss(es). Wins ratchet it back up; "
+            f"{rs.get('halt_streak')} in a row halts entirely.</div>")
+    else:
+        _risk_banner = ""
     hb = d.get("heartbeat", {}) or {}
     if hb.get("stale"):
         age = hb.get("age_minutes")
@@ -551,6 +577,7 @@ def render_html(d: dict) -> str:
 </style>
 <div class="wrap">
   {_hb_banner}
+  {_risk_banner}
   <header>
     <div><div class="eyebrow">StonkMonitor · Paper Eval Loop</div><h1>Daily Check-in — {e(date_label)}</h1></div>
     <div style="text-align:right"><span class="pill {act_cls}">{e(act['tag'])}</span>

@@ -137,6 +137,21 @@ class Settings(BaseSettings):
     # page over a dead backend.
     heartbeat_stale_minutes: int = Field(180, env="HEARTBEAT_STALE_MINUTES")
 
+    # --- Risk throttle (anti-martingale + circuit breaker) ---
+    # Percent-of-equity sizing already shrinks the next bet after a loss, but
+    # only between sequential trades, only in integer qty steps, and not at all
+    # across concurrent positions sized off the same equity. This throttle cuts
+    # size deliberately on losses and ratchets back on wins, then halts entirely
+    # on a losing streak — the case that matters is a regime change where several
+    # earnings trades fail together, which is exactly when sizing should stop.
+    iv_risk_throttle_enabled: bool = Field(True, env="IV_RISK_THROTTLE_ENABLED")
+    iv_risk_loss_factor: float = Field(0.5, env="IV_RISK_LOSS_FACTOR")   # halve after a loss
+    iv_risk_win_factor: float = Field(2.0, env="IV_RISK_WIN_FACTOR")     # double back after a win (capped at 1.0)
+    iv_risk_floor: float = Field(0.25, env="IV_RISK_FLOOR")              # never size below 25% of normal
+    # Halting LATCHES: it requires a human to clear. An auto-resuming breaker is
+    # not a breaker — it just re-enters the same regime that tripped it.
+    iv_risk_halt_streak: int = Field(3, env="IV_RISK_HALT_STREAK")
+
     # --- Daily report scheduler ---
     report_enabled: bool = Field(True, env="REPORT_ENABLED")
     report_hour_et: int = Field(8, env="REPORT_HOUR_ET")   # weekday hour (ET) for the daily check-in

@@ -374,6 +374,19 @@ CREATE TABLE IF NOT EXISTS iv_variant_evals (
     resolved_at    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_variant_open ON iv_variant_evals(resolved, resolve_after);
+
+-- Risk throttle. Sizing is DERIVED from closed-condor history rather than kept
+-- as a counter, so it cannot drift out of sync with reality and is auditable
+-- after the fact. The only stored state is the halt latch: a circuit breaker
+-- must require a human to clear it, or it is not a circuit breaker.
+CREATE TABLE IF NOT EXISTS risk_control (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    halted        INTEGER NOT NULL DEFAULT 0,
+    halted_at     TEXT,
+    halted_reason TEXT,
+    rearmed_at    TEXT      -- streak counts only closes AFTER this
+);
+INSERT OR IGNORE INTO risk_control (id, halted) VALUES (1, 0);
 CREATE INDEX IF NOT EXISTS idx_variant_kind ON iv_variant_evals(variant, resolved);
 
 -- One latest quote-coverage observation per event/source/methodology. This
@@ -982,6 +995,61 @@ class Database:
             "avg_edge_pct": round(sum(e["edge_pct"] for e in events) / n, 2),
             "events": sorted(events, key=lambda e: e["edge_pct"]),
         }
+
+    async def get_risk_state(self, loss_factor: float = 0.5, win_factor: float = 2.0,
+                            floor: float = 0.25, halt_streak: int = 3) -> dict:
+        """Current size multiplier + loss streak, derived from closed condors.
+
+        Anti-martingale: every loss halves the next bet, every win ratchets it
+        back toward full. Derived rather than stored so it is self-healing and
+        auditable — a stored counter drifts the first time a close is replayed
+        or a row is corrected by hand.
+
+        Only closes AFTER `rearmed_at` count, so clearing a halt genuinely
+        resets the streak instead of leaving the bot one loss from re-halting.
+        """
+        ctl = await self._scalar("SELECT * FROM risk_control WHERE id=1") or {}
+        rearmed = ctl.get("rearmed_at")
+        params: tuple = ()
+        where = "WHERE status='closed' AND pnl IS NOT NULL"
+        if rearmed:
+            where += " AND closed_at > ?"
+            params = (rearmed,)
+        rows = await self._query(
+            f"SELECT ticker, pnl, closed_at FROM iv_condors {where} ORDER BY closed_at, id",
+            params)
+
+        mult, streak = 1.0, 0
+        for r in rows:
+            if (r["pnl"] or 0) < 0:
+                mult = max(floor, mult * loss_factor)
+                streak += 1
+            else:
+                mult = min(1.0, mult * win_factor)
+                streak = 0
+        return {
+            "multiplier": round(mult, 4),
+            "loss_streak": streak,
+            "halt_streak": halt_streak,
+            "halted": bool(ctl.get("halted")),
+            "halted_at": ctl.get("halted_at"),
+            "halted_reason": ctl.get("halted_reason"),
+            "rearmed_at": rearmed,
+            "closes_counted": len(rows),
+        }
+
+    async def set_halt(self, reason: str) -> None:
+        await self._exec(
+            "UPDATE risk_control SET halted=1, halted_at=?, halted_reason=? WHERE id=1",
+            (datetime.utcnow().isoformat(), reason))
+
+    async def clear_halt(self) -> None:
+        """Re-arm. Also resets the streak so the bot is not one loss from
+        re-halting the moment a human says it may trade again."""
+        await self._exec(
+            """UPDATE risk_control SET halted=0, halted_at=NULL, halted_reason=NULL,
+                 rearmed_at=? WHERE id=1""",
+            (datetime.utcnow().isoformat(),))
 
     async def get_variant_summary(self, gate_passed: Optional[bool] = True,
                                   source: Optional[str] = None,

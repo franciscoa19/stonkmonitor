@@ -63,7 +63,8 @@ def _nearest(strikes: list[float], target: float) -> Optional[float]:
     return min(strikes, key=lambda k: abs(k - target)) if strikes else None
 
 
-def build_iron_condor(trader, setup, equity: float, settings) -> dict:
+def build_iron_condor(trader, setup, equity: float, settings,
+                      risk_multiplier: float = 1.0) -> dict:
     """Return an executable iron-condor plan for `setup`, or {ok:False, reason}."""
     ticker = setup.ticker
     spot = float(setup.price or 0)
@@ -115,7 +116,11 @@ def build_iron_condor(trader, setup, equity: float, settings) -> dict:
     # silently rejected every expensive name regardless of how good the setup
     # was. Cap the wing at what the risk budget can actually carry so the
     # structure is sized to the account, not to the share price.
-    risk_budget = min(equity * settings.iv_exec_risk_pct, settings.iv_exec_max_risk_usd)
+    # risk_multiplier is the throttle: < 1.0 after losses, back to 1.0 on wins.
+    # Applied to the budget so it shrinks the WING too, not just the quantity —
+    # otherwise integer qty steps would leave sizing flat between thresholds.
+    risk_budget = min(equity * settings.iv_exec_risk_pct,
+                      settings.iv_exec_max_risk_usd) * max(0.0, risk_multiplier)
     affordable_wing = risk_budget / CONTRACT_MULTIPLIER
     wing = min(spot * settings.iv_exec_wing_width_pct, affordable_wing)
     short_call = _nearest([k for k in call_strikes if k >= spot + move], spot + move) \

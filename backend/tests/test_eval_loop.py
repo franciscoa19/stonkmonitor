@@ -1107,3 +1107,84 @@ async def test_implied_vs_realized_is_per_event_not_per_variant(db):
 async def test_implied_vs_realized_empty_is_honest(db):
     r = await db.get_implied_vs_realized()
     assert r["n_events"] == 0 and r["pct_exceeding_implied"] is None
+
+
+# ── Risk throttle: anti-martingale sizing + latching circuit breaker ─────
+async def _close_condor(db, ticker, pnl, closed_at):
+    sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+    await db.record_condor(ticker, "2026-09-16", "2026-09-18", "[]", sp,
+                           qty=1, credit=1.20, max_loss=180.0,
+                           entry_order_id=f"o{ticker}{closed_at}", entry_status="filled")
+    row = (await db._query("SELECT id FROM iv_condors ORDER BY id DESC LIMIT 1"))[0]
+    await db.close_condor(row["id"], 0.5, pnl)
+    await db._exec("UPDATE iv_condors SET closed_at=? WHERE id=?", (closed_at, row["id"]))
+
+
+async def test_risk_throttle_ladder_down_and_back_up(db):
+    st = lambda: db.get_risk_state(0.5, 2.0, 0.25, 3)
+    assert (await st())["multiplier"] == 1.0          # nothing closed yet
+
+    await _close_condor(db, "AAA", -100.0, "2026-09-20T10:00:00")
+    s1 = await st(); assert s1["multiplier"] == 0.5 and s1["loss_streak"] == 1
+
+    await _close_condor(db, "BBB", -100.0, "2026-09-21T10:00:00")
+    s2 = await st(); assert s2["multiplier"] == 0.25 and s2["loss_streak"] == 2
+
+    # Floor holds — a third loss cannot size below 25%.
+    await _close_condor(db, "CCC", -100.0, "2026-09-22T10:00:00")
+    s3 = await st(); assert s3["multiplier"] == 0.25 and s3["loss_streak"] == 3
+
+    # Wins ratchet back up and reset the streak.
+    await _close_condor(db, "DDD", 200.0, "2026-09-23T10:00:00")
+    s4 = await st(); assert s4["multiplier"] == 0.5 and s4["loss_streak"] == 0
+    await _close_condor(db, "EEE", 200.0, "2026-09-24T10:00:00")
+    assert (await st())["multiplier"] == 1.0
+    await _close_condor(db, "FFF", 200.0, "2026-09-25T10:00:00")
+    assert (await st())["multiplier"] == 1.0          # capped, never above full
+
+
+async def test_circuit_breaker_latches_until_cleared(db):
+    st = lambda: db.get_risk_state(0.5, 2.0, 0.25, 3)
+    for i, tk in enumerate(("AAA", "BBB", "CCC")):
+        await _close_condor(db, tk, -100.0, f"2026-09-2{i}T10:00:00")
+    assert (await st())["loss_streak"] == 3           # breaker condition met
+
+    await db.set_halt("3 consecutive losing condors — halted pending review")
+    h = await st()
+    assert h["halted"] is True and "consecutive" in h["halted_reason"]
+
+    # A win does NOT silently un-halt it — a breaker that resets itself is not
+    # a breaker, it just re-enters the regime that tripped it.
+    await _close_condor(db, "DDD", 500.0, "2026-09-24T10:00:00")
+    assert (await st())["halted"] is True
+
+    # Clearing re-arms AND resets the streak, so it is not one loss from
+    # re-halting the moment a human says it may trade again.
+    await db.clear_halt()
+    cleared = await st()
+    assert cleared["halted"] is False
+    assert cleared["loss_streak"] == 0 and cleared["multiplier"] == 1.0
+    assert cleared["closes_counted"] == 0             # prior history no longer counts
+
+
+def test_risk_multiplier_shrinks_the_wing_not_just_quantity():
+    """Shrinking only qty would leave sizing flat between integer thresholds."""
+    from signals.iv_executor import build_iron_condor
+    from config import get_settings
+    exp = et_today() + _timedelta(days=1)
+    strikes = [float(k) for k in range(80, 121)]
+    mids = {}
+    for k in strikes:
+        mids[("C", k)] = max(0.10, 3.0 - 0.12 * (k - 100)) if k >= 100 else 3.0
+        mids[("P", k)] = max(0.10, 3.0 - 0.12 * (100 - k)) if k <= 100 else 3.0
+    trader = FakeOptionTrader(exp, strikes, mids, equity=50000.0)
+    setup = _types.SimpleNamespace(
+        ticker="TEST", price=100.0, expected_move="10.0%", recommendation="SELL_PREMIUM",
+        next_earnings_date=et_today().isoformat())
+    s = get_settings()
+    full = build_iron_condor(trader, setup, 50000.0, s, risk_multiplier=1.0)
+    half = build_iron_condor(trader, setup, 50000.0, s, risk_multiplier=0.5)
+    assert full["ok"] and half["ok"]
+    full_risk = full["max_loss"] * full["qty"]
+    half_risk = half["max_loss"] * half["qty"]
+    assert half_risk < full_risk        # actually de-risked, not merely re-quantized

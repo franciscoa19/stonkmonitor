@@ -1185,8 +1185,26 @@ async def maybe_execute_condor(setup):
         logger.warning("IV-exec skip: no equity")
         return
 
+    # Risk throttle: size down after losses, back up after wins, and refuse
+    # outright on a losing streak. A streak is the signal that the regime moved,
+    # which is precisely when the next trade should be smaller or not happen.
+    mult = 1.0
+    if s.iv_risk_throttle_enabled:
+        rs = await db.get_risk_state(s.iv_risk_loss_factor, s.iv_risk_win_factor,
+                                     s.iv_risk_floor, s.iv_risk_halt_streak)
+        if rs["halted"]:
+            logger.warning(
+                f"IV-exec HALTED — no new condors. {rs['halted_reason']} "
+                f"(tripped {rs['halted_at']}). Clear it deliberately to resume.")
+            return
+        mult = rs["multiplier"]
+        if mult < 1.0:
+            logger.info(f"IV-exec {ticker}: throttled to {mult:.0%} of normal size "
+                        f"after {rs['loss_streak']} consecutive loss(es)")
+
     loop = asyncio.get_event_loop()
-    plan = await loop.run_in_executor(None, build_iron_condor, trader, setup, equity, s)
+    plan = await loop.run_in_executor(
+        None, build_iron_condor, trader, setup, equity, s, mult)
     if not plan.get("ok"):
         logger.info(f"IV-exec {ticker}: no condor ({plan.get('reason')})")
         return
@@ -1446,6 +1464,18 @@ async def _manage_condor(c: dict):
             await db.close_condor(cid, exit_debit, pnl)
             logger.info(f"IV-exec condor #{cid} {c['ticker']} CLOSED: "
                         f"credit ${credit:.2f} exit ${exit_debit:.2f} → P&L ${pnl:+.0f}")
+            if settings.iv_risk_throttle_enabled:
+                rs = await db.get_risk_state(
+                    settings.iv_risk_loss_factor, settings.iv_risk_win_factor,
+                    settings.iv_risk_floor, settings.iv_risk_halt_streak)
+                if rs["loss_streak"] >= settings.iv_risk_halt_streak and not rs["halted"]:
+                    reason = (f"{rs['loss_streak']} consecutive losing condors — "
+                              "halted pending review")
+                    await db.set_halt(reason)
+                    logger.error(f"IV-exec CIRCUIT BREAKER TRIPPED: {reason}")
+                elif pnl < 0:
+                    logger.warning(f"IV-exec loss streak now {rs['loss_streak']}; "
+                                   f"next size {rs['multiplier']:.0%} of normal")
         elif st in ("canceled", "expired", "rejected"):
             await db._exec("UPDATE iv_condors SET status='open', close_order_id=NULL WHERE id=?", (cid,))
         return
