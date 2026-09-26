@@ -107,6 +107,12 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         heartbeat = {"last_seen": None, "age_minutes": None, "stale": True,
                      "threshold_minutes": 180, "note": f"heartbeat unavailable: {e}"}
     try:
+        implied_vs_realized = await db.get_implied_vs_realized()
+    except Exception:
+        implied_vs_realized = {"n_events": 0, "pct_exceeding_implied": None,
+                               "avg_implied_pct": None, "avg_realized_pct": None,
+                               "avg_edge_pct": None, "events": []}
+    try:
         iv_quote_coverage = await db.get_variant_quote_coverage()
     except Exception:
         iv_quote_coverage = {"events": 0, "structures_attempted": 0,
@@ -192,6 +198,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         "iv_variants": iv_variants,
         "iv_gate_comparison": iv_gate_cmp,
         "iv_quote_coverage": iv_quote_coverage,
+        "implied_vs_realized": implied_vs_realized,
         "heartbeat": heartbeat,
         "by_strategy": [dict(r) for r in by_strategy],
         "by_hour": [dict(r) for r in by_hour],
@@ -326,6 +333,48 @@ def render_html(d: dict) -> str:
         _hb_banner = ("<div class=\"mut\" style=\"font-size:11px;margin-bottom:10px\">"
                       f"heartbeat OK &middot; equity loop wrote {age:.0f} min ago</div>"
                       if isinstance(age, (int, float)) else "")
+    ivr = d.get("implied_vs_realized", {}) or {}
+
+    def _edge_card() -> str:
+        n = ivr.get("n_events") or 0
+        if not n:
+            return ("<div class=\"card\"><h2>Implied vs realized "
+                    "<span class=\"pill mut\" style=\"font-size:11px\">the structural edge</span></h2>"
+                    "<div class=\"mut\" style=\"font-size:12px\">No resolved events yet.</div></div>")
+        pct = ivr.get("pct_exceeding_implied")
+        edge = ivr.get("avg_edge_pct") or 0
+        rows = "".join(
+            f"<tr><td style='padding:2px 12px 2px 0'>{_html.escape(str(e['ticker']))}</td>"
+            f"<td style='text-align:right'>{e['implied_pct']}%</td>"
+            f"<td style='text-align:right'>{e['realized_pct']}%</td>"
+            f"<td style='text-align:right' class=\"{'down' if e['exceeded'] else 'up'}\">"
+            f"{e['edge_pct']:+.2f}%</td>"
+            f"<td style='text-align:right'>{'EXCEEDED' if e['exceeded'] else 'inside'}</td></tr>"
+            for e in ivr.get("events", []))
+        return (
+            "<div class=\"card\"><h2>Implied vs realized "
+            "<span class=\"pill mut\" style=\"font-size:11px\">the structural edge</span></h2>"
+            "<div style=\"display:flex;gap:26px;flex-wrap:wrap;font-family:var(--mono)\">"
+            "<div><div class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase\">Exceeded implied</div>"
+            f"<div style=\"font-size:22px;font-weight:700\" class=\"{'down' if (pct or 0) > 25 else 'up'}\">{pct}%</div></div>"
+            "<div><div class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase\">Avg implied</div>"
+            f"<div style=\"font-size:22px;font-weight:700\">{ivr.get('avg_implied_pct')}%</div></div>"
+            "<div><div class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase\">Avg realized</div>"
+            f"<div style=\"font-size:22px;font-weight:700\">{ivr.get('avg_realized_pct')}%</div></div>"
+            "<div><div class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase\">Avg edge</div>"
+            f"<div style=\"font-size:22px;font-weight:700\" class=\"{'up' if edge > 0 else 'down'}\">{edge:+.2f}pp</div></div>"
+            f"<div><div class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase\">Events</div>"
+            f"<div style=\"font-size:22px;font-weight:700\">{n}</div></div></div>"
+            "<table style=\"width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px;margin-top:12px\">"
+            "<tr class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase;text-align:right\">"
+            "<th style=\"text-align:left\">Event</th><th>Implied</th><th>Realized</th><th>Edge</th><th></th></tr>"
+            f"{rows}</table>"
+            "<div class=\"mut\" style=\"font-size:12px;margin-top:10px\">How often the stock moved MORE "
+            "than the options priced in. This is the premium seller's structural question and it converges "
+            "far faster than counting max-loss events, because it is observable on every print rather than "
+            "only the rare disasters. Sustained above ~25% means the premium is not rich enough and no "
+            "choice of structure fixes it.</div></div>")
+    _edge_html = _edge_card()
     quote_coverage = d.get("iv_quote_coverage", {}) or {}
     gated, ungated = gate_cmp.get("gated", {}), gate_cmp.get("ungated", {})
 
@@ -540,6 +589,8 @@ def render_html(d: dict) -> str:
     </div>
     <div class="mut" style="font-size:12px;margin-top:10px">This is separate from the legacy single-leg strategy ledger above.</div>
   </div>
+
+  {_edge_html}
 
   {_variant_card}
 

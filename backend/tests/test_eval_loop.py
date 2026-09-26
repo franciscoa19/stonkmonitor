@@ -1070,3 +1070,40 @@ async def test_stale_heartbeat_renders_a_warning_banner(db):
     ok = render_html({**base, "heartbeat": {"stale": False, "age_minutes": 12.0,
                                             "threshold_minutes": 180, "last_seen": "x"}})
     assert "BACKEND MAY BE DOWN" not in ok and "heartbeat OK" in ok
+
+
+# ── Implied vs realized: the structural edge, measured per EVENT ──────────
+async def test_implied_vs_realized_is_per_event_not_per_variant(db):
+    """All five structures on one print share the same underlying move. Counting
+    variant rows would inflate n fivefold and shrink the error bars fraudulently."""
+    sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+
+    async def seed_event(ticker, edate, spot, exit_spot, implied):
+        for variant in ("condor_0.7sd", "condor_1.0sd", "condor_1.3sd", "fly", "straddle"):
+            await db.record_variant_eval(
+                ticker, edate, "2026-09-18", variant, spot, implied, sp,
+                credit=1.20, max_loss=180.0, resolve_after="2026-09-19",
+                credit_mid=1.30, fees=5.20, strike_step=1.0)
+            row = (await db._query(
+                "SELECT id FROM iv_variant_evals ORDER BY id DESC LIMIT 1"))[0]
+            await db.resolve_variant_eval(row["id"], exit_spot, 0.0)
+
+    # AAA moved 5% against a 7% implied → seller wins. BBB moved 12% vs 6% → exceeded.
+    await seed_event("AAA", "2026-09-16", 100.0, 95.0, 7.0)
+    await seed_event("BBB", "2026-09-17", 100.0, 112.0, 6.0)
+
+    r = await db.get_implied_vs_realized()
+    assert r["n_events"] == 2                 # 2 events, NOT 10 variant rows
+    assert r["n_exceeding"] == 1
+    assert r["pct_exceeding_implied"] == 50.0
+    assert r["avg_implied_pct"] == 6.5
+    assert r["avg_realized_pct"] == 8.5       # (5.0 + 12.0) / 2
+    assert r["avg_edge_pct"] == -2.0          # implied minus realized, negative = seller lost
+    # worst edge first, so the events that beat the market are top of the list
+    assert r["events"][0]["ticker"] == "BBB" and r["events"][0]["exceeded"] is True
+    assert r["events"][1]["exceeded"] is False
+
+
+async def test_implied_vs_realized_empty_is_honest(db):
+    r = await db.get_implied_vs_realized()
+    assert r["n_events"] == 0 and r["pct_exceeding_implied"] is None

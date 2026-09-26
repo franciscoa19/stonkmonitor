@@ -930,6 +930,59 @@ class Database:
              (None if pin_risk is None else (1 if pin_risk else 0)),
              datetime.utcnow().isoformat(), eval_id))
 
+    async def get_implied_vs_realized(self, source: Optional[str] = None) -> dict:
+        """Did the stock move more than the option market priced in?
+
+        This is the structural question underneath every premium-selling
+        strategy, and it is a far better estimator than counting max-loss
+        events: the tail is what kills you, but tail events are rare, so
+        waiting to observe enough of them takes hundreds of trades. Realized-vs-
+        implied is observable on EVERY event and converges far faster.
+
+        Computed per EVENT, not per variant row. All five structures on one
+        print share the same underlying move, so averaging across rows would
+        count each event five times and shrink the error bars fraudulently.
+        """
+        where = "WHERE resolved=1 AND pricing_model=? AND spot>0 AND implied_move_pct>0"
+        params: tuple = (VALIDATED_VARIANT_PRICING_MODEL,)
+        if source is not None:
+            if source not in VARIANT_SOURCES:
+                raise ValueError(f"unknown variant source: {source}")
+            where += " AND source=?"
+            params += (source,)
+        rows = await self._query(
+            f"""SELECT ticker, earnings_date,
+                       MAX(spot) AS spot, MAX(exit_spot) AS exit_spot,
+                       MAX(implied_move_pct) AS implied
+                FROM iv_variant_evals {where}
+                GROUP BY ticker, earnings_date""", params)
+
+        events = []
+        for r in rows:
+            spot, exit_spot, implied = r["spot"] or 0, r["exit_spot"] or 0, r["implied"] or 0
+            if not (spot and exit_spot and implied):
+                continue
+            realized = abs(exit_spot / spot - 1) * 100
+            events.append({"ticker": r["ticker"], "earnings_date": r["earnings_date"],
+                           "implied_pct": round(implied, 2),
+                           "realized_pct": round(realized, 2),
+                           "edge_pct": round(implied - realized, 2),
+                           "exceeded": realized > implied})
+        n = len(events)
+        if not n:
+            return {"n_events": 0, "pct_exceeding_implied": None, "avg_implied_pct": None,
+                    "avg_realized_pct": None, "avg_edge_pct": None, "events": []}
+        exceeded = sum(1 for e in events if e["exceeded"])
+        return {
+            "n_events": n,
+            "pct_exceeding_implied": round(exceeded / n * 100, 1),
+            "n_exceeding": exceeded,
+            "avg_implied_pct": round(sum(e["implied_pct"] for e in events) / n, 2),
+            "avg_realized_pct": round(sum(e["realized_pct"] for e in events) / n, 2),
+            "avg_edge_pct": round(sum(e["edge_pct"] for e in events) / n, 2),
+            "events": sorted(events, key=lambda e: e["edge_pct"]),
+        }
+
     async def get_variant_summary(self, gate_passed: Optional[bool] = True,
                                   source: Optional[str] = None,
                                   distinct_only: bool = False) -> list[dict]:
