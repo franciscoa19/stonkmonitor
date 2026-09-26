@@ -1024,9 +1024,11 @@ class Database:
             if (r["pnl"] or 0) < 0:
                 mult = max(floor, mult * loss_factor)
                 streak += 1
-            else:
+            elif (r["pnl"] or 0) > 0:
                 mult = min(1.0, mult * win_factor)
                 streak = 0
+            # A breakeven is neither evidence that the losing regime ended nor
+            # a reason to increase size. Preserve the existing throttle/streak.
         return {
             "multiplier": round(mult, 4),
             "loss_streak": streak,

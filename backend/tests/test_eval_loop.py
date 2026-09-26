@@ -10,6 +10,7 @@ Run:  cd backend && ./venv/bin/python -m pytest -q
 import os
 import tempfile
 import pathlib
+from datetime import datetime, timezone
 import pytest
 import pytest_asyncio
 
@@ -223,7 +224,7 @@ async def test_daily_report_surfaces_empty_variant_sample_rail(db):
 
 # ── Weekly watchlist review ─────────────────────────────────────────────
 async def test_watchlist_review_add_and_remove(db):
-    now = "2026-09-03T14:30:00.000000"
+    now = datetime.now(timezone.utc).isoformat()
     # TSM (not watchlisted) generates lots of signals → should be proposed as ADD
     for i in range(10):
         await db._exec(
@@ -1104,6 +1105,33 @@ async def test_implied_vs_realized_is_per_event_not_per_variant(db):
     assert r["events"][1]["exceeded"] is False
 
 
+async def test_report_keeps_implied_realized_cohorts_separate(db):
+    """Selection-rule cohorts must never become one headline edge statistic."""
+    sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+
+    async def seed(ticker, source, exit_spot):
+        await db.record_variant_eval(
+            ticker, "2026-09-16", "2026-09-18", "condor_1.0sd", 100.0, 8.0, sp,
+            credit=1.20, max_loss=180.0, resolve_after="2026-09-19",
+            credit_mid=1.30, fees=5.20, strike_step=1.0, source=source)
+        row = (await db._query(
+            "SELECT id FROM iv_variant_evals ORDER BY id DESC LIMIT 1"))[0]
+        await db.resolve_variant_eval(row["id"], exit_spot, 0.0)
+
+    await seed("WATCH", "watchlist", 105.0)
+    await seed("MEASURE", "measurement", 112.0)
+    report_data = await build_report_data(db, FakeTrader())
+    cohorts = report_data["implied_vs_realized"]
+    assert set(cohorts) == {"watchlist", "measurement"}
+    assert cohorts["watchlist"]["n_events"] == 1
+    assert cohorts["watchlist"]["avg_realized_pct"] == 5.0
+    assert cohorts["measurement"]["n_events"] == 1
+    assert cohorts["measurement"]["avg_realized_pct"] == 12.0
+    report = render_html(report_data)
+    assert "Implied vs realized — Watchlist" in report
+    assert "Implied vs realized — Measurement" in report
+
+
 async def test_implied_vs_realized_empty_is_honest(db):
     r = await db.get_implied_vs_realized()
     assert r["n_events"] == 0 and r["pct_exceeding_implied"] is None
@@ -1141,6 +1169,17 @@ async def test_risk_throttle_ladder_down_and_back_up(db):
     assert (await st())["multiplier"] == 1.0
     await _close_condor(db, "FFF", 200.0, "2026-09-25T10:00:00")
     assert (await st())["multiplier"] == 1.0          # capped, never above full
+
+
+async def test_risk_throttle_breakeven_preserves_loss_state(db):
+    st = lambda: db.get_risk_state(0.5, 2.0, 0.25, 3)
+    await _close_condor(db, "AAA", -100.0, "2026-09-20T10:00:00")
+    await _close_condor(db, "BBB", -100.0, "2026-09-21T10:00:00")
+    before = await st()
+    await _close_condor(db, "CCC", 0.0, "2026-09-22T10:00:00")
+    after = await st()
+    assert before["multiplier"] == after["multiplier"] == 0.25
+    assert before["loss_streak"] == after["loss_streak"] == 2
 
 
 async def test_circuit_breaker_latches_until_cleared(db):

@@ -90,7 +90,13 @@ Include, in this order:
    Then state plainly: this is n=<closed> trades. An iron condor wins ~65-70%
    of the time BY CONSTRUCTION, so win rate alone proves nothing at this size.
 
-5. MEASUREMENT LAYER — from "iv_variants" (a list, one entry per structure):
+5. RISK CONTROL — from "risk_state":
+   State the current size multiplier and loss streak / halt_streak. If "halted"
+   is true, put a prominent warning at the top of the body with "halted_reason":
+   no new condors can open until a human deliberately re-arms the system. If the
+   multiplier is below 1.0, say that new condors are trading at reduced size.
+
+6. MEASUREMENT LAYER — from "iv_variants" (a list, one entry per structure):
    For each: variant, n_events, expectancy, win_rate, profit_factor,
    tail_ratio, largest_single_loss, avg_ror_pct.
    Rank by expectancy. Note collapsed_n where > 0 — those events could not tell
@@ -101,25 +107,32 @@ Include, in this order:
    good events one bad event erases. It is the number that catches a
    70%-win-rate strategy that still loses money.
 
-6. GATES vs BASELINE — from "iv_gate_comparison" ("gated" and "ungated"):
+7. GATES vs BASELINE — from "iv_gate_comparison" ("gated" and "ungated"):
    n_events, expectancy, profit_factor, tail_ratio for each.
    State the question being answered: do the three scanner gates beat selling
    every near-earnings name indiscriminately? If ungated matches gated, the
    gates are noise.
 
-7. SAMPLE RAIL — from any entry's "events_needed" / "sufficient_sample":
+8. SAMPLE RAIL — from any entry's "events_needed" / "sufficient_sample":
    State how many more resolved events are needed before these numbers mean
    anything (the rail is 100 per arm). Do NOT project a completion date.
 
-8. QUOTE COVERAGE — from "iv_quote_coverage":
+9. QUOTE COVERAGE — from "iv_quote_coverage":
    structures_priced / structures_attempted (priced_pct), and dropped_variants.
    One line: priceability is conditional on entry liquidity, not a random draw.
 
-9. PROPOSALS — from "proposals":
+10. IMPLIED vs REALIZED — from "implied_vs_realized", which is keyed by
+    "watchlist" and "measurement":
+    For each cohort separately, state n_events, avg_implied_pct,
+    avg_realized_pct, avg_edge_pct, and pct_exceeding_implied. Never combine
+    the two cohorts or call either result a whole-system conclusion: their
+    selection rules differ. If a cohort has zero events, say so.
+
+11. PROPOSALS — from "proposals":
    List them verbatim under "PROPOSED (needs your approval)".
    These are suggestions only. Never describe any change as already applied.
 
-10. Dashboard link: https://claude.ai/code/artifact/2eac4200-625d-4669-bed0-dc5abebceb22
+12. Dashboard link: https://claude.ai/code/artifact/2eac4200-625d-4669-bed0-dc5abebceb22
 
 === STEP 5: BACK UP TO GOOGLE DRIVE ===
 Upload to the "StonkMonitor Backups" folder via the Google Drive connector:

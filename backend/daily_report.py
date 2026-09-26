@@ -114,12 +114,17 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
     except Exception as e:
         risk_state = {"multiplier": None, "loss_streak": None, "halted": False,
                       "halted_reason": f"risk state unavailable: {e}"}
-    try:
-        implied_vs_realized = await db.get_implied_vs_realized()
-    except Exception:
-        implied_vs_realized = {"n_events": 0, "pct_exceeding_implied": None,
-                               "avg_implied_pct": None, "avg_realized_pct": None,
-                               "avg_edge_pct": None, "events": []}
+    # Watchlist and measurement events have distinct selection rules. Keep
+    # their implied-vs-realized observations separate; pooling them would turn
+    # a change in cohort mix into a misleading claim about structural edge.
+    implied_vs_realized = {}
+    for source in ("watchlist", "measurement"):
+        try:
+            implied_vs_realized[source] = await db.get_implied_vs_realized(source=source)
+        except Exception:
+            implied_vs_realized[source] = {"n_events": 0, "pct_exceeding_implied": None,
+                                           "avg_implied_pct": None, "avg_realized_pct": None,
+                                           "avg_edge_pct": None, "events": []}
     try:
         iv_quote_coverage = await db.get_variant_quote_coverage()
     except Exception:
@@ -359,13 +364,19 @@ def render_html(d: dict) -> str:
         _hb_banner = ("<div class=\"mut\" style=\"font-size:11px;margin-bottom:10px\">"
                       f"heartbeat OK &middot; equity loop wrote {age:.0f} min ago</div>"
                       if isinstance(age, (int, float)) else "")
-    ivr = d.get("implied_vs_realized", {}) or {}
+    edge_by_source = d.get("implied_vs_realized", {}) or {}
+    # Kept only so an older saved report can still render after deployment.
+    legacy_mixed_edge = "n_events" in edge_by_source
+    if legacy_mixed_edge:
+        edge_by_source = {"legacy mixed cohort": edge_by_source}
 
-    def _edge_card() -> str:
+    def _edge_card(source: str, ivr: dict) -> str:
+        source_label = _html.escape(source.replace("_", " ").title())
+        cohort_badge = "legacy mixed cohort" if legacy_mixed_edge else "separate cohort"
         n = ivr.get("n_events") or 0
         if not n:
-            return ("<div class=\"card\"><h2>Implied vs realized "
-                    "<span class=\"pill mut\" style=\"font-size:11px\">the structural edge</span></h2>"
+            return (f"<div class=\"card\"><h2>Implied vs realized — {source_label} "
+                    f"<span class=\"pill mut\" style=\"font-size:11px\">{cohort_badge}</span></h2>"
                     "<div class=\"mut\" style=\"font-size:12px\">No resolved events yet.</div></div>")
         pct = ivr.get("pct_exceeding_implied")
         edge = ivr.get("avg_edge_pct") or 0
@@ -378,8 +389,8 @@ def render_html(d: dict) -> str:
             f"<td style='text-align:right'>{'EXCEEDED' if e['exceeded'] else 'inside'}</td></tr>"
             for e in ivr.get("events", []))
         return (
-            "<div class=\"card\"><h2>Implied vs realized "
-            "<span class=\"pill mut\" style=\"font-size:11px\">the structural edge</span></h2>"
+            f"<div class=\"card\"><h2>Implied vs realized — {source_label} "
+            f"<span class=\"pill mut\" style=\"font-size:11px\">{cohort_badge}</span></h2>"
             "<div style=\"display:flex;gap:26px;flex-wrap:wrap;font-family:var(--mono)\">"
             "<div><div class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase\">Exceeded implied</div>"
             f"<div style=\"font-size:22px;font-weight:700\" class=\"{'down' if (pct or 0) > 25 else 'up'}\">{pct}%</div></div>"
@@ -396,11 +407,15 @@ def render_html(d: dict) -> str:
             "<th style=\"text-align:left\">Event</th><th>Implied</th><th>Realized</th><th>Edge</th><th></th></tr>"
             f"{rows}</table>"
             "<div class=\"mut\" style=\"font-size:12px;margin-top:10px\">How often the stock moved MORE "
-            "than the options priced in. This is the premium seller's structural question and it converges "
+            "than the options priced in. This is the premium seller's structural question for this cohort, and it converges "
             "far faster than counting max-loss events, because it is observable on every print rather than "
             "only the rare disasters. Sustained above ~25% means the premium is not rich enough and no "
             "choice of structure fixes it.</div></div>")
-    _edge_html = _edge_card()
+    edge_sources = ("legacy mixed cohort",) if legacy_mixed_edge else ("watchlist", "measurement")
+    _edge_html = "".join(
+        _edge_card(source, edge_by_source.get(source) or {})
+        for source in edge_sources
+    )
     quote_coverage = d.get("iv_quote_coverage", {}) or {}
     gated, ungated = gate_cmp.get("gated", {}), gate_cmp.get("ungated", {})
 
