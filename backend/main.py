@@ -1127,6 +1127,7 @@ async def maybe_execute_condor(setup):
     print is within iv_exec_entry_days_before, respecting position/day caps and a
     per-ticker one-condor rule. Logs its own outcome; returns None.
     """
+    from datetime import date as _date
     from market_time import et_now, et_today
     from signals.iv_executor import build_iron_condor, is_pre_earnings_entry_window
     s = settings
@@ -1144,8 +1145,27 @@ async def maybe_execute_condor(setup):
         s.iv_exec_entry_days_before,
         now=et_now(),
     ):
-        logger.info(f"IV-exec skip {getattr(setup, 'ticker', '?')}: "
-                    "earnings already occurred, timing unknown, or outside entry window")
+        # Distinguish the reasons. Simply being outside the entry window is the
+        # routine case for every name in the 7-day scan and says nothing — at
+        # INFO it produced hundreds of lines a day claiming prints had "already
+        # occurred" for events still days away. The event-day block is the one
+        # worth seeing: it means a print we tracked went by unsold.
+        _tk = getattr(setup, "ticker", "?")
+        _days = None
+        try:
+            _days = (_date.fromisoformat(str(getattr(setup, "next_earnings_date", None)))
+                     - et_today()).days
+        except (TypeError, ValueError):
+            pass
+        if _days == 0:
+            logger.info(f"IV-exec skip {_tk}: earnings is TODAY but entry is closed "
+                        f"(report_time={getattr(setup, 'earnings_report_time', None)!r}; "
+                        "same-day entry needs a confirmed post-close print before 16:00 ET)")
+        elif _days is None:
+            logger.info(f"IV-exec skip {_tk}: no usable earnings date")
+        else:
+            logger.debug(f"IV-exec skip {_tk}: earnings in {_days}d, outside the "
+                         f"{s.iv_exec_entry_days_before}d entry window")
         return
 
     ticker = setup.ticker
