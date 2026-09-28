@@ -1,14 +1,14 @@
 {
-  "generated": "2026-09-25T12:20:02.545374+00:00",
+  "generated": "2026-09-28T12:10:51.374494+00:00",
   "account": {
-    "equity": 50015.13,
-    "cash": 51289.13,
-    "buying_power": 180452.52,
+    "equity": 51000.78,
+    "cash": 51000.78,
+    "buying_power": 204003.12,
     "start_equity": 49992.8,
-    "total_pnl": 22.32999999999447,
-    "total_pnl_pct": 0.04466643196619207,
-    "open_positions": 4,
-    "days_running": 17,
+    "total_pnl": 1007.9799999999959,
+    "total_pnl_pct": 2.0162503400489586,
+    "open_positions": 0,
+    "days_running": 20,
     "error": null
   },
   "metrics": {
@@ -95,22 +95,34 @@
     },
     {
       "date": "2026-09-25",
-      "equity": 50015.13
+      "equity": 51000.93
+    },
+    {
+      "date": "2026-09-26",
+      "equity": 51000.78
+    },
+    {
+      "date": "2026-09-27",
+      "equity": 51000.78
+    },
+    {
+      "date": "2026-09-28",
+      "equity": 51000.78
     }
   ],
   "iv_rv": {
-    "resolved": 0,
-    "wins": 0,
-    "win_rate": 0.0,
-    "avg_edge_pct": 0.0,
+    "resolved": 1,
+    "wins": 1,
+    "win_rate": 100.0,
+    "avg_edge_pct": 1.28,
     "open": 1
   },
   "iv_condors": {
-    "closed": 2,
-    "wins": 2,
+    "closed": 3,
+    "wins": 3,
     "win_rate": 100.0,
-    "total_pnl": 270.0,
-    "open": 1,
+    "total_pnl": 1010.0,
+    "open": 0,
     "pending": 0
   },
   "iv_variants": [
@@ -267,24 +279,24 @@
       "events_needed": 99
     },
     "ungated": {
-      "n_events": 0,
-      "n_wins": 0,
-      "win_rate": null,
-      "total_pnl": 0.0,
-      "expectancy": null,
-      "profit_factor": null,
-      "avg_win": null,
-      "avg_loss": null,
-      "largest_single_loss": null,
-      "max_drawdown": 0.0,
-      "sharpe": null,
-      "sortino": null,
-      "tail_ratio": null,
-      "tail_events": 0,
-      "tail_pct_effective": null,
+      "n_events": 2,
+      "n_wins": 1,
+      "win_rate": 50.0,
+      "total_pnl": -815.9,
+      "expectancy": -407.95,
+      "profit_factor": 0.12,
+      "avg_win": 108.8,
+      "avg_loss": -924.7,
+      "largest_single_loss": -924.7,
+      "max_drawdown": 924.7,
+      "sharpe": -0.56,
+      "sortino": -0.62,
+      "tail_ratio": -8.5,
+      "tail_events": 1,
+      "tail_pct_effective": 50.0,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": false,
-      "events_needed": 100
+      "events_needed": 98
     }
   },
   "iv_quote_coverage": {
@@ -296,8 +308,64 @@
       "condor_1.0sd": 1
     }
   },
+  "implied_vs_realized": {
+    "watchlist": {
+      "n_events": 1,
+      "pct_exceeding_implied": 100.0,
+      "n_exceeding": 1,
+      "avg_implied_pct": 1.22,
+      "avg_realized_pct": 3.65,
+      "avg_edge_pct": -2.43,
+      "events": [
+        {
+          "ticker": "COST",
+          "earnings_date": "2026-09-24",
+          "implied_pct": 1.22,
+          "realized_pct": 3.65,
+          "edge_pct": -2.43,
+          "exceeded": true
+        }
+      ]
+    },
+    "measurement": {
+      "n_events": 2,
+      "pct_exceeding_implied": 0.0,
+      "n_exceeding": 0,
+      "avg_implied_pct": 4.05,
+      "avg_realized_pct": 2.68,
+      "avg_edge_pct": 1.38,
+      "events": [
+        {
+          "ticker": "LEN",
+          "earnings_date": "2026-09-16",
+          "implied_pct": 6.35,
+          "realized_pct": 5.26,
+          "edge_pct": 1.09,
+          "exceeded": false
+        },
+        {
+          "ticker": "CTAS",
+          "earnings_date": "2026-09-23",
+          "implied_pct": 1.76,
+          "realized_pct": 0.1,
+          "edge_pct": 1.66,
+          "exceeded": false
+        }
+      ]
+    }
+  },
+  "risk_state": {
+    "multiplier": 1.0,
+    "loss_streak": 0,
+    "halt_streak": 3,
+    "halted": false,
+    "halted_at": null,
+    "halted_reason": null,
+    "rearmed_at": null,
+    "closes_counted": 3
+  },
   "heartbeat": {
-    "last_seen": "2026-09-25T12:20:03.991925",
+    "last_seen": "2026-09-28T12:10:51.374207",
     "age_minutes": 0.0,
     "stale": false,
     "threshold_minutes": 180,
@@ -306,29 +374,16 @@
   "by_strategy": [],
   "by_hour": [],
   "recent": [],
-  "open_positions": [
-    {
-      "symbol": "COST260925C00930000",
-      "qty": -2.0,
-      "pnl": 0.0
-    },
-    {
-      "symbol": "COST260925C00955000",
-      "qty": 2.0,
-      "pnl": 0.0
-    },
-    {
-      "symbol": "COST260925P00845000",
-      "qty": 2.0,
-      "pnl": 0.0
-    },
-    {
-      "symbol": "COST260925P00870000",
-      "qty": -2.0,
-      "pnl": 0.0
-    }
-  ],
+  "open_positions": [],
   "proposals": [
-    "No closed trades in 17 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
+    "Watchlist REMOVE?: AAPL \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: ABBV \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: ABNB \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: ADBE \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: AMAT \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: AMD \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: AMZN \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: ARM \u2014 0 signals & 0 trades in 14d.",
+    "No closed trades in 20 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
   ]
 }
