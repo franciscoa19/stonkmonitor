@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 """
 Mock-data tests for the paper-trading eval loop.
 
@@ -1435,3 +1436,71 @@ def test_settlement_waits_for_the_close_not_a_calendar_day():
                                              tzinfo=ZoneInfo("UTC"))) is True
     assert settlement_ready(friday, datetime(2026, 10, 2, 19, 30,
                                              tzinfo=ZoneInfo("UTC"))) is False
+
+
+async def test_reprice_never_drops_a_capture_it_cannot_replace(db, monkeypatch):
+    """The re-price used to delete first and rebuild second. When pricing then
+    returned nothing — which is what happens outside RTH, where options have no
+    two-sided market — the event was left with NO rows at all. That destroyed the
+    JBL/MU/ACN/NKE captures on 2026-09-29. A held capture beats a lost one.
+    """
+    import main
+    monkeypatch.setattr(main, "db", db)
+    monkeypatch.setattr(main, "is_rth_now", lambda: True)
+    sp = {"short_put": 300.0, "long_put": 295.0, "short_call": 320.0, "long_call": 325.0}
+
+    for variant in ("condor_1.0sd", "straddle"):
+        await db.record_variant_eval(
+            "JBL", "2026-09-30", "2026-10-02", variant, 307.70, 3.46, sp,
+            credit=0.94, max_loss=406.0, resolve_after="2026-10-02",
+            credit_mid=1.02, fees=5.20, strike_step=5.0, lead_days=2)
+
+    setup = SimpleNamespace(ticker="JBL", price=307.70, expected_move="8.34%",
+                            next_earnings_date="2026-09-30", recommendation="CONSIDER")
+    monkeypatch.setattr("signals.earnings_scanner.is_near_earnings", lambda *a, **k: True)
+
+    def prices_nothing(_trader, _setup, _settings, diagnostics):
+        diagnostics.update({"attempted": 5, "priced": 0,
+                            "dropped": {"condor_1.0sd": "invalid_input"}})
+        return []
+    monkeypatch.setattr("signals.iv_variants.build_variants", prices_nothing)
+
+    await main.log_variant_evals(setup, gate_passed=True, source="measurement")
+    kept = await db._query("SELECT variant, lead_days FROM iv_variant_evals WHERE resolved=0")
+    assert len(kept) == 2, "a failed re-price must not destroy the held capture"
+    assert {r["lead_days"] for r in kept} == {2}
+
+    # And when pricing DOES succeed, the old rows are retired for the new ones.
+    def prices_fine(_trader, _setup, _settings, diagnostics):
+        diagnostics.update({"attempted": 5, "priced": 1, "dropped": {}})
+        return [{"variant": "condor_1.0sd", "expiry": "2026-10-02", "strikes": sp,
+                 "credit": 2.10, "max_loss": 290.0, "credit_mid": 2.20,
+                 "fees": 5.20, "strike_step": 5.0}]
+    monkeypatch.setattr("signals.iv_variants.build_variants", prices_fine)
+    await main.log_variant_evals(setup, gate_passed=True, source="measurement")
+    now = await db._query("SELECT variant, lead_days, credit FROM iv_variant_evals WHERE resolved=0")
+    assert len(now) == 1 and now[0]["credit"] == 2.10
+    assert now[0]["lead_days"] == 1          # priced one day nearer the print
+
+
+async def test_reprice_is_not_attempted_outside_market_hours(db, monkeypatch):
+    """The overnight passes had nothing to price. Defer instead of burning the
+    capture on a doomed attempt."""
+    import main
+    monkeypatch.setattr(main, "db", db)
+    monkeypatch.setattr(main, "is_rth_now", lambda: False)
+    sp = {"short_put": 300.0, "long_put": 295.0, "short_call": 320.0, "long_call": 325.0}
+    await db.record_variant_eval(
+        "JBL", "2026-09-30", "2026-10-02", "condor_1.0sd", 307.70, 3.46, sp,
+        credit=0.94, max_loss=406.0, resolve_after="2026-10-02",
+        credit_mid=1.02, fees=5.20, strike_step=5.0, lead_days=2)
+
+    called = []
+    monkeypatch.setattr("signals.iv_variants.build_variants",
+                        lambda *a, **k: called.append(1) or [])
+    monkeypatch.setattr("signals.earnings_scanner.is_near_earnings", lambda *a, **k: True)
+    setup = SimpleNamespace(ticker="JBL", price=307.70, expected_move="8.34%",
+                            next_earnings_date="2026-09-30", recommendation="CONSIDER")
+    await main.log_variant_evals(setup, gate_passed=True, source="measurement")
+    assert called == [], "should not even attempt to price outside RTH"
+    assert len(await db._query("SELECT id FROM iv_variant_evals WHERE resolved=0")) == 1

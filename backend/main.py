@@ -1235,6 +1235,16 @@ async def maybe_execute_condor(setup):
         f"risk ${plan['risk_usd']:.0f} exp {plan['expiry']} order={res.get('id')}")
 
 
+def is_rth_now() -> bool:
+    """True during regular trading hours, when options actually have two-sided
+    markets. Pricing a structure outside RTH yields nothing to price."""
+    from feeds.uw_budget import current_session, market_subphase
+    try:
+        return current_session() == "rth" and market_subphase() != "closed"
+    except Exception:
+        return False
+
+
 def days_to_print(earnings_date) -> int | None:
     """Calendar days from today (ET) to the print, or None if the date is unusable."""
     from datetime import date as _date
@@ -1303,11 +1313,15 @@ async def log_variant_evals(setup, gate_passed: bool = True,
     _action, _existing_lead = await variant_pricing_action(setup.ticker, edate, _days_to)
     if _action == "skip":
         return
-    if _action == "reprice":
-        dropped = await db.delete_open_variant_evals(setup.ticker, edate)
-        logger.info(f"Variant-log {setup.ticker}: re-pricing {dropped} row(s) at "
-                    f"{_days_to}d to print (was {_existing_lead}d — implied move "
-                    "understated that far out)")
+    # A re-price needs live option quotes. Outside regular hours there are no
+    # two-sided markets, so build_variants() drops every structure as
+    # invalid_input — and a delete-then-rebuild would then have destroyed a good
+    # capture and replaced it with nothing. It did exactly that to JBL/MU/ACN/NKE
+    # on 2026-09-29 before this check existed. A held capture is worth more than
+    # a marginally closer one, so when in doubt, keep what we have.
+    if _action == "reprice" and not is_rth_now():
+        logger.debug("Variant-log %s: re-price deferred to market hours", setup.ticker)
+        return
     loop = asyncio.get_event_loop()
     diagnostics: dict = {}
     variants = await loop.run_in_executor(
@@ -1316,7 +1330,20 @@ async def log_variant_evals(setup, gate_passed: bool = True,
         setup.ticker, edate, diagnostics.get("attempted", 0),
         diagnostics.get("priced", 0), diagnostics.get("dropped", {}), source=source)
     if not variants:
+        # Nothing priced. On a re-price this is the critical path: the rows we
+        # already hold are still the best evidence we have, so leave them alone.
+        if _action == "reprice":
+            logger.warning(
+                f"Variant-log {setup.ticker}: re-price at {_days_to}d priced 0/"
+                f"{diagnostics.get('attempted', 0)} structures — keeping the "
+                f"{_existing_lead}d capture rather than dropping it")
         return
+    # Only now, with a priced replacement in hand, retire the older capture.
+    if _action == "reprice":
+        dropped = await db.delete_open_variant_evals(setup.ticker, edate)
+        logger.info(f"Variant-log {setup.ticker}: re-pricing {dropped} row(s) at "
+                    f"{_days_to}d to print (was {_existing_lead}d — implied move "
+                    "understated that far out)")
     im = 0.0
     try:
         im = float(str(setup.expected_move or "0").rstrip("%") or 0)
