@@ -126,7 +126,17 @@ Include, in this order:
     For each cohort separately, state n_events, avg_implied_pct,
     avg_realized_pct, avg_edge_pct, and pct_exceeding_implied. Never combine
     the two cohorts or call either result a whole-system conclusion: their
-    selection rules differ. If a cohort has zero events, say so.
+    selection rules differ.
+    These headline numbers count ONLY events whose implied move was captured
+    within "lead_cutoff_days" of the print. Each cohort also carries a
+    "stale_capture" block with the same fields for events priced earlier than
+    that; an implied move read a week out is the quiet front-month IV, not the
+    earnings premium, so it understates implied and scores "exceeded" almost for
+    free. Report stale_capture's n_events separately and labelled as EXCLUDED --
+    never fold it into the headline or average the two together.
+    If a cohort has zero headline events, say so plainly, and say whether that
+    is because nothing has resolved yet or because everything resolved so far
+    was captured too early to count.
 
 11. PROPOSALS — from "proposals":
    List them verbatim under "PROPOSED (needs your approval)".
