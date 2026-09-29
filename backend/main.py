@@ -1085,17 +1085,25 @@ async def daily_equity_loop():
         # Resolve due strategy-variant evals from the historical underlying close
         # on their actual option expiry (no execution).
         try:
-            from signals.iv_variants import variant_payoff, pin_risk
+            from signals.iv_variants import (variant_payoff, pin_risk,
+                                             settlement_ready)
             today = et_now().strftime("%Y-%m-%d")
             due = await db.get_due_variant_evals(today)
             spot_cache: dict = {}
             loop = asyncio.get_running_loop()
-            resolved = 0
+            resolved = early = 0
             for ev in due:
                 tk = ev["ticker"]
                 expiry = ev.get("expiry")
                 if not expiry:
                     logger.warning(f"Variant eval #{ev['id']} has no expiry; leaving unresolved")
+                    continue
+                # Settlement is the expiry session's CLOSE. Alpaca's Day bar for
+                # a session in progress already carries that date, so without
+                # this the first pass on expiry morning would book an intraday
+                # price as the settled result.
+                if not settlement_ready(expiry):
+                    early += 1
                     continue
                 key = (tk, expiry)
                 if key not in spot_cache:
@@ -1113,7 +1121,8 @@ async def daily_equity_loop():
                     resolved += 1
             if due:
                 logger.info(f"Variant evals resolved: {resolved}/{len(due)} rows across "
-                            f"{len(spot_cache)} expiries")
+                            f"{len(spot_cache)} expiries"
+                            + (f" ({early} held — expiry session still open)" if early else ""))
         except Exception as e:
             logger.warning(f"Variant eval resolve error: {e}")
 

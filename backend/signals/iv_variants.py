@@ -32,18 +32,47 @@ VARIANTS = ["straddle", "condor_0.7sd", "condor_1.0sd", "condor_1.3sd", "fly"]
 _MULT = 100
 
 
-def expiry_settlement_date(expiry: str) -> Optional[str]:
-    """First calendar day on which an expiry close is safe to evaluate.
+# Minutes past the 16:00 ET close before an expiry's daily bar is taken as the
+# settlement price. Alpaca publishes a Day bar for the CURRENT session that
+# updates as it trades, so the bar existing is not evidence the session is over.
+SETTLEMENT_BUFFER_MIN = 30
 
-    The evaluator retrieves the historical close for `expiry`, so waiting one
-    calendar day prevents a background pass earlier on expiration day from
-    treating an intraday price as the settlement price. Weekend/holiday passes
-    remain safe because they still query the completed expiration session.
+
+def expiry_settlement_date(expiry: str) -> Optional[str]:
+    """Earliest calendar day on which an expiry close can be evaluated.
+
+    This is the expiry itself: the underlying's settlement price is final at that
+    session's close, so there is nothing to wait a calendar day for. The old
+    expiry+1 rule delayed every Friday expiry into the weekend for a hazard that
+    a date offset does not actually address -- Alpaca's Day bar for the current
+    session already carries that date while it is still trading, so a pass at
+    11:00 on expiry day would have read a live price as settlement no matter what
+    the offset was. `settlement_ready()` is what closes that hole, by requiring
+    the session to be over.
     """
     try:
-        return (date.fromisoformat(str(expiry)) + timedelta(days=1)).isoformat()
+        return date.fromisoformat(str(expiry)).isoformat()
     except (TypeError, ValueError):
         return None
+
+
+def settlement_ready(expiry: str, now=None) -> bool:
+    """True once `expiry`'s session has closed and its daily bar is trustworthy.
+
+    Guards the resolver against settling a structure against an intraday price on
+    expiration day. Any later day is fine -- that session is long over -- and a
+    weekend or holiday pass is fine for the same reason.
+    """
+    from market_time import et_now
+    try:
+        exp = date.fromisoformat(str(expiry))
+    except (TypeError, ValueError):
+        return False
+    n = et_now(now)
+    if n.date() != exp:
+        return n.date() > exp
+    close = n.replace(hour=16, minute=0, second=0, microsecond=0)
+    return n >= close + timedelta(minutes=SETTLEMENT_BUFFER_MIN)
 
 
 def _im_frac(setup) -> float:

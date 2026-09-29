@@ -560,13 +560,17 @@ class Database:
             logger.error(f"Variant lead_days backfill failed: {e}")
 
     async def _repair_open_variant_resolution_dates(self):
-        """Move legacy variant rows to an expiry-based settlement schedule.
+        """Put open variant rows on the current settlement schedule.
 
         Earlier builds used earnings+2d, which can land before the selected
-        option expiry. Only unresolved records are changed; resolved historical
-        measurements remain intact for auditability.
+        option expiry, and then expiry+1d, which pushed every Friday expiry into
+        the weekend. The schedule is now expiry_settlement_date()'s answer, so
+        this reads that function instead of keeping a second copy of the rule.
+        Only unresolved records are changed; resolved historical measurements
+        remain intact for auditability.
         """
         try:
+            from signals.iv_variants import expiry_settlement_date
             async with self._conn.execute(
                 """SELECT id, expiry, resolve_after FROM iv_variant_evals
                    WHERE resolved=0 AND pricing_model=?""",
@@ -575,9 +579,8 @@ class Database:
                 rows = await cur.fetchall()
             updates = []
             for row in rows:
-                try:
-                    target = (date.fromisoformat(str(row["expiry"])) + timedelta(days=1)).isoformat()
-                except (TypeError, ValueError):
+                target = expiry_settlement_date(row["expiry"])
+                if not target:
                     continue
                 if row["resolve_after"] != target:
                     updates.append((target, row["id"]))

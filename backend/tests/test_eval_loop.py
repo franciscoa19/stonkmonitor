@@ -494,7 +494,7 @@ def test_variant_payoff():
     assert variant_payoff(straddle, 100) == 800.0
     assert variant_payoff(straddle, 90) == -200.0      # uncapped (moved 10 vs 8 credit)
     # Never evaluate during the option's expiry session; use the completed close.
-    assert expiry_settlement_date("2026-09-18") == "2026-09-19"
+    assert expiry_settlement_date("2026-09-18") == "2026-09-18"
     assert expiry_settlement_date("not-a-date") is None
 
 
@@ -532,7 +532,10 @@ async def test_open_variant_evals_are_rescheduled_to_after_expiry(db):
                                  resolve_after="2026-09-17", credit_mid=1.30,
                                  fees=5.20, strike_step=1.0)
     await db._repair_open_variant_resolution_dates()
-    assert await db.get_due_variant_evals("2026-09-18") == []
+    # Rescheduled onto the expiry itself: due that day, not the day after. The
+    # resolver still holds it until that session closes (settlement_ready).
+    assert await db.get_due_variant_evals("2026-09-17") == []
+    assert len(await db.get_due_variant_evals("2026-09-18")) == 1
     assert len(await db.get_due_variant_evals("2026-09-19")) == 1
 
 
@@ -1384,3 +1387,51 @@ async def test_lead_days_backfill_recovers_pre_column_captures(db):
     r = await db.get_implied_vs_realized(max_lead_days=2)
     assert [e["ticker"] for e in r["events"]] == ["LEN"]
     assert [e["ticker"] for e in r["stale_capture"]["events"]] == ["COST"]
+
+
+def test_settlement_waits_for_the_close_not_a_calendar_day():
+    """Settlement is the expiry session's close, so it can be read that evening.
+
+    The old rule added a calendar day, which pushed every Friday expiry into the
+    weekend. What it was really guarding against is unaffected by a date offset:
+    Alpaca publishes a Day bar for the session in progress, already stamped with
+    that date, so the gate has to be the CLOCK, not the date.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from signals.iv_variants import expiry_settlement_date, settlement_ready
+    ET = ZoneInfo("America/New_York")
+    friday = "2026-10-02"
+
+    assert expiry_settlement_date(friday) == friday      # same day, not Saturday
+    assert expiry_settlement_date(None) is None
+    assert expiry_settlement_date("nope") is None
+
+    def at(y, m, d, hh, mm):
+        return datetime(y, m, d, hh, mm, tzinfo=ET)
+
+    # Expiry morning/midday: the Day bar exists but is still trading.
+    assert settlement_ready(friday, at(2026, 10, 2, 9, 45)) is False
+    assert settlement_ready(friday, at(2026, 10, 2, 15, 59)) is False
+    # The close itself is not enough — late prints still settle the bar.
+    assert settlement_ready(friday, at(2026, 10, 2, 16, 0)) is False
+    assert settlement_ready(friday, at(2026, 10, 2, 16, 29)) is False
+    # Past the buffer, that evening. This is the day we gained back.
+    assert settlement_ready(friday, at(2026, 10, 2, 16, 30)) is True
+    assert settlement_ready(friday, at(2026, 10, 2, 21, 0)) is True
+    # Any later session is long over — weekends and holidays included.
+    assert settlement_ready(friday, at(2026, 10, 3, 2, 0)) is True
+    assert settlement_ready(friday, at(2026, 10, 5, 9, 0)) is True
+    # Before expiry, never.
+    assert settlement_ready(friday, at(2026, 10, 1, 23, 59)) is False
+    assert settlement_ready(None, at(2026, 10, 5, 9, 0)) is False
+
+    # A naive timestamp is read as ET, not as the host's zone — the whole point
+    # of routing through market_time. 16:30 naive must mean 16:30 in New York.
+    assert settlement_ready(friday, datetime(2026, 10, 2, 16, 30)) is True
+    assert settlement_ready(friday, datetime(2026, 10, 2, 15, 30)) is False
+    # And a UTC instant converts: 20:30Z is 16:30 ET on the same date.
+    assert settlement_ready(friday, datetime(2026, 10, 2, 20, 30,
+                                             tzinfo=ZoneInfo("UTC"))) is True
+    assert settlement_ready(friday, datetime(2026, 10, 2, 19, 30,
+                                             tzinfo=ZoneInfo("UTC"))) is False
