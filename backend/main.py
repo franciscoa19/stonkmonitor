@@ -1238,6 +1238,8 @@ async def log_variant_evals(setup, gate_passed: bool = True,
     `source` keeps the curated watchlist distinct from the measurement-only
     universe when the evidence is later analyzed.
     """
+    from datetime import date as _date
+    from market_time import et_today
     from signals.earnings_scanner import is_near_earnings
     from signals.iv_variants import build_variants, expiry_settlement_date
     if not settings.iv_variants_log_enabled:
@@ -1247,8 +1249,29 @@ async def log_variant_evals(setup, gate_passed: bool = True,
                      getattr(setup, "ticker", "?"))
         return
     edate = getattr(setup, "next_earnings_date", None)
-    if await db.has_variant_evals(setup.ticker, edate):
-        return
+
+    # Re-price as the print approaches. Logging once at first eligibility (7
+    # days out) captures the QUIET front-month IV, well before the earnings
+    # premium inflates — COST recorded a 1.22% implied move that way, which then
+    # made a winning trade look like the market had underpriced the move. So:
+    # keep the earliest capture (guarantees the event is never missed entirely),
+    # but replace it with a fresh pass once we are inside the execution window
+    # and genuinely closer to the print than the row we hold.
+    _days_to = None
+    try:
+        _days_to = (_date.fromisoformat(str(edate)) - et_today()).days
+    except (TypeError, ValueError):
+        _days_to = None
+    _existing_lead = await db.get_open_variant_lead(setup.ticker, edate)
+    if _existing_lead is not None:
+        if _days_to is None or _days_to >= _existing_lead:
+            return                      # nothing closer to offer
+        if _days_to > settings.iv_variants_reprice_within_days:
+            return                      # closer, but still too far to be worth it
+        dropped = await db.delete_open_variant_evals(setup.ticker, edate)
+        logger.info(f"Variant-log {setup.ticker}: re-pricing {dropped} row(s) at "
+                    f"{_days_to}d to print (was {_existing_lead}d — implied move "
+                    "understated that far out)")
     loop = asyncio.get_event_loop()
     diagnostics: dict = {}
     variants = await loop.run_in_executor(
@@ -1276,7 +1299,7 @@ async def log_variant_evals(setup, gate_passed: bool = True,
             resolve_after=resolve_after, credit_mid=v.get("credit_mid"),
             fees=v.get("fees"), strike_step=v.get("strike_step"),
             gate_passed=gate_passed, source=source,
-            collapsed_with=v.get("collapsed_with"))
+            collapsed_with=v.get("collapsed_with"), lead_days=_days_to)
         logged.append(v["variant"])
     if logged:
         logger.info(f"Variant-log {setup.ticker} ({'gated' if gate_passed else 'baseline'}): "

@@ -107,6 +107,12 @@ class Settings(BaseSettings):
     # print is within this many days (the term-structure-inversion thesis only
     # holds near earnings). Filters far-dated / cheap-IV / ETF noise from the
     # signal, the eval log, and execution. Execution still needs ≤ entry_days_before.
+    # Re-price a logged event once it is this close to the print. Implied move
+    # inflates as earnings approach: COST logged 7 days out captured 1.22%, which
+    # is the quiet front-month IV, not the earnings premium — and that made a
+    # trade we WON look like the market underpriced the move. Re-pricing inside
+    # the execution window measures what we would actually have sold.
+    iv_variants_reprice_within_days: int = Field(2, env="IV_VARIANTS_REPRICE_WITHIN_DAYS")
     iv_setup_max_days_to_earnings: int = Field(7, env="IV_SETUP_MAX_DAYS_TO_EARNINGS")
     # Execution realism for the measurement layer (VALIDATION_SPEC §3): short
     # premium dies on fills, not on signal quality. Price variants at a fill

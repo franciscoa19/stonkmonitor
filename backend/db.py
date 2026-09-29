@@ -351,6 +351,10 @@ CREATE TABLE IF NOT EXISTS iv_variant_evals (
     credit_mid     REAL,                   -- same structure priced at mid, for reference only
     fees           REAL,                   -- round-trip commission ($ per spread)
     strike_step    REAL,                   -- listed strike increment (pin-risk yardstick)
+    -- Days between pricing and the print. Implied move inflates as earnings
+    -- approach, so a row priced 7 days out understates it badly and makes the
+    -- market look like it underprices moves. Stored so the bias is visible.
+    lead_days      INTEGER,
     pricing_model  TEXT NOT NULL DEFAULT 'legacy_excluded',
                                              -- comparable fill/fee methodology version
     max_loss       REAL,                   -- per-spread $ incl. fees (NULL = undefined risk)
@@ -419,7 +423,8 @@ _MIGRATIONS = {
                           "gate_passed": "INTEGER", "pin_risk": "INTEGER",
                           "pricing_model": "TEXT",
                           "source": "TEXT NOT NULL DEFAULT 'watchlist'",
-                          "collapsed_with": "TEXT"},
+                          "collapsed_with": "TEXT",
+                          "lead_days": "INTEGER"},
 }
 
 
@@ -825,6 +830,37 @@ class Database:
             (ticker, VALIDATED_VARIANT_PRICING_MODEL, earnings_date, earnings_date))
         return bool(r)
 
+    async def get_open_variant_lead(self, ticker: str,
+                                    earnings_date: Optional[str]) -> Optional[int]:
+        """Smallest lead_days among this event's UNRESOLVED rows, or None if the
+        event has not been priced yet. Used to decide whether a fresh pass is
+        closer to the print than what we already hold."""
+        r = await self._query(
+            """SELECT MIN(COALESCE(lead_days, 999)) AS lead FROM iv_variant_evals
+               WHERE ticker=? AND resolved=0 AND pricing_model=?
+                 AND (earnings_date IS ? OR earnings_date=?)""",
+            (ticker, VALIDATED_VARIANT_PRICING_MODEL, earnings_date, earnings_date))
+        if not r or r[0]["lead"] is None:
+            return None
+        return int(r[0]["lead"])
+
+    async def delete_open_variant_evals(self, ticker: str,
+                                        earnings_date: Optional[str]) -> int:
+        """Drop this event's unresolved rows so it can be re-priced nearer the
+        print. Resolved rows are never touched — settled measurements stand."""
+        rows = await self._query(
+            """SELECT id FROM iv_variant_evals
+               WHERE ticker=? AND resolved=0 AND pricing_model=?
+                 AND (earnings_date IS ? OR earnings_date=?)""",
+            (ticker, VALIDATED_VARIANT_PRICING_MODEL, earnings_date, earnings_date))
+        if rows:
+            await self._exec(
+                """DELETE FROM iv_variant_evals
+                   WHERE ticker=? AND resolved=0 AND pricing_model=?
+                     AND (earnings_date IS ? OR earnings_date=?)""",
+                (ticker, VALIDATED_VARIANT_PRICING_MODEL, earnings_date, earnings_date))
+        return len(rows)
+
     async def record_variant_eval(self, ticker: str, earnings_date: Optional[str],
                                   expiry: Optional[str], variant: str, spot: float,
                                   implied_move_pct: float, strikes: dict, credit: float,
@@ -835,7 +871,8 @@ class Database:
                                   gate_passed: bool = True,
                                   pricing_model: Optional[str] = None,
                                   source: str = "watchlist",
-                                  collapsed_with: Optional[str] = None) -> None:
+                                  collapsed_with: Optional[str] = None,
+                                  lead_days: Optional[int] = None) -> None:
         # Do not accidentally certify a direct/legacy call that did not record
         # both the reference mid and explicit commission assumption.
         pricing_model = pricing_model or (
@@ -850,8 +887,8 @@ class Database:
                  (ticker, earnings_date, signal_date, expiry, variant, spot,
                   implied_move_pct, short_put, long_put, short_call, long_call,
                   credit, credit_mid, fees, strike_step, pricing_model, gate_passed,
-                  source, collapsed_with, max_loss, resolve_after, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  source, collapsed_with, lead_days, max_loss, resolve_after, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, earnings_date, now[:10], expiry, variant, round(spot, 2),
              round(implied_move_pct, 2), strikes.get("short_put"), strikes.get("long_put"),
              strikes.get("short_call"), strikes.get("long_call"),
@@ -859,7 +896,7 @@ class Database:
              (round(credit_mid, 2) if credit_mid is not None else None),
              (round(fees, 2) if fees is not None else None),
              strike_step, pricing_model, 1 if gate_passed else 0,
-             source, collapsed_with,
+             source, collapsed_with, lead_days,
              (round(max_loss, 2) if max_loss is not None else None),
              resolve_after, now))
 

@@ -1227,3 +1227,34 @@ def test_risk_multiplier_shrinks_the_wing_not_just_quantity():
     full_risk = full["max_loss"] * full["qty"]
     half_risk = half["max_loss"] * half["qty"]
     assert half_risk < full_risk        # actually de-risked, not merely re-quantized
+
+
+# ── Re-pricing near the print (implied move inflates as earnings approach) ──
+async def test_open_variant_lead_and_reprice_delete(db):
+    sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+
+    async def seed(variant, lead, resolved=False):
+        await db.record_variant_eval(
+            "COST", "2026-09-24", "2026-09-25", variant, 900.0, 1.22, sp,
+            credit=1.20, max_loss=180.0, resolve_after="2026-09-26",
+            credit_mid=1.30, fees=5.20, strike_step=2.5, lead_days=lead)
+        row = (await db._query("SELECT id FROM iv_variant_evals ORDER BY id DESC LIMIT 1"))[0]
+        if resolved:
+            await db.resolve_variant_eval(row["id"], 930.0, 10.0)
+
+    assert await db.get_open_variant_lead("COST", "2026-09-24") is None   # nothing yet
+    await seed("condor_1.0sd", 7)
+    await seed("straddle", 7)
+    assert await db.get_open_variant_lead("COST", "2026-09-24") == 7
+
+    # A settled measurement must never be discarded by a re-price.
+    await seed("fly", 7, resolved=True)
+    dropped = await db.delete_open_variant_evals("COST", "2026-09-24")
+    assert dropped == 2                                    # the two unresolved only
+    remaining = await db._query("SELECT variant, resolved FROM iv_variant_evals")
+    assert [(r["variant"], r["resolved"]) for r in remaining] == [("fly", 1)]
+    assert await db.get_open_variant_lead("COST", "2026-09-24") is None
+
+    # Re-priced rows carry the tighter lead, so the bias is auditable.
+    await seed("condor_1.0sd", 1)
+    assert await db.get_open_variant_lead("COST", "2026-09-24") == 1
