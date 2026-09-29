@@ -68,6 +68,14 @@ VALIDATED_VARIANT_PRICING_MODEL = "conservative_bid_ask_v2"
 LEGACY_VARIANT_PRICING_MODEL = "legacy_excluded"
 VARIANT_SOURCES = ("watchlist", "measurement")
 
+# An implied move read a week before the print is the QUIET front-month IV, not
+# the earnings premium — measured at 2-2.4x understatement on CCL/JBL/MU. Events
+# captured further out than this cannot answer "did the stock move more than the
+# market priced in", so they are reported apart from the headline rather than
+# averaged into it. Mirrors settings.iv_variants_reprice_within_days, which the
+# report passes in explicitly; this is the fallback for direct/test calls.
+MAX_TRUSTED_CAPTURE_LEAD_DAYS = 2
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -441,6 +449,7 @@ class Database:
         await self._migrate()
         await self._repair_open_variant_resolution_dates()
         await self._backfill_collapsed_variants()
+        await self._backfill_variant_lead_days()
         await self._conn.commit()
         logger.info(f"Database ready: {self.path}")
 
@@ -514,6 +523,41 @@ class Database:
                 logger.info(f"Migration: tagged {len(updates)} collapsed variant rows")
         except Exception as e:
             logger.error(f"Collapsed-variant backfill failed: {e}")
+
+    async def _backfill_variant_lead_days(self):
+        """Recover the capture lead for rows written before the column existed.
+
+        lead_days was always a property of these rows: signal_date is the session
+        the structure was priced in and earnings_date is the print, so the lead is
+        their difference. Leaving them NULL treats every pre-column row as
+        maximally stale, which would throw away the captures that were in fact
+        taken at the print (LEN was priced the same day) alongside the ones that
+        really were a week early. The derivation reproduces the stored values on
+        every row written since the column shipped, which is what makes it
+        trustworthy here.
+        """
+        try:
+            async with self._conn.execute(
+                """SELECT id, earnings_date, signal_date FROM iv_variant_evals
+                   WHERE lead_days IS NULL AND earnings_date IS NOT NULL
+                     AND signal_date IS NOT NULL"""
+            ) as cur:
+                rows = await cur.fetchall()
+            updates = []
+            for r in rows:
+                try:
+                    lead = (date.fromisoformat(r["earnings_date"])
+                            - date.fromisoformat(r["signal_date"])).days
+                except (TypeError, ValueError):
+                    continue
+                if lead >= 0:        # a negative lead means the dates disagree; leave it
+                    updates.append((lead, r["id"]))
+            if updates:
+                await self._conn.executemany(
+                    "UPDATE iv_variant_evals SET lead_days=? WHERE id=?", updates)
+                logger.info(f"Migration: derived lead_days for {len(updates)} variant rows")
+        except Exception as e:
+            logger.error(f"Variant lead_days backfill failed: {e}")
 
     async def _repair_open_variant_resolution_dates(self):
         """Move legacy variant rows to an expiry-based settlement schedule.
@@ -986,7 +1030,8 @@ class Database:
              (None if pin_risk is None else (1 if pin_risk else 0)),
              datetime.utcnow().isoformat(), eval_id))
 
-    async def get_implied_vs_realized(self, source: Optional[str] = None) -> dict:
+    async def get_implied_vs_realized(self, source: Optional[str] = None,
+                                      max_lead_days: Optional[int] = None) -> dict:
         """Did the stock move more than the option market priced in?
 
         This is the structural question underneath every premium-selling
@@ -998,7 +1043,17 @@ class Database:
         Computed per EVENT, not per variant row. All five structures on one
         print share the same underlying move, so averaging across rows would
         count each event five times and shrink the error bars fraudulently.
+
+        Only events whose implied move was captured within `max_lead_days` of
+        the print count toward the headline. Events priced further out are
+        returned under `stale_capture` and deliberately excluded: their implied
+        move is understated, which inflates `pct_exceeding_implied` toward a
+        pessimistic answer for free. A resolved measurement is never rewritten,
+        so the early captures stay on the books — they just do not get to speak
+        for the edge.
         """
+        cutoff = (MAX_TRUSTED_CAPTURE_LEAD_DAYS if max_lead_days is None
+                  else int(max_lead_days))
         where = "WHERE resolved=1 AND pricing_model=? AND spot>0 AND implied_move_pct>0"
         params: tuple = (VALIDATED_VARIANT_PRICING_MODEL,)
         if source is not None:
@@ -1009,35 +1064,47 @@ class Database:
         rows = await self._query(
             f"""SELECT ticker, earnings_date,
                        MAX(spot) AS spot, MAX(exit_spot) AS exit_spot,
-                       MAX(implied_move_pct) AS implied
+                       MAX(implied_move_pct) AS implied,
+                       MIN(COALESCE(lead_days, 999)) AS lead
                 FROM iv_variant_evals {where}
                 GROUP BY ticker, earnings_date""", params)
 
-        events = []
+        events, stale = [], []
         for r in rows:
             spot, exit_spot, implied = r["spot"] or 0, r["exit_spot"] or 0, r["implied"] or 0
             if not (spot and exit_spot and implied):
                 continue
             realized = abs(exit_spot / spot - 1) * 100
-            events.append({"ticker": r["ticker"], "earnings_date": r["earnings_date"],
-                           "implied_pct": round(implied, 2),
-                           "realized_pct": round(realized, 2),
-                           "edge_pct": round(implied - realized, 2),
-                           "exceeded": realized > implied})
-        n = len(events)
-        if not n:
-            return {"n_events": 0, "pct_exceeding_implied": None, "avg_implied_pct": None,
-                    "avg_realized_pct": None, "avg_edge_pct": None, "events": []}
-        exceeded = sum(1 for e in events if e["exceeded"])
-        return {
-            "n_events": n,
-            "pct_exceeding_implied": round(exceeded / n * 100, 1),
-            "n_exceeding": exceeded,
-            "avg_implied_pct": round(sum(e["implied_pct"] for e in events) / n, 2),
-            "avg_realized_pct": round(sum(e["realized_pct"] for e in events) / n, 2),
-            "avg_edge_pct": round(sum(e["edge_pct"] for e in events) / n, 2),
-            "events": sorted(events, key=lambda e: e["edge_pct"]),
-        }
+            lead = r["lead"] if r["lead"] is not None else 999
+            ev = {"ticker": r["ticker"], "earnings_date": r["earnings_date"],
+                  "implied_pct": round(implied, 2),
+                  "realized_pct": round(realized, 2),
+                  "edge_pct": round(implied - realized, 2),
+                  "exceeded": realized > implied,
+                  "lead_days": lead}
+            (events if lead <= cutoff else stale).append(ev)
+
+        def summarize(evs: list) -> dict:
+            k = len(evs)
+            if not k:
+                return {"n_events": 0, "pct_exceeding_implied": None, "n_exceeding": 0,
+                        "avg_implied_pct": None, "avg_realized_pct": None,
+                        "avg_edge_pct": None, "events": []}
+            hit = sum(1 for e in evs if e["exceeded"])
+            return {
+                "n_events": k,
+                "pct_exceeding_implied": round(hit / k * 100, 1),
+                "n_exceeding": hit,
+                "avg_implied_pct": round(sum(e["implied_pct"] for e in evs) / k, 2),
+                "avg_realized_pct": round(sum(e["realized_pct"] for e in evs) / k, 2),
+                "avg_edge_pct": round(sum(e["edge_pct"] for e in evs) / k, 2),
+                "events": sorted(evs, key=lambda e: e["edge_pct"]),
+            }
+
+        out = summarize(events)
+        out["lead_cutoff_days"] = cutoff
+        out["stale_capture"] = summarize(stale)
+        return out
 
     async def get_risk_state(self, loss_factor: float = 0.5, win_factor: float = 2.0,
                             floor: float = 0.25, halt_streak: int = 3) -> dict:

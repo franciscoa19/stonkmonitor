@@ -120,11 +120,15 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
     implied_vs_realized = {}
     for source in ("watchlist", "measurement"):
         try:
-            implied_vs_realized[source] = await db.get_implied_vs_realized(source=source)
+            from config import get_settings as _gs3
+            implied_vs_realized[source] = await db.get_implied_vs_realized(
+                source=source,
+                max_lead_days=_gs3().iv_variants_reprice_within_days)
         except Exception:
             implied_vs_realized[source] = {"n_events": 0, "pct_exceeding_implied": None,
                                            "avg_implied_pct": None, "avg_realized_pct": None,
-                                           "avg_edge_pct": None, "events": []}
+                                           "avg_edge_pct": None, "events": [],
+                                           "stale_capture": {"n_events": 0}}
     try:
         iv_quote_coverage = await db.get_variant_quote_coverage()
     except Exception:
@@ -374,10 +378,25 @@ def render_html(d: dict) -> str:
         source_label = _html.escape(source.replace("_", " ").title())
         cohort_badge = "legacy mixed cohort" if legacy_mixed_edge else "separate cohort"
         n = ivr.get("n_events") or 0
+        stale = ivr.get("stale_capture") or {}
+        n_stale = stale.get("n_events") or 0
+        cutoff = ivr.get("lead_cutoff_days")
+        # An implied move read a week out is the quiet front-month IV, so those
+        # events cannot answer this question. Say that plainly instead of either
+        # hiding them or letting them set the headline.
+        stale_note = (
+            f"<div class=\"mut\" style=\"font-size:11px;margin-top:8px\">"
+            f"{n_stale} further event(s) excluded — implied move captured more than "
+            f"{cutoff}d before the print ({stale.get('pct_exceeding_implied')}% exceeded, "
+            f"avg implied {stale.get('avg_implied_pct')}% vs realized "
+            f"{stale.get('avg_realized_pct')}%). Understated implied inflates this metric, "
+            f"so they are held apart rather than averaged in.</div>") if n_stale else ""
         if not n:
+            body = ("No events with a near-print capture yet."
+                    if n_stale else "No resolved events yet.")
             return (f"<div class=\"card\"><h2>Implied vs realized — {source_label} "
                     f"<span class=\"pill mut\" style=\"font-size:11px\">{cohort_badge}</span></h2>"
-                    "<div class=\"mut\" style=\"font-size:12px\">No resolved events yet.</div></div>")
+                    f"<div class=\"mut\" style=\"font-size:12px\">{body}</div>{stale_note}</div>")
         pct = ivr.get("pct_exceeding_implied")
         edge = ivr.get("avg_edge_pct") or 0
         rows = "".join(
@@ -410,7 +429,8 @@ def render_html(d: dict) -> str:
             "than the options priced in. This is the premium seller's structural question for this cohort, and it converges "
             "far faster than counting max-loss events, because it is observable on every print rather than "
             "only the rare disasters. Sustained above ~25% means the premium is not rich enough and no "
-            "choice of structure fixes it.</div></div>")
+            "choice of structure fixes it.</div>"
+            f"{stale_note}</div>")
     edge_sources = ("legacy mixed cohort",) if legacy_mixed_edge else ("watchlist", "measurement")
     _edge_html = "".join(
         _edge_card(source, edge_by_source.get(source) or {})

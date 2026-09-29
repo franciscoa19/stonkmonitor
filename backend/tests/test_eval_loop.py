@@ -1079,12 +1079,12 @@ async def test_implied_vs_realized_is_per_event_not_per_variant(db):
     variant rows would inflate n fivefold and shrink the error bars fraudulently."""
     sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
 
-    async def seed_event(ticker, edate, spot, exit_spot, implied):
+    async def seed_event(ticker, edate, spot, exit_spot, implied, lead=1):
         for variant in ("condor_0.7sd", "condor_1.0sd", "condor_1.3sd", "fly", "straddle"):
             await db.record_variant_eval(
                 ticker, edate, "2026-09-18", variant, spot, implied, sp,
                 credit=1.20, max_loss=180.0, resolve_after="2026-09-19",
-                credit_mid=1.30, fees=5.20, strike_step=1.0)
+                credit_mid=1.30, fees=5.20, strike_step=1.0, lead_days=lead)
             row = (await db._query(
                 "SELECT id FROM iv_variant_evals ORDER BY id DESC LIMIT 1"))[0]
             await db.resolve_variant_eval(row["id"], exit_spot, 0.0)
@@ -1103,6 +1103,20 @@ async def test_implied_vs_realized_is_per_event_not_per_variant(db):
     # worst edge first, so the events that beat the market are top of the list
     assert r["events"][0]["ticker"] == "BBB" and r["events"][0]["exceeded"] is True
     assert r["events"][1]["exceeded"] is False
+    assert r["stale_capture"]["n_events"] == 0
+
+    # An implied move read a week out is the quiet front-month IV, not the
+    # earnings premium, so it understates implied and scores "exceeded" almost
+    # for free. It must not be allowed to set the headline.
+    await seed_event("CCC", "2026-09-18", 100.0, 103.0, 3.0, lead=7)
+    r = await db.get_implied_vs_realized()
+    assert r["n_events"] == 2                       # headline unchanged
+    assert r["pct_exceeding_implied"] == 50.0
+    assert r["stale_capture"]["n_events"] == 1
+    assert r["stale_capture"]["events"][0]["ticker"] == "CCC"
+    assert r["stale_capture"]["events"][0]["lead_days"] == 7
+    # Pooling would have read 66.7% exceeding off the same data.
+    assert r["lead_cutoff_days"] == 2
 
 
 async def test_report_keeps_implied_realized_cohorts_separate(db):
@@ -1113,7 +1127,7 @@ async def test_report_keeps_implied_realized_cohorts_separate(db):
         await db.record_variant_eval(
             ticker, "2026-09-16", "2026-09-18", "condor_1.0sd", 100.0, 8.0, sp,
             credit=1.20, max_loss=180.0, resolve_after="2026-09-19",
-            credit_mid=1.30, fees=5.20, strike_step=1.0, source=source)
+            credit_mid=1.30, fees=5.20, strike_step=1.0, source=source, lead_days=1)
         row = (await db._query(
             "SELECT id FROM iv_variant_evals ORDER BY id DESC LIMIT 1"))[0]
         await db.resolve_variant_eval(row["id"], exit_spot, 0.0)
@@ -1339,3 +1353,34 @@ async def test_signal_date_is_the_et_trading_day_not_the_utc_day(db, monkeypatch
     # The audit trail still keeps the true UTC instant of the write.
     assert v["created_at"].startswith("2026-09-29T01:34")
     assert i["created_at"].startswith("2026-09-29T01:34")
+
+
+async def test_lead_days_backfill_recovers_pre_column_captures(db):
+    """A NULL lead_days is not evidence of a stale capture — the column simply
+    did not exist yet. Treating every legacy row as maximally stale would discard
+    LEN, which was priced on the print date, along with the genuinely early ones.
+    """
+    sp = {"short_put": 75.0, "long_put": 72.0, "short_call": 86.0, "long_call": 89.0}
+    for tk, sd, ed in (("LEN", "2026-09-16", "2026-09-16"),     # priced at the print
+                       ("COST", "2026-09-17", "2026-09-24"),    # a week early
+                       ("ORPH", "2026-09-17", None)):           # no print date known
+        await db.record_variant_eval(
+            tk, ed, "2026-09-18", "condor_1.0sd", 80.0, 6.35, sp,
+            credit=0.35, max_loss=265.0, resolve_after="2026-09-18",
+            credit_mid=0.40, fees=2.60, strike_step=1.0)
+        await db._exec("UPDATE iv_variant_evals SET signal_date=?, lead_days=NULL "
+                       "WHERE ticker=?", (sd, tk))
+
+    await db._backfill_variant_lead_days()
+    got = {r["ticker"]: r["lead_days"] for r in
+           await db._query("SELECT ticker, lead_days FROM iv_variant_evals")}
+    assert got["LEN"] == 0
+    assert got["COST"] == 7
+    assert got["ORPH"] is None          # nothing to derive from; stays maximally stale
+
+    # Which is what puts LEN back in the headline cohort and keeps COST out.
+    await db._exec("UPDATE iv_variant_evals SET resolved=1, exit_spot=84.2 "
+                   "WHERE ticker IN ('LEN','COST')")
+    r = await db.get_implied_vs_realized(max_lead_days=2)
+    assert [e["ticker"] for e in r["events"]] == ["LEN"]
+    assert [e["ticker"] for e in r["stale_capture"]["events"]] == ["COST"]
