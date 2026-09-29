@@ -1258,3 +1258,84 @@ async def test_open_variant_lead_and_reprice_delete(db):
     # Re-priced rows carry the tighter lead, so the bias is auditable.
     await seed("condor_1.0sd", 1)
     assert await db.get_open_variant_lead("COST", "2026-09-24") == 1
+
+
+async def test_variant_pricing_action_is_shared_by_both_loops(db, monkeypatch):
+    """The watchlist scanner and the measurement universe must agree on when an
+    event gets re-priced. The measurement loop used to skip on "rows exist",
+    which left measurement-source names (CCL/JBL/ACN) pinned to the implied move
+    read 7 days before the print.
+    """
+    import main
+    monkeypatch.setattr(main, "db", db)
+    sp = {"short_put": 20.0, "long_put": 18.0, "short_call": 26.0, "long_call": 28.0}
+
+    async def seed(variant, lead):
+        await db.record_variant_eval(
+            "CCL", "2026-09-29", "2026-09-22", variant, 22.86, 3.39, sp,
+            credit=0.18, max_loss=182.0, resolve_after="2026-10-04",
+            credit_mid=0.20, fees=2.60, strike_step=1.0, lead_days=lead)
+
+    # Never priced → price it, whatever the distance.
+    assert await main.variant_pricing_action("CCL", "2026-09-29", 7) == ("fresh", None)
+
+    await seed("condor_1.0sd", 7)
+    within = main.settings.iv_variants_reprice_within_days
+
+    # Closer than what we hold AND inside the window → re-price.
+    assert await main.variant_pricing_action("CCL", "2026-09-29", within) == ("reprice", 7)
+    assert await main.variant_pricing_action("CCL", "2026-09-29", 0) == ("reprice", 7)
+    # Closer, but still far enough out that the earnings premium isn't in the
+    # quotes yet — re-pricing there would just burn scans for the same bad number.
+    assert await main.variant_pricing_action("CCL", "2026-09-29", within + 1) == ("skip", 7)
+    # No closer than the held rows, or no usable date → leave them alone.
+    assert await main.variant_pricing_action("CCL", "2026-09-29", 7) == ("skip", 7)
+    assert await main.variant_pricing_action("CCL", "2026-09-29", 9) == ("skip", 7)
+    assert await main.variant_pricing_action("CCL", "2026-09-29", None) == ("skip", 7)
+
+    # Legacy rows predate lead_days. They are treated as maximally stale (999)
+    # rather than as "unknown, leave it" — otherwise the events already on the
+    # books when this shipped could never be corrected.
+    await db._exec("UPDATE iv_variant_evals SET lead_days=NULL")
+    assert await main.variant_pricing_action("CCL", "2026-09-29", 2) == ("reprice", 999)
+
+
+def test_days_to_print_handles_junk():
+    import main
+    assert main.days_to_print(None) is None
+    assert main.days_to_print("not-a-date") is None
+    assert main.days_to_print("2026-09-28") == (
+        __import__("market_time").et_today() - __import__("datetime").date(2026, 9, 28)).days * -1
+
+
+async def test_signal_date_is_the_et_trading_day_not_the_utc_day(db, monkeypatch):
+    """signal_date answers "which session did we price this in". After 20:00 ET
+    the UTC calendar has already rolled, so a utcnow()-derived date stamped
+    evening entries with tomorrow's session — which is exactly when the
+    near-print re-pricing pass runs.
+    """
+    import datetime as _d
+    import db as dbmod
+
+    class FrozenUTC(_d.datetime):
+        @classmethod
+        def utcnow(cls):
+            return cls(2026, 9, 29, 1, 34)          # 21:34 ET on the 28th
+    monkeypatch.setattr(dbmod, "datetime", FrozenUTC)
+    monkeypatch.setattr(dbmod, "et_today", lambda: _d.date(2026, 9, 28))
+
+    sp = {"short_put": 20.0, "long_put": 18.0, "short_call": 26.0, "long_call": 28.0}
+    await db.record_variant_eval(
+        "CCL", "2026-09-29", "2026-10-02", "condor_1.0sd", 22.86, 7.09, sp,
+        credit=0.55, max_loss=145.0, resolve_after="2026-10-04",
+        credit_mid=0.58, fees=2.60, strike_step=1.0, lead_days=1)
+    await db.record_iv_eval("CCL", "2026-09-29", "CONSIDER", 1.31, 7.09, 22.86,
+                            "2026-10-01")
+
+    v = (await db._query("SELECT signal_date, created_at FROM iv_variant_evals"))[0]
+    i = (await db._query("SELECT signal_date, created_at FROM iv_rv_evals"))[0]
+    assert v["signal_date"] == "2026-09-28", v["signal_date"]
+    assert i["signal_date"] == "2026-09-28", i["signal_date"]
+    # The audit trail still keeps the true UTC instant of the write.
+    assert v["created_at"].startswith("2026-09-29T01:34")
+    assert i["created_at"].startswith("2026-09-29T01:34")

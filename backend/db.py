@@ -13,6 +13,7 @@ import json
 import logging
 import aiosqlite
 from datetime import datetime, timezone, date, timedelta
+from market_time import et_today
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -656,12 +657,16 @@ class Database:
         if open_:
             return None
         now = datetime.utcnow().isoformat()
+        # created_at stays a UTC instant, but signal_date is a TRADING day and
+        # must be ET: after 20:00 ET the UTC calendar has already rolled, so
+        # utcnow()[:10] stamped an evening entry with TOMORROW's session.
+        today_et = et_today().isoformat()
         await self._exec(
             """INSERT INTO iv_rv_evals
                  (ticker, signal_date, earnings_date, recommendation, iv30_rv30,
                   implied_move_pct, entry_price, resolve_after, created_at)
                VALUES (?,?,?,?,?,?,?,?,?)""",
-            (ticker, now[:10], earnings_date, recommendation, iv30_rv30,
+            (ticker, today_et, earnings_date, recommendation, iv30_rv30,
              implied_move_pct, entry_price, resolve_after, now))
         return 1
 
@@ -882,6 +887,7 @@ class Database:
         if source not in VARIANT_SOURCES:
             raise ValueError(f"unknown variant source: {source}")
         now = datetime.utcnow().isoformat()
+        today_et = et_today().isoformat()      # trading day, not the UTC day
         await self._exec(
             """INSERT INTO iv_variant_evals
                  (ticker, earnings_date, signal_date, expiry, variant, spot,
@@ -889,7 +895,7 @@ class Database:
                   credit, credit_mid, fees, strike_step, pricing_model, gate_passed,
                   source, collapsed_with, lead_days, max_loss, resolve_after, created_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (ticker, earnings_date, now[:10], expiry, variant, round(spot, 2),
+            (ticker, earnings_date, today_et, expiry, variant, round(spot, 2),
              round(implied_move_pct, 2), strikes.get("short_put"), strikes.get("long_put"),
              strikes.get("short_call"), strikes.get("long_call"),
              round(credit, 2),

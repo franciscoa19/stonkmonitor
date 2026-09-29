@@ -1226,6 +1226,41 @@ async def maybe_execute_condor(setup):
         f"risk ${plan['risk_usd']:.0f} exp {plan['expiry']} order={res.get('id')}")
 
 
+def days_to_print(earnings_date) -> int | None:
+    """Calendar days from today (ET) to the print, or None if the date is unusable."""
+    from datetime import date as _date
+    from market_time import et_today
+    try:
+        return (_date.fromisoformat(str(earnings_date)) - et_today()).days
+    except (TypeError, ValueError):
+        return None
+
+
+async def variant_pricing_action(ticker: str, earnings_date,
+                                 days_to: int | None) -> tuple[str, int | None]:
+    """What this earnings event needs from the variant logger right now:
+    "fresh" (never priced), "reprice" (held rows were priced further from the
+    print than we are, and we are now close enough for the earnings premium to
+    be in the quotes), or "skip".
+
+    Both callers need this answer — the watchlist scanner to decide whether to
+    drop and re-price, the measurement universe to decide whether a candidate is
+    worth scanning at all. The measurement loop's copy of the rule silently did
+    not exist: it skipped on "rows already present", so CCL/JBL/ACN kept a
+    7-day-out implied move while MU re-priced. One function, one rule.
+
+    Returns (action, lead_days_of_held_rows_or_None).
+    """
+    existing = await db.get_open_variant_lead(ticker, earnings_date)
+    if existing is None:
+        return ("fresh", None)
+    if days_to is None or days_to >= existing:
+        return ("skip", existing)        # nothing closer to offer
+    if days_to > settings.iv_variants_reprice_within_days:
+        return ("skip", existing)        # closer, but still too far to be worth it
+    return ("reprice", existing)
+
+
 async def log_variant_evals(setup, gate_passed: bool = True,
                             source: str = "watchlist"):
     """Measurement only: price several hypothetical structures for this earnings
@@ -1238,8 +1273,6 @@ async def log_variant_evals(setup, gate_passed: bool = True,
     `source` keeps the curated watchlist distinct from the measurement-only
     universe when the evidence is later analyzed.
     """
-    from datetime import date as _date
-    from market_time import et_today
     from signals.earnings_scanner import is_near_earnings
     from signals.iv_variants import build_variants, expiry_settlement_date
     if not settings.iv_variants_log_enabled:
@@ -1257,17 +1290,11 @@ async def log_variant_evals(setup, gate_passed: bool = True,
     # keep the earliest capture (guarantees the event is never missed entirely),
     # but replace it with a fresh pass once we are inside the execution window
     # and genuinely closer to the print than the row we hold.
-    _days_to = None
-    try:
-        _days_to = (_date.fromisoformat(str(edate)) - et_today()).days
-    except (TypeError, ValueError):
-        _days_to = None
-    _existing_lead = await db.get_open_variant_lead(setup.ticker, edate)
-    if _existing_lead is not None:
-        if _days_to is None or _days_to >= _existing_lead:
-            return                      # nothing closer to offer
-        if _days_to > settings.iv_variants_reprice_within_days:
-            return                      # closer, but still too far to be worth it
+    _days_to = days_to_print(edate)
+    _action, _existing_lead = await variant_pricing_action(setup.ticker, edate, _days_to)
+    if _action == "skip":
+        return
+    if _action == "reprice":
         dropped = await db.delete_open_variant_evals(setup.ticker, edate)
         logger.info(f"Variant-log {setup.ticker}: re-pricing {dropped} row(s) at "
                     f"{_days_to}d to print (was {_existing_lead}d — implied move "
@@ -1374,7 +1401,13 @@ async def measurement_universe_loop():
                 if logged >= s.iv_measure_max_per_cycle:
                     break
                 tk = c["ticker"]
-                if await db.has_variant_evals(tk, c["date"]):
+                # Already priced? Only skip if a fresh pass would not be closer
+                # to the print than the rows we hold. A name priced 7 days out
+                # still carries the quiet front-month IV, not the earnings
+                # premium, so it has to be allowed back through.
+                _dtp = days_to_print(c["date"])
+                _act, _held = await variant_pricing_action(tk, c["date"], _dtp)
+                if _act == "skip":
                     continue
                 # Cheap pre-filter before the expensive yfinance scan: market cap
                 # is a poor proxy for OPTIONS liquidity. Plenty of $2B+ names list
