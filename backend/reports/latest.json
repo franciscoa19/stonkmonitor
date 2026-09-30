@@ -1,18 +1,20 @@
 {
-  "generated": "2026-09-29T12:13:33.494064+00:00",
+  "generated": "2026-09-30T12:12:41.568359+00:00",
   "account": {
-    "equity": 50940.33,
-    "cash": 52840.33,
-    "buying_power": 187361.32,
+    "equity": 50826.95,
+    "cash": 53296.95,
+    "buying_power": 181187.8,
     "start_equity": 49992.8,
-    "total_pnl": 947.5299999999988,
-    "total_pnl_pct": 1.8953329279416211,
-    "open_positions": 4,
-    "days_running": 21,
+    "total_pnl": 834.1499999999942,
+    "total_pnl_pct": 1.6685402697988392,
+    "open_positions": 8,
+    "days_running": 22,
     "error": null
   },
   "metrics": {
     "closed_trades": 0,
+    "closed_condors": 3,
+    "closed_all": 3,
     "wins": 0,
     "losses": 0,
     "win_rate": 0.0,
@@ -25,8 +27,8 @@
     "trades_per_day": 0.0
   },
   "activity": {
-    "tag": "QUIET",
-    "note": "No trades yet \u2014 the conservative thresholds are holding fire. Expected early on; watch that we're not too selective."
+    "tag": "MEASURED",
+    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 3 closed, 2 open."
   },
   "equity_curve": [
     {
@@ -111,7 +113,11 @@
     },
     {
       "date": "2026-09-29",
-      "equity": 50940.33
+      "equity": 50828.33
+    },
+    {
+      "date": "2026-09-30",
+      "equity": 50826.95
     }
   ],
   "iv_rv": {
@@ -126,8 +132,38 @@
     "wins": 3,
     "win_rate": 100.0,
     "total_pnl": 1010.0,
-    "open": 1,
-    "pending": 0
+    "open": 2,
+    "pending": 0,
+    "open_detail": [
+      {
+        "ticker": "MU",
+        "qty": 2,
+        "expiry": "2026-10-02",
+        "earnings_date": "2026-09-30",
+        "strikes": "935.0/965.0 \u2014 1140.0/1170.0",
+        "credit_collected": 1840.0,
+        "max_risk": 4160.0,
+        "unrealized_pnl": 50.0,
+        "pct_of_max_risk": 1.2,
+        "legs_matched": 4,
+        "legs_expected": 4,
+        "partial": false
+      },
+      {
+        "ticker": "NKE",
+        "qty": 20,
+        "expiry": "2026-10-02",
+        "earnings_date": "2026-10-01",
+        "strikes": "31.5/32.5 \u2014 39.5/40.5",
+        "credit_collected": 460.0,
+        "max_risk": 1540.0,
+        "unrealized_pnl": -220.0,
+        "pct_of_max_risk": -14.3,
+        "legs_matched": 4,
+        "legs_expected": 4,
+        "partial": false
+      }
+    ]
   },
   "iv_variants": [
     {
@@ -304,16 +340,15 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 8,
-    "structures_attempted": 40,
-    "structures_priced": 20,
-    "priced_pct": 50.0,
+    "events": 9,
+    "structures_attempted": 45,
+    "structures_priced": 37,
+    "priced_pct": 82.2,
     "dropped_variants": {
-      "condor_0.7sd": 4,
-      "condor_1.0sd": 4,
-      "condor_1.3sd": 4,
-      "fly": 4,
-      "straddle": 4
+      "condor_0.7sd": 2,
+      "condor_1.0sd": 2,
+      "condor_1.3sd": 3,
+      "fly": 1
     }
   },
   "implied_vs_realized": {
@@ -397,8 +432,8 @@
     "closes_counted": 3
   },
   "heartbeat": {
-    "last_seen": "2026-09-29T11:14:07.327149",
-    "age_minutes": 59.4,
+    "last_seen": "2026-09-30T12:12:41.669072",
+    "age_minutes": 0.0,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -410,25 +445,61 @@
     {
       "symbol": "MU261002C01140000",
       "qty": -2.0,
-      "pnl": 0.0
+      "pnl": -200.0,
+      "pnl_pct": -6.67,
+      "market_val": -3200.0
     },
     {
       "symbol": "MU261002C01170000",
       "qty": 2.0,
-      "pnl": 0.0
+      "pnl": 20.0,
+      "pnl_pct": 0.98,
+      "market_val": 2060.0
     },
     {
       "symbol": "MU261002P00935000",
       "qty": 2.0,
-      "pnl": 0.0
+      "pnl": -490.0,
+      "pnl_pct": -44.95,
+      "market_val": 600.0
     },
     {
       "symbol": "MU261002P00965000",
       "qty": -2.0,
-      "pnl": 0.0
+      "pnl": 720.0,
+      "pnl_pct": 36.55,
+      "market_val": -1250.0
+    },
+    {
+      "symbol": "NKE261002C00039500",
+      "qty": -20.0,
+      "pnl": 40.0,
+      "pnl_pct": 4.44,
+      "market_val": -860.0
+    },
+    {
+      "symbol": "NKE261002C00040500",
+      "qty": 20.0,
+      "pnl": -160.0,
+      "pnl_pct": -23.53,
+      "market_val": 520.0
+    },
+    {
+      "symbol": "NKE261002P00031500",
+      "qty": 20.0,
+      "pnl": 0.0,
+      "pnl_pct": 0.0,
+      "market_val": 280.0
+    },
+    {
+      "symbol": "NKE261002P00032500",
+      "qty": -20.0,
+      "pnl": -100.0,
+      "pnl_pct": -19.23,
+      "market_val": -620.0
     }
   ],
   "proposals": [
-    "No closed trades in 21 days. Consider lowering AUTO_TRADE_SCORE_THRESHOLD (9.0\u21928.5) to grow the sample, or widening the watchlist so IV/earnings setups fire."
+    "No changes proposed \u2014 baseline accruing. Keep collecting."
   ]
 }
