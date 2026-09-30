@@ -1301,6 +1301,10 @@ async def test_variant_pricing_action_is_shared_by_both_loops(db, monkeypatch):
     await seed("condor_1.0sd", 7)
     within = main.settings.iv_variants_reprice_within_days
 
+    # A capture in the other provenance cohort must not suppress this source.
+    assert await main.variant_pricing_action(
+        "CCL", "2026-09-29", within, source="measurement") == ("fresh", None)
+
     # Closer than what we hold AND inside the window → re-price.
     assert await main.variant_pricing_action("CCL", "2026-09-29", within) == ("reprice", 7)
     assert await main.variant_pricing_action("CCL", "2026-09-29", 0) == ("reprice", 7)
@@ -1439,6 +1443,19 @@ def test_settlement_waits_for_the_close_not_a_calendar_day():
                                              tzinfo=ZoneInfo("UTC"))) is False
 
 
+def test_settlement_uses_the_calendar_early_close():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from signals.iv_variants import settlement_ready
+    from feeds.uw_budget import market_close_minute
+    ET = ZoneInfo("America/New_York")
+    early = "2026-11-27"
+
+    assert market_close_minute(datetime(2026, 11, 27, 12, 0, tzinfo=ET)) == 13 * 60
+    assert settlement_ready(early, datetime(2026, 11, 27, 13, 29, tzinfo=ET)) is False
+    assert settlement_ready(early, datetime(2026, 11, 27, 13, 30, tzinfo=ET)) is True
+
+
 async def test_reprice_never_drops_a_capture_it_cannot_replace(db, monkeypatch):
     """The re-price used to delete first and rebuild second. When pricing then
     returned nothing — which is what happens outside RTH, where options have no
@@ -1454,7 +1471,8 @@ async def test_reprice_never_drops_a_capture_it_cannot_replace(db, monkeypatch):
         await db.record_variant_eval(
             "JBL", "2026-09-30", "2026-10-02", variant, 307.70, 3.46, sp,
             credit=0.94, max_loss=406.0, resolve_after="2026-10-02",
-            credit_mid=1.02, fees=5.20, strike_step=5.0, lead_days=2)
+            credit_mid=1.02, fees=5.20, strike_step=5.0, lead_days=2,
+            source="measurement")
 
     setup = SimpleNamespace(ticker="JBL", price=307.70, expected_move="8.34%",
                             next_earnings_date="2026-09-30", recommendation="CONSIDER")
@@ -1471,7 +1489,8 @@ async def test_reprice_never_drops_a_capture_it_cannot_replace(db, monkeypatch):
     assert len(kept) == 2, "a failed re-price must not destroy the held capture"
     assert {r["lead_days"] for r in kept} == {2}
 
-    # And when pricing DOES succeed, the old rows are retired for the new ones.
+    # A partial quote pass still cannot replace the held capture: it would lose
+    # the straddle row and bias the shape comparison toward liquid variants.
     def prices_fine(_trader, _setup, _settings, diagnostics):
         diagnostics.update({"attempted": 5, "priced": 1, "dropped": {}})
         return [{"variant": "condor_1.0sd", "expiry": "2026-10-02", "strikes": sp,
@@ -1480,8 +1499,43 @@ async def test_reprice_never_drops_a_capture_it_cannot_replace(db, monkeypatch):
     monkeypatch.setattr("signals.iv_variants.build_variants", prices_fine)
     await main.log_variant_evals(setup, gate_passed=True, source="measurement")
     now = await db._query("SELECT variant, lead_days, credit FROM iv_variant_evals WHERE resolved=0")
-    assert len(now) == 1 and now[0]["credit"] == 2.10
-    assert now[0]["lead_days"] == 1          # priced one day nearer the print
+    assert len(now) == 2 and {r["credit"] for r in now} == {0.94}
+    assert {r["lead_days"] for r in now} == {2}
+
+    # Once every held shape has a valid replacement, swap the source cohort.
+    def prices_complete(_trader, _setup, _settings, diagnostics):
+        diagnostics.update({"attempted": 5, "priced": 2, "dropped": {}})
+        return [
+            {"variant": "condor_1.0sd", "expiry": "2026-10-02", "strikes": sp,
+             "credit": 2.10, "max_loss": 290.0, "credit_mid": 2.20,
+             "fees": 5.20, "strike_step": 5.0},
+            {"variant": "straddle", "expiry": "2026-10-02", "strikes": sp,
+             "credit": 4.10, "max_loss": None, "credit_mid": 4.20,
+             "fees": 2.60, "strike_step": 5.0},
+        ]
+    monkeypatch.setattr("signals.iv_variants.build_variants", prices_complete)
+    await main.log_variant_evals(setup, gate_passed=True, source="measurement")
+    now = await db._query("SELECT variant, lead_days, credit, source FROM iv_variant_evals WHERE resolved=0")
+    assert {r["variant"] for r in now} == {"condor_1.0sd", "straddle"}
+    assert {r["lead_days"] for r in now} == {1}
+    assert {r["source"] for r in now} == {"measurement"}
+
+
+async def test_reprice_never_deletes_the_other_source_cohort(db):
+    """Watchlist and measurement rows may share a ticker/event but are distinct
+    experimental populations and must survive each other's refreshes."""
+    sp = {"short_put": 90.0, "long_put": 87.0, "short_call": 110.0, "long_call": 113.0}
+    for source in ("watchlist", "measurement"):
+        await db.record_variant_eval(
+            "MU", "2026-10-01", "2026-10-02", "condor_1.0sd", 100.0, 8.0, sp,
+            credit=1.20, max_loss=180.0, resolve_after="2026-10-02",
+            credit_mid=1.30, fees=5.20, strike_step=1.0, lead_days=2, source=source)
+
+    assert await db.get_open_variant_lead("MU", "2026-10-01", "watchlist") == 2
+    assert await db.get_open_variant_lead("MU", "2026-10-01", "measurement") == 2
+    assert await db.delete_open_variant_evals("MU", "2026-10-01", "measurement") == 1
+    remaining = await db._query("SELECT source FROM iv_variant_evals WHERE resolved=0")
+    assert [r["source"] for r in remaining] == ["watchlist"]
 
 
 async def test_reprice_is_not_attempted_outside_market_hours(db, monkeypatch):
@@ -1494,7 +1548,8 @@ async def test_reprice_is_not_attempted_outside_market_hours(db, monkeypatch):
     await db.record_variant_eval(
         "JBL", "2026-09-30", "2026-10-02", "condor_1.0sd", 307.70, 3.46, sp,
         credit=0.94, max_loss=406.0, resolve_after="2026-10-02",
-        credit_mid=1.02, fees=5.20, strike_step=5.0, lead_days=2)
+        credit_mid=1.02, fees=5.20, strike_step=5.0, lead_days=2,
+        source="measurement")
 
     called = []
     monkeypatch.setattr("signals.iv_variants.build_variants",

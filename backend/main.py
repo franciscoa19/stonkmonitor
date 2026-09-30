@@ -1255,8 +1255,8 @@ def days_to_print(earnings_date) -> int | None:
         return None
 
 
-async def variant_pricing_action(ticker: str, earnings_date,
-                                 days_to: int | None) -> tuple[str, int | None]:
+async def variant_pricing_action(ticker: str, earnings_date, days_to: int | None,
+                                 source: str = "watchlist") -> tuple[str, int | None]:
     """What this earnings event needs from the variant logger right now:
     "fresh" (never priced), "reprice" (held rows were priced further from the
     print than we are, and we are now close enough for the earnings premium to
@@ -1270,7 +1270,7 @@ async def variant_pricing_action(ticker: str, earnings_date,
 
     Returns (action, lead_days_of_held_rows_or_None).
     """
-    existing = await db.get_open_variant_lead(ticker, earnings_date)
+    existing = await db.get_open_variant_lead(ticker, earnings_date, source)
     if existing is None:
         return ("fresh", None)
     if days_to is None or days_to >= existing:
@@ -1284,8 +1284,8 @@ async def log_variant_evals(setup, gate_passed: bool = True,
                             source: str = "watchlist"):
     """Measurement only: price several hypothetical structures for this earnings
     event and log them for later resolution vs the realized move. No execution.
-    One set per ticker+event (deduped). Each variant settles only after its own
-    option expiry, using that session's historical underlying close.
+    One set per ticker+event+source (deduped). Each variant settles only after
+    its own option expiry, using that session's historical underlying close.
 
     `gate_passed` records whether the setup cleared the three scanner gates, so
     filtered and indiscriminate selling can be scored against each other.
@@ -1310,7 +1310,8 @@ async def log_variant_evals(setup, gate_passed: bool = True,
     # but replace it with a fresh pass once we are inside the execution window
     # and genuinely closer to the print than the row we hold.
     _days_to = days_to_print(edate)
-    _action, _existing_lead = await variant_pricing_action(setup.ticker, edate, _days_to)
+    _action, _existing_lead = await variant_pricing_action(
+        setup.ticker, edate, _days_to, source)
     if _action == "skip":
         return
     # A re-price needs live option quotes. Outside regular hours there are no
@@ -1338,9 +1339,31 @@ async def log_variant_evals(setup, gate_passed: bool = True,
                 f"{diagnostics.get('attempted', 0)} structures — keeping the "
                 f"{_existing_lead}d capture rather than dropping it")
         return
-    # Only now, with a priced replacement in hand, retire the older capture.
+    # Validate every replacement before retiring anything. A partial chain is
+    # useful as a quote-coverage observation, but cannot replace a complete
+    # held event without silently dropping the variants it failed to price.
+    priced_variants = []
+    for v in variants:
+        resolve_after = expiry_settlement_date(v.get("expiry"))
+        if not resolve_after:
+            logger.warning(f"Variant-log {setup.ticker} skipped {v['variant']}: invalid expiry")
+            continue
+        priced_variants.append((v, resolve_after))
+    if not priced_variants:
+        return
+
+    # Only now, with a complete priced replacement in hand, retire this source's
+    # older capture. The watchlist and measurement cohorts must remain distinct.
     if _action == "reprice":
-        dropped = await db.delete_open_variant_evals(setup.ticker, edate)
+        held = await db.get_open_variant_names(setup.ticker, edate, source)
+        replacement = {v["variant"] for v, _ in priced_variants}
+        missing = held - replacement
+        if missing:
+            logger.warning(
+                f"Variant-log {setup.ticker}: re-price at {_days_to}d missing "
+                f"{', '.join(sorted(missing))}; keeping the {source} capture")
+            return
+        dropped = await db.delete_open_variant_evals(setup.ticker, edate, source)
         logger.info(f"Variant-log {setup.ticker}: re-pricing {dropped} row(s) at "
                     f"{_days_to}d to print (was {_existing_lead}d — implied move "
                     "understated that far out)")
@@ -1350,11 +1373,7 @@ async def log_variant_evals(setup, gate_passed: bool = True,
     except Exception:
         im = 0.0
     logged = []
-    for v in variants:
-        resolve_after = expiry_settlement_date(v.get("expiry"))
-        if not resolve_after:
-            logger.warning(f"Variant-log {setup.ticker} skipped {v['variant']}: invalid expiry")
-            continue
+    for v, resolve_after in priced_variants:
         await db.record_variant_eval(
             ticker=setup.ticker, earnings_date=edate, expiry=v["expiry"],
             variant=v["variant"], spot=setup.price, implied_move_pct=im,
@@ -1442,7 +1461,8 @@ async def measurement_universe_loop():
                 # still carries the quiet front-month IV, not the earnings
                 # premium, so it has to be allowed back through.
                 _dtp = days_to_print(c["date"])
-                _act, _held = await variant_pricing_action(tk, c["date"], _dtp)
+                _act, _held = await variant_pricing_action(
+                    tk, c["date"], _dtp, source="measurement")
                 if _act == "skip":
                     continue
                 # Cheap pre-filter before the expensive yfinance scan: market cap

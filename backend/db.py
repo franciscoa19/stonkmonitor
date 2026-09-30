@@ -882,35 +882,53 @@ class Database:
             (ticker, VALIDATED_VARIANT_PRICING_MODEL, earnings_date, earnings_date))
         return bool(r)
 
-    async def get_open_variant_lead(self, ticker: str,
-                                    earnings_date: Optional[str]) -> Optional[int]:
+    async def get_open_variant_lead(self, ticker: str, earnings_date: Optional[str],
+                                    source: str = "watchlist") -> Optional[int]:
         """Smallest lead_days among this event's UNRESOLVED rows, or None if the
         event has not been priced yet. Used to decide whether a fresh pass is
-        closer to the print than what we already hold."""
+        closer to the print than what this source already holds."""
+        if source not in VARIANT_SOURCES:
+            raise ValueError(f"unknown variant source: {source}")
         r = await self._query(
             """SELECT MIN(COALESCE(lead_days, 999)) AS lead FROM iv_variant_evals
                WHERE ticker=? AND resolved=0 AND pricing_model=?
-                 AND (earnings_date IS ? OR earnings_date=?)""",
-            (ticker, VALIDATED_VARIANT_PRICING_MODEL, earnings_date, earnings_date))
+                 AND source=? AND (earnings_date IS ? OR earnings_date=?)""",
+            (ticker, VALIDATED_VARIANT_PRICING_MODEL, source, earnings_date, earnings_date))
         if not r or r[0]["lead"] is None:
             return None
         return int(r[0]["lead"])
 
-    async def delete_open_variant_evals(self, ticker: str,
-                                        earnings_date: Optional[str]) -> int:
-        """Drop this event's unresolved rows so it can be re-priced nearer the
-        print. Resolved rows are never touched — settled measurements stand."""
+    async def get_open_variant_names(self, ticker: str, earnings_date: Optional[str],
+                                     source: str = "watchlist") -> set[str]:
+        """Variants held for one source/event, used to make repricing atomic."""
+        if source not in VARIANT_SOURCES:
+            raise ValueError(f"unknown variant source: {source}")
+        rows = await self._query(
+            """SELECT DISTINCT variant FROM iv_variant_evals
+               WHERE ticker=? AND resolved=0 AND pricing_model=?
+                 AND source=? AND (earnings_date IS ? OR earnings_date=?)""",
+            (ticker, VALIDATED_VARIANT_PRICING_MODEL, source, earnings_date, earnings_date))
+        return {str(r["variant"]) for r in rows if r.get("variant")}
+
+    async def delete_open_variant_evals(self, ticker: str, earnings_date: Optional[str],
+                                        source: str = "watchlist") -> int:
+        """Drop one source's unresolved event rows after a complete re-price.
+
+        Resolved rows and the other source's cohort are never touched.
+        """
+        if source not in VARIANT_SOURCES:
+            raise ValueError(f"unknown variant source: {source}")
         rows = await self._query(
             """SELECT id FROM iv_variant_evals
                WHERE ticker=? AND resolved=0 AND pricing_model=?
-                 AND (earnings_date IS ? OR earnings_date=?)""",
-            (ticker, VALIDATED_VARIANT_PRICING_MODEL, earnings_date, earnings_date))
+                 AND source=? AND (earnings_date IS ? OR earnings_date=?)""",
+            (ticker, VALIDATED_VARIANT_PRICING_MODEL, source, earnings_date, earnings_date))
         if rows:
             await self._exec(
                 """DELETE FROM iv_variant_evals
                    WHERE ticker=? AND resolved=0 AND pricing_model=?
-                     AND (earnings_date IS ? OR earnings_date=?)""",
-                (ticker, VALIDATED_VARIANT_PRICING_MODEL, earnings_date, earnings_date))
+                     AND source=? AND (earnings_date IS ? OR earnings_date=?)""",
+                (ticker, VALIDATED_VARIANT_PRICING_MODEL, source, earnings_date, earnings_date))
         return len(rows)
 
     async def record_variant_eval(self, ticker: str, earnings_date: Optional[str],

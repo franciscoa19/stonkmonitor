@@ -80,6 +80,21 @@ def is_market_holiday(now: Optional[datetime] = None) -> bool:
     return (n.year, n.month, n.day) in MARKET_HOLIDAYS
 
 
+def market_close_minute(now: Optional[datetime] = None) -> Optional[int]:
+    """Scheduled NYSE close, in ET minutes after midnight, for ``now``'s date.
+
+    Returns ``None`` on a weekend or full holiday. Consumers that need a final
+    session bar (such as option-expiry settlement) use this instead of assuming
+    every session closes at 16:00.
+    """
+    n = _ny(now)
+    if n.weekday() >= 5 or is_market_holiday(n):
+        return None
+    if (n.year, n.month, n.day) in MARKET_EARLY_CLOSES:
+        return _EARLY_CLOSE_MINUTE
+    return 16 * 60
+
+
 def is_market_closed_now(now: Optional[datetime] = None) -> bool:
     """True if the equity market is closed right now: weekend, full holiday, or
     past the 13:00 ET early-close on a half day. Used to suppress options/darkpool
@@ -87,9 +102,9 @@ def is_market_closed_now(now: Optional[datetime] = None) -> bool:
     n = _ny(now)
     if n.weekday() >= 5 or is_market_holiday(n):
         return True
-    if (n.year, n.month, n.day) in MARKET_EARLY_CLOSES:
-        if (n.hour * 60 + n.minute) >= _EARLY_CLOSE_MINUTE:
-            return True
+    close_minute = market_close_minute(n)
+    if close_minute is not None and (n.hour * 60 + n.minute) >= close_minute:
+        return True
     return False
 
 # Session → (channel → poll interval seconds). INF (-1) disables the channel

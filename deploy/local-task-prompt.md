@@ -66,7 +66,8 @@ Body, plain text, in this order. Keep it short; he reads it on a phone.
 
 4. RISK — from `risk_state`: multiplier, loss_streak, halted. If `halted` is true,
    say plainly that trading is stopped and that clearing it is a deliberate
-   `python rearm.py --yes`, not something that happens on its own.
+   `cd /Users/franciscoesqueda/Claude/stonkmonitor/backend && ./venv/bin/python rearm.py --yes`,
+   not something that happens on its own.
 
 5. IMPLIED vs REALIZED — from `implied_vs_realized`, keyed by "watchlist" and
    "measurement". For each cohort separately: n_events, avg_implied_pct,

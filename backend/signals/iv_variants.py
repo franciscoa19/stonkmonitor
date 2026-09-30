@@ -32,9 +32,10 @@ VARIANTS = ["straddle", "condor_0.7sd", "condor_1.0sd", "condor_1.3sd", "fly"]
 _MULT = 100
 
 
-# Minutes past the 16:00 ET close before an expiry's daily bar is taken as the
-# settlement price. Alpaca publishes a Day bar for the CURRENT session that
-# updates as it trades, so the bar existing is not evidence the session is over.
+# Minutes after the scheduled session close before an expiry's daily bar is
+# taken as the settlement price. Alpaca publishes a Day bar for the CURRENT
+# session that updates as it trades, so the bar existing is not evidence the
+# session is over.
 SETTLEMENT_BUFFER_MIN = 30
 
 
@@ -71,7 +72,12 @@ def settlement_ready(expiry: str, now=None) -> bool:
     n = et_now(now)
     if n.date() != exp:
         return n.date() > exp
-    close = n.replace(hour=16, minute=0, second=0, microsecond=0)
+    from feeds.uw_budget import market_close_minute
+    close_minute = market_close_minute(n)
+    if close_minute is None:
+        return False
+    close = n.replace(hour=close_minute // 60, minute=close_minute % 60,
+                      second=0, microsecond=0)
     return n >= close + timedelta(minutes=SETTLEMENT_BUFFER_MIN)
 
 
