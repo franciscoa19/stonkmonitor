@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 """
 Mock-data tests for the paper-trading eval loop.
@@ -1504,3 +1505,56 @@ async def test_reprice_is_not_attempted_outside_market_hours(db, monkeypatch):
     await main.log_variant_evals(setup, gate_passed=True, source="measurement")
     assert called == [], "should not even attempt to price outside RTH"
     assert len(await db._query("SELECT id FROM iv_variant_evals WHERE resolved=0")) == 1
+
+
+def test_condor_rollup_sums_the_structures_own_legs():
+    """Alpaca reports positions leg by leg. A condor's P&L is the sum of its four,
+    and nothing was doing that addition — the report listed four unrelated option
+    lines and could not answer "how is the MU condor doing".
+    """
+    from daily_report import _condor_rollups
+    legs = json.dumps([{"symbol": "MU261002C01140000", "side": "sell"},
+                       {"symbol": "MU261002C01170000", "side": "buy"},
+                       {"symbol": "MU261002P00965000", "side": "sell"},
+                       {"symbol": "MU261002P00935000", "side": "buy"}])
+    condor = {"ticker": "MU", "qty": 2, "credit": 9.20, "max_loss": 2080.0,
+              "expiry": "2026-10-02", "earnings_date": "2026-09-30",
+              "long_put": 935.0, "short_put": 965.0,
+              "short_call": 1140.0, "long_call": 1170.0, "legs_json": legs}
+    positions = [{"symbol": "MU261002C01140000", "pnl": -200.0},
+                 {"symbol": "MU261002C01170000", "pnl": 20.0},
+                 {"symbol": "MU261002P00935000", "pnl": -490.0},
+                 {"symbol": "MU261002P00965000", "pnl": 720.0},
+                 {"symbol": "AAPL261002C00200000", "pnl": 9999.0}]   # not ours
+
+    r = _condor_rollups([condor], positions)[0]
+    assert r["unrealized_pnl"] == 50.0          # the unrelated position is excluded
+    assert r["credit_collected"] == 1840.0      # $9.20 x 100 x 2
+    assert r["max_risk"] == 4160.0              # per-spread max loss x qty
+    assert r["pct_of_max_risk"] == 1.2
+    assert r["legs_matched"] == 4 and r["legs_expected"] == 4
+    assert r["partial"] is False
+
+    # A leg assigned or closed separately makes the sum cover only part of the
+    # structure. Report that rather than presenting a partial total as the P&L.
+    r = _condor_rollups([condor], positions[:3])[0]
+    assert r["partial"] is True
+    assert r["unrealized_pnl"] is None
+    assert r["pct_of_max_risk"] is None
+    assert r["legs_matched"] == 3 and r["legs_expected"] == 4
+
+    assert _condor_rollups([{**condor, "legs_json": "not json"}], positions)[0]["partial"]
+    assert _condor_rollups([], positions) == []
+
+
+async def test_report_reads_the_position_pnl_key_that_actually_exists(db):
+    """AlpacaTrader.get_positions() returns "pnl". The report read "unrealized_pl",
+    so every live position showed flat 0.0 P&L in both the card and the digest."""
+    class PnlTrader(FakeTrader):
+        def get_positions(self):
+            return [{"symbol": "MU261002P00965000", "qty": -2.0, "pnl": 720.0,
+                     "pnl_pct": 36.5, "market_val": -1250.0}]
+
+    d = await build_report_data(db, PnlTrader())
+    assert d["open_positions"][0]["pnl"] == 720.0, "must not silently report 0.0"
+    assert d["open_positions"][0]["pnl_pct"] == 36.5

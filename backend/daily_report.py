@@ -16,6 +16,46 @@ from statistics import mean
 import html as _html
 
 
+def _condor_rollups(condors: list, positions: list) -> list[dict]:
+    """One unrealized-P&L number per open condor, summed from its own legs.
+
+    `legs_matched` vs `legs_expected` is reported rather than assumed: if a leg
+    has been assigned, expired or closed separately, the sum covers only part of
+    the structure and the number must not be presented as the condor's P&L.
+    """
+    import json as _json
+    by_symbol = {p.get("symbol"): p for p in positions if isinstance(p, dict)}
+    out = []
+    for c in condors:
+        try:
+            legs = _json.loads(c.get("legs_json") or "[]")
+        except (TypeError, ValueError):
+            legs = []
+        syms = [l.get("symbol") for l in legs if isinstance(l, dict) and l.get("symbol")]
+        matched = [by_symbol[s] for s in syms if s in by_symbol]
+        qty = int(c.get("qty") or 0)
+        max_risk = float(c.get("max_loss") or 0) * qty
+        pnl = round(sum(float(p.get("pnl") or 0) for p in matched), 2)
+        complete = bool(syms) and len(matched) == len(syms)
+        out.append({
+            "ticker": c.get("ticker"),
+            "qty": qty,
+            "expiry": c.get("expiry"),
+            "earnings_date": c.get("earnings_date"),
+            "strikes": (f"{c.get('long_put')}/{c.get('short_put')} — "
+                        f"{c.get('short_call')}/{c.get('long_call')}"),
+            "credit_collected": round(float(c.get("credit") or 0) * 100 * qty, 2),
+            "max_risk": round(max_risk, 2),
+            "unrealized_pnl": pnl if complete else None,
+            "pct_of_max_risk": (round(pnl / max_risk * 100, 1)
+                                if complete and max_risk else None),
+            "legs_matched": len(matched),
+            "legs_expected": len(syms),
+            "partial": not complete,
+        })
+    return out
+
+
 async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
     thresholds = thresholds or {}
     now = datetime.now(timezone.utc)
@@ -153,10 +193,25 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         "hold_min": t.get("hold_minutes"), "hour": t.get("entry_hour_et"),
     } for t in closed[:15]]
 
+    # AlpacaTrader.get_positions() returns "pnl"/"pnl_pct"/"market_val". Reading
+    # "unrealized_pl" here silently produced 0.0 for every position, so the
+    # report and the emailed digest showed flat P&L on live positions.
     open_pos = [{
         "symbol": p.get("symbol"), "qty": p.get("qty"),
-        "pnl": round(float(p.get("unrealized_pl", 0) or 0), 2) if isinstance(p, dict) else None,
+        "pnl": round(float(p.get("pnl") or 0), 2),
+        "pnl_pct": round(float(p.get("pnl_pct") or 0), 2),
+        "market_val": round(float(p.get("market_val") or 0), 2),
     } for p in positions] if positions and isinstance(positions[0], dict) else []
+
+    # A condor's P&L is the sum of its four legs; Alpaca only reports legs. Without
+    # this the report shows four unrelated option lines and cannot answer "how is
+    # the MU condor doing", which is the one thing the daily digest is asked for.
+    try:
+        condor_detail = _condor_rollups(await db.get_open_condors(), positions or [])
+    except Exception:
+        condor_detail = []
+    if isinstance(iv_condors, dict):
+        iv_condors["open_detail"] = condor_detail
 
     # ── Proposals (propose-and-approve; rule-based seeds) ────────────────
     proposals = []
@@ -351,6 +406,33 @@ def render_html(d: dict) -> str:
             f"{rs.get('halt_streak')} in a row halts entirely.</div>")
     else:
         _risk_banner = ""
+    _open_condor_rows = "".join(
+        "<tr>"
+        f"<td style='padding:3px 12px 3px 0'><b>{_html.escape(str(c.get('ticker')))}</b></td>"
+        f"<td style='padding-right:12px'>{_html.escape(str(c.get('strikes')))}</td>"
+        f"<td style='text-align:right;padding-right:12px'>x{c.get('qty')}</td>"
+        f"<td style='text-align:right;padding-right:12px'>{_money(c.get('credit_collected'))}</td>"
+        f"<td style='text-align:right;padding-right:12px'>{_money(c.get('max_risk'))}</td>"
+        + (f"<td style='text-align:right' class=\"{'up' if (c.get('unrealized_pnl') or 0) >= 0 else 'down'}\">"
+           f"{_money(c.get('unrealized_pnl'))}"
+           f"<span class=\"mut\"> ({c.get('pct_of_max_risk')}% of risk)</span></td>"
+           if not c.get("partial") else
+           "<td style='text-align:right' class=\"mut\">legs "
+           f"{c.get('legs_matched')}/{c.get('legs_expected')} — partial, not shown</td>")
+        + f"<td style='text-align:right;padding-left:12px' class=\"mut\">exp {_html.escape(str(c.get('expiry')))}</td>"
+        "</tr>"
+        for c in (d.get("iv_condors", {}) or {}).get("open_detail", []) or [])
+    _open_condor_table = (
+        "<table style=\"width:100%;border-collapse:collapse;font-family:var(--mono);"
+        "font-size:12.5px;margin-top:12px\">"
+        "<tr class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase;text-align:right\">"
+        "<th style=\"text-align:left\">Open</th><th style=\"text-align:left\">Strikes</th>"
+        "<th>Qty</th><th>Credit</th><th>Max risk</th><th>Unrealized</th><th></th></tr>"
+        f"{_open_condor_rows}</table>"
+        "<div class=\"mut\" style=\"font-size:11.5px;margin-top:8px\">Unrealized is the sum of "
+        "the condor's own four legs. A partial row means a leg is no longer held "
+        "separately, so the structure's P&amp;L is not stated rather than guessed."
+        "</div>") if _open_condor_rows else ""
     hb = d.get("heartbeat", {}) or {}
     if hb.get("stale"):
         age = hb.get("age_minutes")
@@ -649,6 +731,7 @@ def render_html(d: dict) -> str:
       <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Condor P&amp;L</div><div class="{ 'up' if (condors['total_pnl'] or 0)>=0 else 'down'}" style="font-size:22px;font-weight:700">{_money(condors['total_pnl'])}</div></div>
       <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Active / pending</div><div style="font-size:22px;font-weight:700">{condors['open']} / {condors['pending']}</div></div>
     </div>
+    {_open_condor_table}
     <div class="mut" style="font-size:12px;margin-top:10px">This is separate from the legacy single-leg strategy ledger above.</div>
   </div>
 
