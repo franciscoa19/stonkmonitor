@@ -1558,3 +1558,51 @@ async def test_report_reads_the_position_pnl_key_that_actually_exists(db):
     d = await build_report_data(db, PnlTrader())
     assert d["open_positions"][0]["pnl"] == 720.0, "must not silently report 0.0"
     assert d["open_positions"][0]["pnl_pct"] == 36.5
+
+
+async def test_proposals_count_closed_condors_not_just_the_legacy_ledger(db):
+    """Closed trades live in two tables. Counting only trade_performance made the
+    digest report "no closed trades" while three winning condors sat in
+    iv_condors — and then propose loosening a threshold to fix a drought that was
+    not happening.
+    """
+    # Three closed, winning condors; nothing at all in the single-leg ledger.
+    for i, (tk, pnl) in enumerate((("ORCL", 246.0), ("ADBE", 24.0), ("COST", 740.0)), 1):
+        await db._exec(
+            """INSERT INTO iv_condors (ticker, earnings_date, expiry, legs_json, qty,
+                                       credit, max_loss, opened_at, status, pnl)
+               VALUES (?,?,?,?,?,?,?,?,'closed',?)""",
+            (tk, "2026-09-10", "2026-09-11", "[]", 1, 2.0, 300.0,
+             "2026-09-08T10:00:00", pnl))
+
+    d = await build_report_data(db, FakeTrader())
+    text = " ".join(d["proposals"])
+    assert d["metrics"]["closed_condors"] == 3
+    assert d["metrics"]["closed_all"] == d["metrics"]["closed_trades"] + 3
+    assert "No closed trades" not in text, f"still blind to condors: {text}"
+    assert d["activity"]["tag"] != "QUIET"
+
+
+async def test_no_trade_proposal_does_not_target_a_disabled_engine(db, monkeypatch):
+    """With AUTO_TRADE_FLOW_ENABLED=false, lowering AUTO_TRADE_SCORE_THRESHOLD
+    changes nothing — the flow engine it governs is switched off. Proposing it
+    reads as actionable advice that cannot work."""
+    import config
+
+    real = config.get_settings
+
+    def flow_off():
+        s = real()
+        object.__setattr__(s, "auto_trade_flow_enabled", False)
+        return s
+    monkeypatch.setattr(config, "get_settings", flow_off)
+
+    # Nothing closed anywhere, and long enough running for the proposal to fire.
+    await db._exec("INSERT INTO daily_equity (date, equity, open_equity) VALUES "
+                   "('2026-09-01', 50000, 50000), ('2026-09-10', 50000, 50000)")
+    d = await build_report_data(db, FakeTrader())
+    text = " ".join(d["proposals"])
+    if "No closed trades" in text:
+        assert "AUTO_TRADE_FLOW_ENABLED=false" in text
+        assert "would change nothing" in text
+        assert "IV/earnings condor" in text

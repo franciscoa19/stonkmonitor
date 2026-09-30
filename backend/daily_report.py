@@ -216,11 +216,37 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
     # ── Proposals (propose-and-approve; rule-based seeds) ────────────────
     proposals = []
     score_thr = thresholds.get("score", 9.0)
-    if n == 0 and days_running >= 3:
-        proposals.append(
-            f"No closed trades in {days_running} days. Consider lowering "
-            f"AUTO_TRADE_SCORE_THRESHOLD ({score_thr}→8.5) to grow the sample, "
-            f"or widening the watchlist so IV/earnings setups fire.")
+
+    # Closed trades live in TWO ledgers: the legacy single-leg table
+    # (trade_performance -> n) and the condor table (iv_condors). Only the first
+    # was counted here, so with three winning condors closed the digest still
+    # reported "no closed trades" and proposed loosening a threshold to fix a
+    # drought that was not happening.
+    condors_closed = int((iv_condors or {}).get("closed") or 0)
+    condors_open = int((iv_condors or {}).get("open") or 0)
+    closed_all = n + condors_closed
+
+    try:
+        from config import get_settings as _gs4
+        flow_on = bool(getattr(_gs4(), "auto_trade_flow_enabled", True))
+    except Exception:
+        flow_on = True
+
+    if closed_all == 0 and days_running >= 3:
+        if flow_on:
+            proposals.append(
+                f"No closed trades in {days_running} days. Consider lowering "
+                f"AUTO_TRADE_SCORE_THRESHOLD ({score_thr}→8.5) to grow the sample, "
+                f"or widening the watchlist so IV/earnings setups fire.")
+        else:
+            # Proposing a flow threshold while the flow engine is switched off
+            # would change nothing. Point at the path that is actually live.
+            proposals.append(
+                f"No closed trades in {days_running} days. Note the flow/pattern "
+                f"engine is OFF (AUTO_TRADE_FLOW_ENABLED=false), so "
+                f"AUTO_TRADE_SCORE_THRESHOLD is not the constraint — lowering it "
+                f"would change nothing. The live path is the IV/earnings condor: "
+                f"widen the watchlist or relax the scanner gates to grow the sample.")
     if trades_per_day > 4:
         proposals.append(
             f"~{trades_per_day:.1f} entries/day — trading heavy. Consider raising "
@@ -244,9 +270,15 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         proposals.append("No changes proposed — baseline accruing. Keep collecting.")
 
     # too much / too little verdict
-    if n == 0 and trades_7d == 0:
+    if closed_all == 0 and trades_7d == 0 and condors_open == 0:
         activity = ("QUIET", "No trades yet — the conservative thresholds are holding fire. "
                     "Expected early on; watch that we're not too selective.")
+    elif n == 0 and trades_7d == 0:
+        # The single-leg ledger is quiet, but the condor path is the live one.
+        # Calling this "no trades" was the same blind spot as the proposal above.
+        activity = ("MEASURED",
+                    f"No single-leg entries — that engine is paused. The condor path "
+                    f"is carrying it: {condors_closed} closed, {condors_open} open.")
     elif trades_per_day > 4:
         activity = ("HEAVY", f"~{trades_per_day:.1f} entries/day — on the high side.")
     else:
@@ -258,7 +290,9 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
                     "start_equity": start_equity, "total_pnl": total_pnl,
                     "total_pnl_pct": total_pnl_pct, "open_positions": len(positions),
                     "days_running": days_running, "error": acct.get("error")},
-        "metrics": {"closed_trades": n, "wins": len(wins), "losses": len(losses),
+        "metrics": {"closed_trades": n, "closed_condors": condors_closed,
+                    "closed_all": closed_all,
+                    "wins": len(wins), "losses": len(losses),
                     "win_rate": win_rate, "profit_factor": profit_factor,
                     "avg_win": avg_win, "avg_loss": avg_loss,
                     "realized_total": realized_total, "avg_hold_min": avg_hold_min,
