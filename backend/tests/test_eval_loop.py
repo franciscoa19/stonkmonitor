@@ -1,3 +1,4 @@
+from datetime import date as _dtdate, datetime as _dtdatetime
 import json
 from types import SimpleNamespace
 """
@@ -1463,19 +1464,27 @@ async def test_reprice_never_drops_a_capture_it_cannot_replace(db, monkeypatch):
     JBL/MU/ACN/NKE captures on 2026-09-29. A held capture beats a lost one.
     """
     import main
+    from datetime import timedelta as _td
+    from market_time import et_today
     monkeypatch.setattr(main, "db", db)
     monkeypatch.setattr(main, "is_rth_now", lambda: True)
     sp = {"short_put": 300.0, "long_put": 295.0, "short_call": 320.0, "long_call": 325.0}
 
+    # Anchor the print one day out from the REAL today. lead_days is computed
+    # against et_today(), so a hardcoded date makes the expected lead drift and
+    # the test fails on a later calendar day for no reason.
+    edate = (et_today() + _td(days=1)).isoformat()
+    expiry = (et_today() + _td(days=3)).isoformat()
+
     for variant in ("condor_1.0sd", "straddle"):
         await db.record_variant_eval(
-            "JBL", "2026-09-30", "2026-10-02", variant, 307.70, 3.46, sp,
-            credit=0.94, max_loss=406.0, resolve_after="2026-10-02",
+            "JBL", edate, expiry, variant, 307.70, 3.46, sp,
+            credit=0.94, max_loss=406.0, resolve_after=expiry,
             credit_mid=1.02, fees=5.20, strike_step=5.0, lead_days=2,
             source="measurement")
 
     setup = SimpleNamespace(ticker="JBL", price=307.70, expected_move="8.34%",
-                            next_earnings_date="2026-09-30", recommendation="CONSIDER")
+                            next_earnings_date=edate, recommendation="CONSIDER")
     monkeypatch.setattr("signals.earnings_scanner.is_near_earnings", lambda *a, **k: True)
 
     def prices_nothing(_trader, _setup, _settings, diagnostics):
@@ -1493,7 +1502,7 @@ async def test_reprice_never_drops_a_capture_it_cannot_replace(db, monkeypatch):
     # the straddle row and bias the shape comparison toward liquid variants.
     def prices_fine(_trader, _setup, _settings, diagnostics):
         diagnostics.update({"attempted": 5, "priced": 1, "dropped": {}})
-        return [{"variant": "condor_1.0sd", "expiry": "2026-10-02", "strikes": sp,
+        return [{"variant": "condor_1.0sd", "expiry": expiry, "strikes": sp,
                  "credit": 2.10, "max_loss": 290.0, "credit_mid": 2.20,
                  "fees": 5.20, "strike_step": 5.0}]
     monkeypatch.setattr("signals.iv_variants.build_variants", prices_fine)
@@ -1506,10 +1515,10 @@ async def test_reprice_never_drops_a_capture_it_cannot_replace(db, monkeypatch):
     def prices_complete(_trader, _setup, _settings, diagnostics):
         diagnostics.update({"attempted": 5, "priced": 2, "dropped": {}})
         return [
-            {"variant": "condor_1.0sd", "expiry": "2026-10-02", "strikes": sp,
+            {"variant": "condor_1.0sd", "expiry": expiry, "strikes": sp,
              "credit": 2.10, "max_loss": 290.0, "credit_mid": 2.20,
              "fees": 5.20, "strike_step": 5.0},
-            {"variant": "straddle", "expiry": "2026-10-02", "strikes": sp,
+            {"variant": "straddle", "expiry": expiry, "strikes": sp,
              "credit": 4.10, "max_loss": None, "credit_mid": 4.20,
              "fees": 2.60, "strike_step": 5.0},
         ]
@@ -1661,3 +1670,84 @@ async def test_no_trade_proposal_does_not_target_a_disabled_engine(db, monkeypat
         assert "AUTO_TRADE_FLOW_ENABLED=false" in text
         assert "would change nothing" in text
         assert "IV/earnings condor" in text
+
+
+def test_close_debit_refuses_a_one_sided_or_missing_book():
+    """The debit drives BOTH the profit-target decision and the submitted limit.
+    Reading `mid` with a 0 default let an untradeable leg pull it toward zero —
+    faking a TP and setting a limit too low to fill, from data shaped like price.
+    """
+    from main import _condor_close_debit, _condor_wing_width
+    legs = [{"symbol": "SC"}, {"symbol": "LC"}, {"symbol": "SP"}, {"symbol": "LP"}]
+
+    def q(**kw):
+        return {s: {"bid": b, "ask": a, "mid": (b + a) / 2 if b and a else (b or a)}
+                for s, (b, a) in kw.items()}
+
+    full = q(SC=(6.0, 6.4), LC=(2.0, 2.2), SP=(3.0, 3.4), LP=(1.0, 1.2))
+    # (6.2 + 3.2) - (2.1 + 1.1)
+    assert _condor_close_debit(legs, full) == pytest.approx(6.2)
+
+    # A missing leg used to contribute 0 and understate the debit.
+    missing = dict(full); del missing["SP"]
+    assert _condor_close_debit(legs, missing) is None
+    # One-sided is just as bad: get_option_quotes falls back to `bid or ask`.
+    one_sided = q(SC=(6.0, 6.4), LC=(2.0, 2.2), SP=(3.0, 0.0), LP=(1.0, 1.2))
+    assert _condor_close_debit(legs, one_sided) is None
+    assert _condor_close_debit(legs, {}) is None
+
+    # Wing width is the guaranteed-fill ceiling for the forced expiry close.
+    assert _condor_wing_width({"short_put": 965.0, "long_put": 935.0,
+                               "long_call": 1170.0, "short_call": 1140.0}) == 30.0
+    assert _condor_wing_width({}) == 0.0
+
+
+async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeypatch):
+    """Exit pricing must come off a live session, except on expiry day: an
+    unclosed short leg through expiry is assignment, which beats a poor fill."""
+    import main
+    monkeypatch.setattr(main, "db", db)
+
+    legs = [{"symbol": "SC", "side": "sell", "ratio_qty": 1},
+            {"symbol": "LC", "side": "buy", "ratio_qty": 1},
+            {"symbol": "SP", "side": "sell", "ratio_qty": 1},
+            {"symbol": "LP", "side": "buy", "ratio_qty": 1}]
+    submitted = []
+
+    class ExitTrader:
+        def get_order_raw(self, _oid):
+            return {"status": "filled", "filled_qty": 2, "filled_avg_price": -9.20}
+
+        def get_option_quotes(self, symbols):
+            # One-sided book, as after hours: no trustworthy mid.
+            return {s: {"bid": 1.0, "ask": 0.0, "mid": 1.0} for s in symbols}
+
+        def close_multileg(self, legs_, qty, limit, tif="day"):
+            submitted.append(limit)
+            return {"id": "close-1"}
+
+    monkeypatch.setattr(main, "trader", ExitTrader())
+    row = {"id": 1, "ticker": "MU", "qty": 2, "credit": 9.20, "status": "open",
+           "entry_status": "filled", "entry_order_id": "e1",
+           "earnings_date": "2026-09-30", "expiry": "2026-10-02",
+           "legs_json": json.dumps(legs), "short_put": 965.0, "long_put": 935.0,
+           "short_call": 1140.0, "long_call": 1170.0}
+
+    # Post-earnings, but outside RTH → defer rather than price off a dead book.
+    monkeypatch.setattr(main, "is_rth_now", lambda: False)
+    await main._manage_condor(dict(row))
+    assert submitted == [], "must not submit a close priced off an overnight book"
+
+    # In RTH but still one-sided → the debit is not computable, so still defer.
+    monkeypatch.setattr(main, "is_rth_now", lambda: True)
+    await main._manage_condor(dict(row))
+    assert submitted == [], "a one-sided book is not a price"
+
+    # Expiry day, past the force hour → close anyway, capped at the wing width.
+    import market_time
+    monkeypatch.setattr(main, "is_rth_now", lambda: False)
+    monkeypatch.setattr(market_time, "et_today", lambda *a: _dtdate(2026, 10, 2))
+    monkeypatch.setattr(market_time, "et_now",
+                        lambda *a: _dtdatetime(2026, 10, 2, 15, 30, tzinfo=market_time.ET))
+    await main._manage_condor(dict(row))
+    assert submitted == [30.0], f"expected wing-width limit, got {submitted}"

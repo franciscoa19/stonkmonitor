@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     iv_exec_max_positions: int = Field(3, env="IV_EXEC_MAX_POSITIONS")
     iv_exec_max_per_day: int = Field(4, env="IV_EXEC_MAX_PER_DAY")               # new condors per day
     iv_exec_tp_pct: float = Field(0.5, env="IV_EXEC_TP_PCT")                     # close at 50% of max credit captured
+    # Expiry day: after this ET hour, close on whatever the book offers rather
+    # than deferring for a better one. Assignment on a short leg is worse than
+    # a poor fill, so this is the one override on the RTH/two-sided checks.
+    iv_exec_force_close_hour: int = Field(15, env="IV_EXEC_FORCE_CLOSE_HOUR")
     iv_exec_min_credit: float = Field(0.10, env="IV_EXEC_MIN_CREDIT")           # skip if net credit < $0.10 (not worth it)
     iv_exec_min_dte: int = Field(1, env="IV_EXEC_MIN_DTE")                       # front expiry must be ≥1 DTE after earnings
     iv_exec_max_dte: int = Field(10, env="IV_EXEC_MAX_DTE")                      # …and ≤10 DTE (front-month only)

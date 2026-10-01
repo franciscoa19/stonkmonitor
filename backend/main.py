@@ -1499,12 +1499,38 @@ async def measurement_universe_loop():
         await asyncio.sleep(max(1, s.iv_measure_interval_hours) * 3600)
 
 
-def _condor_close_debit(legs: list, quotes: dict) -> float:
-    """Current mid cost to buy the spread back (net debit). legs order:
-    [short_call, long_call, short_put, long_put]."""
-    m = {l["symbol"]: quotes.get(l["symbol"], {}).get("mid", 0) for l in legs}
-    return (m[legs[0]["symbol"]] + m[legs[2]["symbol"]]) \
-        - (m[legs[1]["symbol"]] + m[legs[3]["symbol"]])
+def _condor_close_debit(legs: list, quotes: dict) -> float | None:
+    """Mid cost to buy the spread back (net debit), or None when the quotes
+    cannot support a number. legs order: [short_call, long_call, short_put,
+    long_put].
+
+    Every leg must be two-sided. The old version read `mid` with a default of 0
+    for a missing leg, and get_option_quotes() itself falls back to `bid or ask`
+    on a one-sided book — so an untradeable leg silently moved the debit toward
+    zero. That both fakes the profit target and sets a close limit too low to
+    fill, from data that looks like a price.
+    """
+    mids = {}
+    for l in legs:
+        q = quotes.get(l["symbol"]) or {}
+        bid, ask = float(q.get("bid") or 0), float(q.get("ask") or 0)
+        if bid <= 0 or ask <= 0:
+            return None
+        mids[l["symbol"]] = (bid + ask) / 2
+    return (mids[legs[0]["symbol"]] + mids[legs[2]["symbol"]]) \
+        - (mids[legs[1]["symbol"]] + mids[legs[3]["symbol"]])
+
+
+def _condor_wing_width(c: dict) -> float:
+    """Widest wing, in points. A condor can never cost more than this to close,
+    so it doubles as a guaranteed-fill limit when quotes cannot be trusted."""
+    widths = []
+    for a, b in (("short_put", "long_put"), ("long_call", "short_call")):
+        try:
+            widths.append(abs(float(c[a]) - float(c[b])))
+        except (TypeError, ValueError, KeyError):
+            continue
+    return max(widths) if widths else 0.0
 
 
 async def _manage_condor(c: dict):
@@ -1560,10 +1586,34 @@ async def _manage_condor(c: dict):
         edate = _date.fromisoformat(c["earnings_date"]) if c.get("earnings_date") else None
     except Exception:
         edate = None
-    from market_time import et_today
+    from market_time import et_now, et_today
     post_earnings = edate is not None and et_today() > edate
-    tp_hit = debit <= (1 - settings.iv_exec_tp_pct) * credit
-    if c["status"] == "open" and not (post_earnings or tp_hit):
+
+    # Expiry day, late in the session: close on whatever the book offers. An
+    # unclosed short leg through expiry is assignment, which is worse than a
+    # poor fill, so this is the one case that overrides the quote checks below.
+    forced = False
+    try:
+        forced = (_date.fromisoformat(str(c.get("expiry"))) == et_today()
+                  and et_now().hour >= settings.iv_exec_force_close_hour)
+    except (TypeError, ValueError):
+        forced = False
+
+    # Everything except the fill-check below needs a live, two-sided book.
+    # MU's post-print close was estimated at $8.07 from an overnight mid and
+    # filled at $5.09 the next morning: a $596 swing on noise that happened to
+    # break our way. The same noise sets a limit too low to fill, or fakes a
+    # profit target off a stale print.
+    if c["status"] == "open" and not forced:
+        if not is_rth_now():
+            logger.debug("IV-exec condor #%s close deferred: outside RTH", cid)
+            return
+        if debit is None:
+            logger.debug("IV-exec condor #%s close deferred: book not two-sided", cid)
+            return
+
+    tp_hit = debit is not None and debit <= (1 - settings.iv_exec_tp_pct) * credit
+    if c["status"] == "open" and not (post_earnings or tp_hit or forced):
         return
 
     if c["status"] == "closing" and c.get("close_order_id"):
@@ -1571,7 +1621,7 @@ async def _manage_condor(c: dict):
         o = await loop.run_in_executor(None, trader.get_order_raw, c["close_order_id"])
         st = (o or {}).get("status")
         if st == "filled":
-            exit_debit = abs(float((o or {}).get("filled_avg_price") or debit))
+            exit_debit = abs(float((o or {}).get("filled_avg_price") or debit or 0))
             pnl = (credit - exit_debit) * 100 * qty
             await db.close_condor(cid, exit_debit, pnl)
             logger.info(f"IV-exec condor #{cid} {c['ticker']} CLOSED: "
@@ -1593,15 +1643,23 @@ async def _manage_condor(c: dict):
         return
 
     # Submit the close (marketable-ish debit limit) and mark closing.
-    reason = "TP" if tp_hit else "post-earnings"
-    limit = round(max(debit, 0.01) * 1.10, 2)
+    reason = "TP" if tp_hit else ("expiry" if forced and not post_earnings else "post-earnings")
+    if debit is None:
+        # Only reachable on the forced expiry-day path. Cap the limit at the wing
+        # width: a condor cannot cost more than that to buy back, so this fills
+        # at or better than the worst case instead of guessing a price.
+        limit = round(max(_condor_wing_width(c), 0.05), 2)
+        reason += " (no book — wing-width limit)"
+    else:
+        limit = round(max(debit, 0.01) * 1.10, 2)
     res = await loop.run_in_executor(None, lambda: trader.close_multileg(legs, qty, limit))
     if res.get("error"):
         logger.warning(f"IV-exec condor #{cid} close submit failed: {res['error']}")
         return
     await db.mark_condor_closing(cid, res.get("id"))
     logger.info(f"IV-exec condor #{cid} {c['ticker']} closing ({reason}) "
-                f"debit≈${debit:.2f} order={res.get('id')}")
+                f"debit{'≈$%.2f' % debit if debit is not None else ' unknown'} "
+                f"limit ${limit:.2f} order={res.get('id')}")
 
 
 async def iv_condor_monitor_loop():
