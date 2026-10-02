@@ -1754,14 +1754,33 @@ async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeyp
     await main._manage_condor(dict(row))
     assert submitted == [], "a one-sided book is not a price"
 
-    # Expiry day, past the force hour → close anyway, capped at the wing width.
+    # Expiry day, past the force hour. The spot decides between holding for the
+    # full credit and closing to avoid assignment, so it has to be controlled
+    # here rather than read off the live feed.
     import market_time
+    from types import SimpleNamespace as _NS
     monkeypatch.setattr(main, "is_rth_now", lambda: False)
     monkeypatch.setattr(market_time, "et_today", lambda *a: _dtdate(2026, 10, 2))
     monkeypatch.setattr(market_time, "et_now",
                         lambda *a: _dtdatetime(2026, 10, 2, 15, 30, tzinfo=market_time.ET))
+
+    def feed_at(px):
+        return _NS(get_latest_quote=lambda _t: {"bid": px, "ask": px, "mid": px},
+                   get_daily_close=lambda _t, _d: None)
+
+    # Pressed against the put short: 1% of room is pin risk, so close — and with
+    # no usable book, at the wing-width ceiling.
+    monkeypatch.setattr(main, "feed", feed_at(975.0))
     await main._manage_condor(dict(row))
     assert submitted == [30.0], f"expected wing-width limit, got {submitted}"
+
+    # Comfortably inside: hold for the full credit instead. This overrides the
+    # forced close because expiring worthless carries no assignment at all —
+    # which is the whole reason the forced path exists.
+    submitted.clear()
+    monkeypatch.setattr(main, "feed", feed_at(1050.0))
+    await main._manage_condor(dict(row))
+    assert submitted == [], "comfortably-OTM condor should expire, not be bought back"
 
 
 def test_close_limit_cushion_is_at_least_one_tick():
@@ -1783,3 +1802,49 @@ def test_close_limit_cushion_is_at_least_one_tick():
     # Never pay more than the wings can cost.
     assert limit_for(1.50, 1.00) == 1.00
     assert limit_for(0.99, 1.00) == 1.00
+
+
+def test_expiry_hold_requires_real_room_not_merely_inside():
+    """Holding to expiry is right only while there is room. Inside the short
+    strikes by a hair is pin risk, where assignment is unpredictable and closing
+    is the correct move."""
+    from main import _condor_expiry_hold
+    nke = {"short_put": 32.5, "short_call": 39.5}
+
+    # NKE on 2026-10-02: ~9% and ~10.6% clear of the shorts.
+    assert _condor_expiry_hold(nke, 35.73, 0.03) is True
+    # Just inside the put short — 1.5% of room is pin risk, not a free credit.
+    assert _condor_expiry_hold(nke, 33.0, 0.03) is False
+    assert _condor_expiry_hold(nke, 39.0, 0.03) is False
+    # Through a short strike: must close.
+    assert _condor_expiry_hold(nke, 31.0, 0.03) is False
+    assert _condor_expiry_hold(nke, 41.0, 0.03) is False
+    # Unusable inputs never authorise holding.
+    assert _condor_expiry_hold(nke, None, 0.03) is False
+    assert _condor_expiry_hold(nke, 0, 0.03) is False
+    assert _condor_expiry_hold({}, 35.73, 0.03) is False
+    assert _condor_expiry_hold({"short_put": 39.5, "short_call": 32.5}, 35.0, 0.03) is False
+
+
+def test_expiry_settlement_books_the_payoff_so_a_held_row_cannot_leak():
+    """A condor allowed to expire produces no close fill, so nothing else would
+    ever book its P&L — the row would sit 'open' forever and the ledger would
+    silently omit the trade."""
+    from signals.iv_variants import variant_payoff
+    nke = {"credit": 0.23, "short_put": 32.5, "long_put": 31.5,
+           "short_call": 39.5, "long_call": 40.5}
+    qty = 20
+
+    # Expires inside the zone: the full credit, which is what holding buys.
+    assert variant_payoff(nke, 35.73) == pytest.approx(23.0)
+    assert variant_payoff(nke, 35.73) * qty == pytest.approx(460.0)
+    # Closing at a $0.10 debit instead would have booked only +$260.
+    assert (0.23 - 0.10) * 100 * qty == pytest.approx(260.0)
+
+    # Through the put wing: the loss is capped at the wing, not unbounded.
+    assert variant_payoff(nke, 30.0) * qty == pytest.approx(-1540.0)
+    assert variant_payoff(nke, 45.0) * qty == pytest.approx(-1540.0)
+    # Pinned exactly on a short strike: still the full credit.
+    assert variant_payoff(nke, 32.5) * qty == pytest.approx(460.0)
+    # Halfway into the put wing.
+    assert variant_payoff(nke, 32.0) * qty == pytest.approx(-540.0)

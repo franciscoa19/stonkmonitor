@@ -1534,6 +1534,54 @@ def _condor_close_debit(legs: list, quotes: dict) -> float | None:
         - (px[legs[1]["symbol"]] + px[legs[3]["symbol"]])
 
 
+async def _condor_risk_check(pnl: float) -> None:
+    """Advance the anti-martingale throttle after a condor books P&L, and trip
+    the breaker on a loss streak.
+
+    Shared by every settlement path. A condor held to expiry books through a
+    different branch than one closed by order fill, and a throttle that only
+    advanced on order fills would quietly stop counting losses the moment we
+    started letting positions expire.
+    """
+    if not settings.iv_risk_throttle_enabled:
+        return
+    rs = await db.get_risk_state(
+        settings.iv_risk_loss_factor, settings.iv_risk_win_factor,
+        settings.iv_risk_floor, settings.iv_risk_halt_streak)
+    if rs["loss_streak"] >= settings.iv_risk_halt_streak and not rs["halted"]:
+        reason = (f"{rs['loss_streak']} consecutive losing condors — "
+                  "halted pending review")
+        await db.set_halt(reason)
+        logger.error(f"IV-exec CIRCUIT BREAKER TRIPPED: {reason}")
+    elif pnl < 0:
+        logger.warning(f"IV-exec loss streak now {rs['loss_streak']}; "
+                       f"next size {rs['multiplier']:.0%} of normal")
+
+
+def _condor_expiry_hold(c: dict, spot: float | None, buffer_pct: float) -> bool:
+    """True when an expiring condor sits far enough inside its short strikes to
+    be worth letting expire rather than paying to close.
+
+    Taking the 50%-of-credit profit target on expiry day forfeits the rest of
+    the premium to remove a risk that has largely already passed: NKE's TP close
+    would have booked +$260 against the +$460 the position collects if all four
+    legs expire worthless. Holding is only right while there is real room — the
+    buffer is what separates "comfortably out of the money" from pin risk, where
+    assignment becomes unpredictable and closing is the correct move.
+
+    Re-evaluated on every monitor cycle, so a drift toward a short strike
+    reinstates the close on its own.
+    """
+    try:
+        sp, sc = float(c["short_put"]), float(c["short_call"])
+    except (TypeError, ValueError, KeyError):
+        return False
+    if not spot or spot <= 0 or sp <= 0 or sc <= 0 or sc <= sp:
+        return False
+    return ((spot - sp) / spot >= buffer_pct
+            and (sc - spot) / spot >= buffer_pct)
+
+
 def _condor_wing_width(c: dict) -> float:
     """Widest wing, in points. A condor can never cost more than this to close,
     so it doubles as a guaranteed-fill limit when quotes cannot be trusted."""
@@ -1550,6 +1598,7 @@ async def _manage_condor(c: dict):
     """Confirm entry fill, then close on profit target / after the print."""
     import json as _json
     from datetime import date as _date
+    from signals.iv_variants import settlement_ready, variant_payoff
     loop = asyncio.get_event_loop()
     legs = _json.loads(c["legs_json"])
     cid, qty, credit = c["id"], int(c["qty"]), float(c["credit"])
@@ -1605,12 +1654,14 @@ async def _manage_condor(c: dict):
     # Expiry day, late in the session: close on whatever the book offers. An
     # unclosed short leg through expiry is assignment, which is worse than a
     # poor fill, so this is the one case that overrides the quote checks below.
+    expiring = False
     forced = False
     try:
+        expiring = _date.fromisoformat(str(c.get("expiry"))) <= et_today()
         forced = (_date.fromisoformat(str(c.get("expiry"))) == et_today()
                   and et_now().hour >= settings.iv_exec_force_close_hour)
     except (TypeError, ValueError):
-        forced = False
+        expiring = forced = False
 
     # Everything except the fill-check below needs a live, two-sided book.
     # MU's post-print close was estimated at $8.07 from an overnight mid and
@@ -1625,7 +1676,45 @@ async def _manage_condor(c: dict):
             logger.debug("IV-exec condor #%s close deferred: book not two-sided", cid)
             return
 
+    # ── Settle a condor that was allowed to expire ──
+    # Holding to expiry produces no close fill, so without this the row would
+    # leak open forever and its P&L would never book. Settled from the expiry
+    # session's underlying close, the same source the variant evals use, with
+    # the same expiry-intrinsic payoff maths.
+    if c["status"] == "open" and expiring and settlement_ready(c.get("expiry")):
+        close_px = await loop.run_in_executor(
+            None, feed.get_daily_close, c["ticker"], c["expiry"])
+        if close_px is None:
+            logger.debug("IV-exec condor #%s awaiting expiry close bar", cid)
+            return
+        per_spread = variant_payoff(c, close_px)          # $ per spread, incl. credit
+        pnl = per_spread * qty
+        exit_debit = max(0.0, credit - per_spread / 100.0)
+        await db.close_condor(cid, exit_debit, pnl)
+        logger.info(f"IV-exec condor #{cid} {c['ticker']} EXPIRED at ${close_px:.2f} "
+                    f"(zone {c['short_put']}–{c['short_call']}): credit ${credit:.2f} "
+                    f"→ P&L ${pnl:+.0f}")
+        await _condor_risk_check(pnl)
+        return
+
     tp_hit = debit is not None and debit <= (1 - settings.iv_exec_tp_pct) * credit
+
+    # ── Hold an expiring, comfortably-OTM condor instead of paying to close ──
+    if c["status"] == "open" and expiring and (tp_hit or post_earnings or forced):
+        spot = await loop.run_in_executor(None, feed.get_latest_quote, c["ticker"])
+        spot_px = None
+        if isinstance(spot, dict):
+            b, a = float(spot.get("bid") or 0), float(spot.get("ask") or 0)
+            spot_px = spot.get("mid") or ((b + a) / 2 if (b and a) else (b or a))
+        if _condor_expiry_hold(c, spot_px, settings.iv_exec_expiry_hold_buffer_pct):
+            logger.info(
+                f"IV-exec condor #{cid} {c['ticker']} holding to expiry: spot "
+                f"${spot_px:.2f} is >={settings.iv_exec_expiry_hold_buffer_pct:.0%} "
+                f"inside {c['short_put']}–{c['short_call']}, so all four legs "
+                f"should expire worthless for the full ${credit * 100 * qty:,.0f} "
+                f"credit rather than paying ~${(debit or 0) * 100 * qty:,.0f} to close")
+            return
+
     if c["status"] == "open" and not (post_earnings or tp_hit or forced):
         return
 
@@ -1639,18 +1728,7 @@ async def _manage_condor(c: dict):
             await db.close_condor(cid, exit_debit, pnl)
             logger.info(f"IV-exec condor #{cid} {c['ticker']} CLOSED: "
                         f"credit ${credit:.2f} exit ${exit_debit:.2f} → P&L ${pnl:+.0f}")
-            if settings.iv_risk_throttle_enabled:
-                rs = await db.get_risk_state(
-                    settings.iv_risk_loss_factor, settings.iv_risk_win_factor,
-                    settings.iv_risk_floor, settings.iv_risk_halt_streak)
-                if rs["loss_streak"] >= settings.iv_risk_halt_streak and not rs["halted"]:
-                    reason = (f"{rs['loss_streak']} consecutive losing condors — "
-                              "halted pending review")
-                    await db.set_halt(reason)
-                    logger.error(f"IV-exec CIRCUIT BREAKER TRIPPED: {reason}")
-                elif pnl < 0:
-                    logger.warning(f"IV-exec loss streak now {rs['loss_streak']}; "
-                                   f"next size {rs['multiplier']:.0%} of normal")
+            await _condor_risk_check(pnl)
         elif st in ("canceled", "expired", "rejected"):
             await db._exec("UPDATE iv_condors SET status='open', close_order_id=NULL WHERE id=?", (cid,))
         return

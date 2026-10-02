@@ -100,6 +100,12 @@ class Settings(BaseSettings):
     # than deferring for a better one. Assignment on a short leg is worse than
     # a poor fill, so this is the one override on the RTH/two-sided checks.
     iv_exec_force_close_hour: int = Field(15, env="IV_EXEC_FORCE_CLOSE_HOUR")
+    # On expiry day, hold instead of taking the profit target when spot is at
+    # least this far inside BOTH short strikes: all four legs then expire
+    # worthless for the full credit, where closing forfeits the remainder to
+    # remove a risk that has largely already passed. Below this buffer it is
+    # pin risk, and closing is correct.
+    iv_exec_expiry_hold_buffer_pct: float = Field(0.03, env="IV_EXEC_EXPIRY_HOLD_BUFFER_PCT")
     iv_exec_min_credit: float = Field(0.10, env="IV_EXEC_MIN_CREDIT")           # skip if net credit < $0.10 (not worth it)
     iv_exec_min_dte: int = Field(1, env="IV_EXEC_MIN_DTE")                       # front expiry must be ≥1 DTE after earnings
     iv_exec_max_dte: int = Field(10, env="IV_EXEC_MAX_DTE")                      # …and ≤10 DTE (front-month only)
