@@ -1594,6 +1594,31 @@ def _condor_wing_width(c: dict) -> float:
     return max(widths) if widths else 0.0
 
 
+def _expiry_force_close_due(expiry, now=None) -> bool:
+    """Whether an expiry-day condor must close before its actual session close.
+
+    The configured 15:00 ET deadline is preserved on a normal 16:00 session.
+    A 13:00 early-close session instead forces at 12:00, rather than discovering
+    the assignment risk after the market has already shut.
+    """
+    from datetime import date as _date
+    from feeds.uw_budget import market_close_minute
+    from market_time import et_now
+    try:
+        exp = _date.fromisoformat(str(expiry))
+    except (TypeError, ValueError):
+        return False
+    n = et_now(now)
+    if exp != n.date():
+        return False
+    close_minute = market_close_minute(n)
+    if close_minute is None:
+        return False
+    configured_minute = max(0, int(settings.iv_exec_force_close_hour)) * 60
+    force_minute = min(configured_minute, max(0, close_minute - 60))
+    return n.hour * 60 + n.minute >= force_minute
+
+
 async def _manage_condor(c: dict):
     """Confirm entry fill, then close on profit target / after the print."""
     import json as _json
@@ -1638,43 +1663,45 @@ async def _manage_condor(c: dict):
                     f"credit ${credit:.2f}, max loss ${actual['max_loss']:.0f}")
 
     # ── Decide whether to close ──
-    quotes = await loop.run_in_executor(None, trader.get_option_quotes,
-                                        [l["symbol"] for l in legs])
-    if not quotes:
-        return
-    debit = _condor_close_debit(legs, quotes)
     edate = None
     try:
         edate = _date.fromisoformat(c["earnings_date"]) if c.get("earnings_date") else None
     except Exception:
         edate = None
     from market_time import et_now, et_today
-    post_earnings = edate is not None and et_today() > edate
-
-    # Expiry day, late in the session: close on whatever the book offers. An
-    # unclosed short leg through expiry is assignment, which is worse than a
-    # poor fill, so this is the one case that overrides the quote checks below.
     expiring = False
-    forced = False
     try:
         expiring = _date.fromisoformat(str(c.get("expiry"))) <= et_today()
-        forced = (_date.fromisoformat(str(c.get("expiry"))) == et_today()
-                  and et_now().hour >= settings.iv_exec_force_close_hour)
     except (TypeError, ValueError):
-        expiring = forced = False
+        expiring = False
+    forced = _expiry_force_close_due(c.get("expiry"), et_now())
+    post_earnings = edate is not None and et_today() > edate
 
-    # Everything except the fill-check below needs a live, two-sided book.
-    # MU's post-print close was estimated at $8.07 from an overnight mid and
-    # filled at $5.09 the next morning: a $596 swing on noise that happened to
-    # break our way. The same noise sets a limit too low to fill, or fakes a
-    # profit target off a stale print.
-    if c["status"] == "open" and not forced:
-        if not is_rth_now():
-            logger.debug("IV-exec condor #%s close deferred: outside RTH", cid)
-            return
-        if debit is None:
-            logger.debug("IV-exec condor #%s close deferred: book not two-sided", cid)
-            return
+    # ── Reconcile an already-submitted close before reading another quote ──
+    # A filled/expired option is often no longer returned by the live chain. The
+    # broker's order is authoritative, so its fill check must not depend on an
+    # option quote response.
+    if c["status"] == "closing" and c.get("close_order_id"):
+        o = await loop.run_in_executor(None, trader.get_order_raw, c["close_order_id"])
+        st = (o or {}).get("status")
+        if st == "filled":
+            raw_exit_debit = (o or {}).get("filled_avg_price")
+            try:
+                exit_debit = abs(float(raw_exit_debit))
+                from math import isfinite
+                if not isfinite(exit_debit):
+                    raise ValueError("non-finite fill price")
+            except (TypeError, ValueError):
+                logger.warning(f"IV-exec condor #{cid} filled but has no usable fill price; retrying")
+                return
+            pnl = (credit - exit_debit) * 100 * qty
+            await db.close_condor(cid, exit_debit, pnl)
+            logger.info(f"IV-exec condor #{cid} {c['ticker']} CLOSED: "
+                        f"credit ${credit:.2f} exit ${exit_debit:.2f} → P&L ${pnl:+.0f}")
+            await _condor_risk_check(pnl)
+        elif st in ("canceled", "expired", "rejected"):
+            await db._exec("UPDATE iv_condors SET status='open', close_order_id=NULL WHERE id=?", (cid,))
+        return
 
     # ── Settle a condor that was allowed to expire ──
     # Holding to expiry produces no close fill, so without this the row would
@@ -1697,6 +1724,25 @@ async def _manage_condor(c: dict):
         await _condor_risk_check(pnl)
         return
 
+    # Every remaining decision uses a live option book. A missing response makes
+    # debit None; the forced expiry path below can still close at wing width.
+    quotes = await loop.run_in_executor(None, trader.get_option_quotes,
+                                        [l["symbol"] for l in legs]) or {}
+    debit = _condor_close_debit(legs, quotes)
+
+    # Everything except a forced expiry close needs a live executable book.
+    # MU's post-print close was estimated at $8.07 from an overnight mid and
+    # filled at $5.09 the next morning: a $596 swing on noise that happened to
+    # break our way. The same noise sets a limit too low to fill, or fakes a
+    # profit target off a stale print.
+    if c["status"] == "open" and not forced:
+        if not is_rth_now():
+            logger.debug("IV-exec condor #%s close deferred: outside RTH", cid)
+            return
+        if debit is None:
+            logger.debug("IV-exec condor #%s close deferred: book not executable", cid)
+            return
+
     tp_hit = debit is not None and debit <= (1 - settings.iv_exec_tp_pct) * credit
 
     # ── Hold an expiring, comfortably-OTM condor instead of paying to close ──
@@ -1716,21 +1762,6 @@ async def _manage_condor(c: dict):
             return
 
     if c["status"] == "open" and not (post_earnings or tp_hit or forced):
-        return
-
-    if c["status"] == "closing" and c.get("close_order_id"):
-        # Check whether the close filled and book actual P&L.
-        o = await loop.run_in_executor(None, trader.get_order_raw, c["close_order_id"])
-        st = (o or {}).get("status")
-        if st == "filled":
-            exit_debit = abs(float((o or {}).get("filled_avg_price") or debit or 0))
-            pnl = (credit - exit_debit) * 100 * qty
-            await db.close_condor(cid, exit_debit, pnl)
-            logger.info(f"IV-exec condor #{cid} {c['ticker']} CLOSED: "
-                        f"credit ${credit:.2f} exit ${exit_debit:.2f} → P&L ${pnl:+.0f}")
-            await _condor_risk_check(pnl)
-        elif st in ("canceled", "expired", "rejected"):
-            await db._exec("UPDATE iv_condors SET status='open', close_order_id=NULL WHERE id=?", (cid,))
         return
 
     # Submit the close (marketable-ish debit limit) and mark closing.

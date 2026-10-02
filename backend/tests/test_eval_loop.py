@@ -1724,6 +1724,7 @@ async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeyp
             {"symbol": "SP", "side": "sell", "ratio_qty": 1},
             {"symbol": "LP", "side": "buy", "ratio_qty": 1}]
     submitted = []
+    empty_quotes = False
 
     class ExitTrader:
         def get_order_raw(self, _oid):
@@ -1731,6 +1732,8 @@ async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeyp
 
         def get_option_quotes(self, symbols):
             # One-sided book, as after hours: no trustworthy mid.
+            if empty_quotes:
+                return {}
             return {s: {"bid": 1.0, "ask": 0.0, "mid": 1.0} for s in symbols}
 
         def close_multileg(self, legs_, qty, limit, tif="day"):
@@ -1782,6 +1785,13 @@ async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeyp
     await main._manage_condor(dict(row))
     assert submitted == [], "comfortably-OTM condor should expire, not be bought back"
 
+    # A completely absent chain is the exact no-book case that needs the
+    # wing-width safety valve; it must not return before the forced branch.
+    empty_quotes = True
+    monkeypatch.setattr(main, "feed", feed_at(975.0))
+    await main._manage_condor(dict(row))
+    assert submitted == [30.0], "forced expiry close must survive an empty quote response"
+
 
 def test_close_limit_cushion_is_at_least_one_tick():
     """A percentage cushion vanishes on penny-priced options. 5% of $0.07 is
@@ -1802,6 +1812,83 @@ def test_close_limit_cushion_is_at_least_one_tick():
     # Never pay more than the wings can cost.
     assert limit_for(1.50, 1.00) == 1.00
     assert limit_for(0.99, 1.00) == 1.00
+
+
+def test_force_close_moves_before_an_early_market_close():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from main import _expiry_force_close_due
+    ET = ZoneInfo("America/New_York")
+    early = "2026-11-27"
+
+    # Default 15:00 force time stays 15:00 in a normal session, but must become
+    # 12:00 before the known 13:00 Black Friday close.
+    assert _expiry_force_close_due("2026-10-02", datetime(2026, 10, 2, 14, 59, tzinfo=ET)) is False
+    assert _expiry_force_close_due("2026-10-02", datetime(2026, 10, 2, 15, 0, tzinfo=ET)) is True
+    assert _expiry_force_close_due(early, datetime(2026, 11, 27, 11, 59, tzinfo=ET)) is False
+    assert _expiry_force_close_due(early, datetime(2026, 11, 27, 12, 0, tzinfo=ET)) is True
+
+
+async def test_expiry_settlement_does_not_require_an_option_chain(db, monkeypatch):
+    """Expired options disappear from the live chain; settlement must use the
+    underlying close without first requiring a quote that cannot exist."""
+    import main
+    from datetime import timedelta
+    from market_time import et_today
+
+    monkeypatch.setattr(main, "db", db)
+    expiry = (et_today() - timedelta(days=1)).isoformat()
+    legs = json.dumps([{"symbol": "SC", "side": "sell"}, {"symbol": "LC", "side": "buy"},
+                       {"symbol": "SP", "side": "sell"}, {"symbol": "LP", "side": "buy"}])
+    cid = await db.record_condor("TEST", expiry, expiry, legs,
+                                 {"short_put": 90.0, "long_put": 87.0,
+                                  "short_call": 110.0, "long_call": 113.0},
+                                 qty=1, credit=1.0, max_loss=200.0,
+                                 entry_order_id="entry", entry_status="filled")
+    await db._exec("UPDATE iv_condors SET status='open' WHERE id=?", (cid,))
+
+    class NoOptions:
+        def get_option_quotes(self, _symbols):
+            raise AssertionError("settlement must not read an expired option chain")
+    monkeypatch.setattr(main, "trader", NoOptions())
+    monkeypatch.setattr(main, "feed", SimpleNamespace(get_daily_close=lambda *_: 100.0))
+
+    row = (await db._query("SELECT * FROM iv_condors WHERE id=?", (cid,)))[0]
+    await main._manage_condor(row)
+    settled = (await db._query("SELECT status, pnl, exit_debit FROM iv_condors WHERE id=?", (cid,)))[0]
+    assert settled["status"] == "closed"
+    assert settled["pnl"] == 100.0 and settled["exit_debit"] == 0.0
+
+
+@pytest.mark.parametrize("fill_price", [None, "NaN", float("inf")])
+async def test_close_fill_without_a_usable_price_stays_open_for_reconciliation(
+        db, monkeypatch, fill_price):
+    """A broker response that says filled but omits or corrupts the fill price
+    must never be converted into a fictitious full-credit win."""
+    import main
+    monkeypatch.setattr(main, "db", db)
+    legs = json.dumps([{"symbol": "SC", "side": "sell"}, {"symbol": "LC", "side": "buy"},
+                       {"symbol": "SP", "side": "sell"}, {"symbol": "LP", "side": "buy"}])
+    cid = await db.record_condor("TEST", "2026-10-05", "2026-10-09", legs,
+                                 {"short_put": 90.0, "long_put": 87.0,
+                                  "short_call": 110.0, "long_call": 113.0},
+                                 qty=1, credit=1.0, max_loss=200.0,
+                                 entry_order_id="entry", entry_status="filled")
+    await db._exec("UPDATE iv_condors SET status='closing', close_order_id='close' WHERE id=?", (cid,))
+
+    class MissingPrice:
+        def get_order_raw(self, _oid):
+            return {"status": "filled", "filled_avg_price": fill_price}
+
+        def get_option_quotes(self, _symbols):
+            raise AssertionError("closing reconciliation must not require quotes")
+    monkeypatch.setattr(main, "trader", MissingPrice())
+
+    row = (await db._query("SELECT * FROM iv_condors WHERE id=?", (cid,)))[0]
+    await main._manage_condor(row)
+    pending = (await db._query("SELECT status, pnl, exit_debit FROM iv_condors WHERE id=?", (cid,)))[0]
+    assert pending["status"] == "closing"
+    assert pending["pnl"] is None and pending["exit_debit"] is None
 
 
 def test_expiry_hold_requires_real_room_not_merely_inside():
