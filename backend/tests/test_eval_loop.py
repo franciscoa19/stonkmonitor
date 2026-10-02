@@ -1672,28 +1672,39 @@ async def test_no_trade_proposal_does_not_target_a_disabled_engine(db, monkeypat
         assert "IV/earnings condor" in text
 
 
-def test_close_debit_refuses_a_one_sided_or_missing_book():
-    """The debit drives BOTH the profit-target decision and the submitted limit.
-    Reading `mid` with a 0 default let an untradeable leg pull it toward zero —
-    faking a TP and setting a limit too low to fill, from data shaped like price.
+def test_close_debit_is_priced_at_the_touch_per_leg_direction():
+    """The debit drives BOTH the profit-target decision and the submitted limit,
+    so it is priced the way the order fills: shorts cost their ask, long wings
+    fetch their bid.
+
+    A zero bid on a long wing is a real price, not a missing quote — and on
+    expiry day a WINNING condor has worthless wings by definition. An earlier
+    version required every leg to be two-sided and so refused to price exactly
+    those books, blocking NKE's close on 2026-10-02. A short with no ask is
+    still refused: there is no price at which it can be bought back.
     """
     from main import _condor_close_debit, _condor_wing_width
-    legs = [{"symbol": "SC"}, {"symbol": "LC"}, {"symbol": "SP"}, {"symbol": "LP"}]
+    legs = [{"symbol": "SC", "side": "sell"}, {"symbol": "LC", "side": "buy"},
+            {"symbol": "SP", "side": "sell"}, {"symbol": "LP", "side": "buy"}]
 
     def q(**kw):
         return {s: {"bid": b, "ask": a, "mid": (b + a) / 2 if b and a else (b or a)}
                 for s, (b, a) in kw.items()}
 
+    # shorts at ask (6.4 + 3.4), longs at bid (2.0 + 1.0)
     full = q(SC=(6.0, 6.4), LC=(2.0, 2.2), SP=(3.0, 3.4), LP=(1.0, 1.2))
-    # (6.2 + 3.2) - (2.1 + 1.1)
-    assert _condor_close_debit(legs, full) == pytest.approx(6.2)
+    assert _condor_close_debit(legs, full) == pytest.approx(6.8)
 
-    # A missing leg used to contribute 0 and understate the debit.
+    # Expiry-day winner: wings bid at zero. This is the case that was blocked.
+    expiring = q(SC=(0.0, 0.03), LC=(0.0, 0.01), SP=(0.04, 0.09), LP=(0.01, 0.02))
+    assert _condor_close_debit(legs, expiring) == pytest.approx(0.11)
+
+    # A short with no ask cannot be bought back at any price.
+    assert _condor_close_debit(legs, q(SC=(6.0, 0.0), LC=(2.0, 2.2),
+                                      SP=(3.0, 3.4), LP=(1.0, 1.2))) is None
+    # A leg absent from the feed is not the same as a leg priced at zero.
     missing = dict(full); del missing["SP"]
     assert _condor_close_debit(legs, missing) is None
-    # One-sided is just as bad: get_option_quotes falls back to `bid or ask`.
-    one_sided = q(SC=(6.0, 6.4), LC=(2.0, 2.2), SP=(3.0, 0.0), LP=(1.0, 1.2))
-    assert _condor_close_debit(legs, one_sided) is None
     assert _condor_close_debit(legs, {}) is None
 
     # Wing width is the guaranteed-fill ceiling for the forced expiry close.
@@ -1751,3 +1762,24 @@ async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeyp
                         lambda *a: _dtdatetime(2026, 10, 2, 15, 30, tzinfo=market_time.ET))
     await main._manage_condor(dict(row))
     assert submitted == [30.0], f"expected wing-width limit, got {submitted}"
+
+
+def test_close_limit_cushion_is_at_least_one_tick():
+    """A percentage cushion vanishes on penny-priced options. 5% of $0.07 is
+    $0.0035, which rounds to zero — so the limit landed exactly AT the touch and
+    NKE's close rested unfilled on expiry day. The cushion must be >= one tick,
+    and never above the wing width.
+    """
+    def limit_for(debit, wing):
+        base = max(debit, 0.01)
+        return round(min(max(base * 1.05, base + 0.01), max(wing, 0.05)), 2)
+
+    assert limit_for(0.07, 1.00) == 0.08        # was 0.07 — at the touch
+    assert limit_for(0.12, 1.00) == 0.13
+    assert limit_for(0.01, 1.00) == 0.02
+    # Percentage wins once it exceeds a tick.
+    assert limit_for(5.00, 30.0) == 5.25
+    assert limit_for(8.07, 30.0) == 8.47
+    # Never pay more than the wings can cost.
+    assert limit_for(1.50, 1.00) == 1.00
+    assert limit_for(0.99, 1.00) == 1.00

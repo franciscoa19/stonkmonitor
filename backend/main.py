@@ -1500,25 +1500,38 @@ async def measurement_universe_loop():
 
 
 def _condor_close_debit(legs: list, quotes: dict) -> float | None:
-    """Mid cost to buy the spread back (net debit), or None when the quotes
-    cannot support a number. legs order: [short_call, long_call, short_put,
-    long_put].
+    """Cost to buy the spread back at the touch (net debit), or None when the
+    quotes cannot support a number. legs order: [short_call, long_call,
+    short_put, long_put].
 
-    Every leg must be two-sided. The old version read `mid` with a default of 0
-    for a missing leg, and get_option_quotes() itself falls back to `bid or ask`
-    on a one-sided book — so an untradeable leg silently moved the debit toward
-    zero. That both fakes the profit target and sets a close limit too low to
-    fill, from data that looks like a price.
+    Priced the way the order actually fills, which is also the conservative
+    direction: the shorts we buy back cost their ASK, the long wings we sell out
+    fetch their BID. That mirrors the entry convention (shorts at bid, longs at
+    ask) instead of using mids, which flatter both ends of a round trip.
+
+    A zero BID on a long wing is a real price — a worthless option — not a
+    missing quote. Requiring every leg to be two-sided rejected exactly the
+    books that matter most: on expiry day a WINNING condor has worthless wings
+    by definition, so the gate blocked NKE from closing normally on 2026-10-02.
+    What must still be refused is a short leg with no ASK, because then there is
+    no price at which we can buy it back, and letting it default toward zero
+    understates the debit — faking a profit target and setting a limit that
+    cannot fill.
     """
-    mids = {}
+    px = {}
     for l in legs:
-        q = quotes.get(l["symbol"]) or {}
-        bid, ask = float(q.get("bid") or 0), float(q.get("ask") or 0)
-        if bid <= 0 or ask <= 0:
+        q = quotes.get(l["symbol"])
+        if not q:
             return None
-        mids[l["symbol"]] = (bid + ask) / 2
-    return (mids[legs[0]["symbol"]] + mids[legs[2]["symbol"]]) \
-        - (mids[legs[1]["symbol"]] + mids[legs[3]["symbol"]])
+        bid, ask = float(q.get("bid") or 0), float(q.get("ask") or 0)
+        if l.get("side") == "sell":          # short: we pay the ask to close
+            if ask <= 0:
+                return None
+            px[l["symbol"]] = ask
+        else:                                # long wing: we receive the bid
+            px[l["symbol"]] = max(bid, 0.0)
+    return (px[legs[0]["symbol"]] + px[legs[2]["symbol"]]) \
+        - (px[legs[1]["symbol"]] + px[legs[3]["symbol"]])
 
 
 def _condor_wing_width(c: dict) -> float:
@@ -1651,7 +1664,15 @@ async def _manage_condor(c: dict):
         limit = round(max(_condor_wing_width(c), 0.05), 2)
         reason += " (no book — wing-width limit)"
     else:
-        limit = round(max(debit, 0.01) * 1.10, 2)
+        # The debit is already at the touch, so it needs only a small cushion for
+        # movement between quote and submit — but it must be at least one tick.
+        # A percentage cushion vanishes on penny-priced options: 5% of $0.07 is
+        # $0.0035, which rounds to zero and leaves the limit exactly AT the
+        # touch, so NKE's close sat unfilled on expiry day. Never more than the
+        # wing width, the most a condor can cost to buy back.
+        base = max(debit, 0.01)
+        limit = round(min(max(base * 1.05, base + 0.01),
+                          max(_condor_wing_width(c), 0.05)), 2)
     res = await loop.run_in_executor(None, lambda: trader.close_multileg(legs, qty, limit))
     if res.get("error"):
         logger.warning(f"IV-exec condor #{cid} close submit failed: {res['error']}")
