@@ -223,8 +223,8 @@ frontend/               Next.js 14 + Tailwind CSS (dark terminal theme)
 ## Quick Start
 
 ### Prerequisites
-- Python 3.11+
-- Node.js 18+
+- Python 3.13 (the backend venv is built with [uv](https://docs.astral.sh/uv/))
+- Node.js 20 LTS
 - [Unusual Whales API key](https://unusualwhales.com) (paid)
 - [Alpaca account](https://alpaca.markets) (free paper trading)
 - [Kalshi account + API key pair](https://kalshi.com/profile/api-keys) (optional)
@@ -244,15 +244,16 @@ cp backend/.env.example backend/.env
 
 ```bash
 cd backend
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
+uv venv --python 3.13 venv
+uv pip install --python venv/bin/python -r requirements.txt -r requirements-dev.txt
+venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 ### 3. Frontend
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -332,12 +333,21 @@ All thresholds in `backend/.env` — no code changes needed:
 
 ---
 
-## Running as a Windows Service
+## Running as a Service (macOS launchd)
 
-The backend can run as a persistent background service that auto-starts on login and auto-restarts on crash:
+Both the backend and the dashboard run as launchd agents: they start at login, restart on crash,
+and listen on 127.0.0.1 only. Install steps and details are in [`deploy/README.md`](deploy/README.md).
 
-| File | Location | Role |
-|------|----------|------|
+**Manage:**
+- **Restart**: `launchctl kickstart -k gui/$(id -u)/com.stonkmonitor.backend` (or `.frontend`)
+- **Stop / disable**: `launchctl bootout gui/$(id -u)/com.stonkmonitor.backend`
+- **View logs**: `tail -f backend/logs/backend.log` / `frontend/logs/frontend.log`
+- **Health check**: `curl http://localhost:8000/health`
+- **After frontend edits**: `cd frontend && npm run build`, then kickstart the frontend agent
+
+The old Windows watchdogs (`start_service.bat`, `start_frontend.bat`) are still in the repo but unused.
+
+------|----------|------|
 | `start_service.bat` | `backend/` | Restart loop — if uvicorn exits, waits 10s and relaunches. Logs to `backend/logs/service.log` |
 | `StonkMonitor.vbs` | Windows `Startup` folder | Launches the bat file hidden (no CMD window) on every Windows login |
 

@@ -15,6 +15,19 @@ from datetime import datetime, timezone
 from statistics import mean
 import html as _html
 
+from market_time import et_today
+
+
+def report_day(d: dict) -> str:
+    """The report's trading day: its UTC `generated` stamp read as an ET date.
+
+    The scheduler dedups on daily_<ET date>.html, so the file must be named the
+    same way. Read off the UTC date, a report first built after 20:00 ET landed
+    under tomorrow's name, was never found, and regenerated (and git-pushed)
+    every 10 minutes until midnight ET.
+    """
+    return et_today(datetime.fromisoformat(d["generated"])).isoformat()
+
 
 def _condor_rollups(condors: list, positions: list) -> list[dict]:
     """One unrealized-P&L number per open condor, summed from its own legs.
@@ -668,7 +681,7 @@ def render_html(d: dict) -> str:
     pf = m["profit_factor"]
     pf_disp = "—" if m["closed_trades"] == 0 else (f"{pf:.2f}" if pf < 999 else "∞")
     act_cls = {"QUIET": "mut", "MEASURED": "good", "HEAVY": "warn"}.get(act["tag"], "mut")
-    date_label = d["generated"][:10]
+    date_label = report_day(d)
 
     strat_rows = "".join(
         f"<tr><td>{e(str(s['strategy']))}</td><td>{s['n']}</td>"

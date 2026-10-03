@@ -2008,7 +2008,8 @@ async def generate_daily_report(is_weekly: bool = False) -> dict:
     surface proposals for approval)."""
     from pathlib import Path
     import json as _json
-    from daily_report import build_report_data, render_html, build_watchlist_review, export_history
+    from daily_report import (build_report_data, render_html, build_watchlist_review,
+                              export_history, report_day)
     from api.routes import _watchlist
 
     data = await build_report_data(db, trader, thresholds={
@@ -2031,7 +2032,7 @@ async def generate_daily_report(is_weekly: bool = False) -> dict:
 
     reports_dir = Path(__file__).parent / "reports"
     reports_dir.mkdir(exist_ok=True)
-    day = data["generated"][:10]
+    day = report_day(data)
     html = render_html(data)
     (reports_dir / f"daily_{day}.html").write_text(html)
     (reports_dir / "latest.html").write_text(html)

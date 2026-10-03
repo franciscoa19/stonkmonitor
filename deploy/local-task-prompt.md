@@ -34,7 +34,7 @@ current is the exact failure this path exists to avoid. Instead email:
     SUBJECT: StonkMonitor LOCAL — BACKEND UNREACHABLE — <today's date>
 
 with the curl error, the output of `launchctl list | grep stonkmonitor`, and the
-last 20 lines of `/Users/franciscoesqueda/Claude/stonkmonitor/backend/logs/backend.log`.
+last 20 lines of `/Users/francisco/code/stonkmonitor/backend/logs/backend.log`.
 Then stop. Do not invent numbers and do not try to restart anything.
 
 STEP 2 — CHECK FRESHNESS BEFORE YOU BELIEVE IT
@@ -66,7 +66,7 @@ Body, plain text, in this order. Keep it short; he reads it on a phone.
 
 4. RISK — from `risk_state`: multiplier, loss_streak, halted. If `halted` is true,
    say plainly that trading is stopped and that clearing it is a deliberate
-   `cd /Users/franciscoesqueda/Claude/stonkmonitor/backend && ./venv/bin/python rearm.py --yes`,
+   `cd /Users/francisco/code/stonkmonitor/backend && ./venv/bin/python rearm.py --yes`,
    not something that happens on its own.
 
 5. IMPLIED vs REALIZED — from `implied_vs_realized`, keyed by "watchlist" and

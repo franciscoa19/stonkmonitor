@@ -18,7 +18,7 @@ import pytest
 import pytest_asyncio
 
 from db import Database, _is_occ, _et_hour, _minutes_between
-from daily_report import build_report_data, build_watchlist_review, export_history, render_html
+from daily_report import build_report_data, build_watchlist_review, export_history, render_html, report_day
 from market_time import et_today
 
 URI = "URI260918C01050000"      # OCC option symbols (×100 multiplier)
@@ -607,6 +607,18 @@ async def test_report_flags_account_fetch_failure(db):
     # These are exactly what generate_daily_report checks to skip a bogus report.
     assert d["account"]["equity"] == 0
     assert d["account"]["error"]
+
+
+def test_report_day_matches_the_schedulers_et_date():
+    """The report file must carry the ET date the scheduler dedups on. A report
+    first built at 21:14 ET (01:14 UTC the next day) was filed under tomorrow,
+    never found, and rebuilt + git-pushed every 10 min until midnight ET."""
+    from market_time import et_now
+    evening = "2026-10-03T01:14:16.584000+00:00"     # Fri 2026-10-02 21:14 ET
+    assert report_day({"generated": evening}) == "2026-10-02"
+    assert report_day({"generated": evening}) == f"{et_now(_dtdatetime.fromisoformat(evening)):%Y-%m-%d}"
+    # The ordinary 08:00 ET run is unaffected.
+    assert report_day({"generated": "2026-10-02T12:00:05+00:00"}) == "2026-10-02"
 
 
 # ── Durable history export (git/backup) ─────────────────────────────────

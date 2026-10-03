@@ -27,7 +27,7 @@ Repo: https://github.com/franciscoa19/stonkmonitor
 
 ```
 Backend:  Python 3.13, FastAPI, uvicorn, aiohttp, aiosqlite
-Frontend: Next.js 14, Tailwind CSS, TypeScript (dark terminal theme)
+Frontend: Next.js 15, Tailwind CSS, TypeScript (dark terminal theme)
 DB:       SQLite (stonkmonitor.db) — 7 tables
 Broker:   Alpaca (paper + live), Kalshi (live, RSA-PSS auth)
 Data:     Unusual Whales API, yfinance (for earnings scanner)
@@ -38,16 +38,25 @@ Alerts:   Telegram bot (@stonktracker69_bot), Discord webhook, Pushover
 
 ## Running Locally
 
-```bash
-# Backend (from backend/)
-python -m uvicorn main:app --host 0.0.0.0 --port 8000
+Checkout: `~/code/stonkmonitor` on macOS (Apple Silicon). Both services run as
+launchd agents bound to 127.0.0.1 — see `deploy/README.md`.
 
-# Frontend (from frontend/)
-npm run dev   # → http://localhost:3000
+```bash
+# Backend — venv at backend/venv (Python 3.13 via uv)
+launchctl kickstart -k gui/$(id -u)/com.stonkmonitor.backend   # restart; logs: backend/logs/backend.log
+
+# Frontend — serves the production build, so rebuild after edits
+cd frontend && npm run build && launchctl kickstart -k gui/$(id -u)/com.stonkmonitor.frontend
+# → http://localhost:3000  (use localhost, not 127.0.0.1: CORS_ORIGINS allows localhost only)
+
+# Tests
+cd backend && venv/bin/python -m pytest -q
 ```
 
-**Python path on this machine:** `C:\Users\franc\AppData\Local\Programs\Python\Python313\python.exe`
-**No virtualenv** — packages installed globally into Python313.
+Toolchain lives in `~/.local` (no Homebrew): uv + Python 3.13, Node 20 LTS at
+`~/.local/node`, GitHub CLI at `~/.local/gh` (git pushes authenticate through `gh`).
+The old Windows box (`C:\Users\franc\...`, `.bat`/`.vbs` watchdogs) is retired;
+the `.bat` files remain in the repo but are unused.
 
 ---
 
@@ -447,11 +456,14 @@ watchlist          -- tickers for IV + earnings scanning
 20. **IV scanner never fired — wrong response shape** (fixed 2026-07-22). `iv_scanner_loop` did `iv_data.get("iv_rank")` / `.get("iv_percentile")`, but `uw_client.get_iv_rank()` returns UW's `/interpolated-iv` **term-structure list** (one row per DTE with `percentile` 0-1 + `volatility`), which has no `.get` and no `iv_rank` key → `AttributeError` every cycle, swallowed by the loop's `try/except`. So IV_HIGH/IV_LOW signals (📈/📉) never fired for any watchlist ticker. Fix: `iv_summary_from_termstructure()` in `feeds/unusual_whales.py` reduces the list to the row nearest 30 DTE and returns `iv_percentile` (0-100); loop feeds that to `score_iv_rank`. UW gives a percentile, not a separate rank, so both args use it. `/api/iv/{ticker}` still returns the raw term structure. Verified: NOW at 98th-%ile 30d IV now fires "IV Rank EXTREME HIGH — consider selling premium" (6.8/10).
 21. **Earnings-scanner deps missing → whole IV loop dead on fresh installs** (fixed 2026-07-22). `signals/earnings_scanner.py` imports `scipy` + `yfinance`, but neither was in `requirements.txt` (they existed only on the original Windows box's global env). `iv_scanner_loop` does `from signals.earnings_scanner import scan_ticker` at the top of the coroutine, so on this Mac the import raised `ModuleNotFoundError` and the entire IV loop task died at startup — no IV-rank scanning AND no earnings scanning, silently. Fix: pinned `scipy==1.17.1` + `yfinance==1.5.1` in `requirements.txt`. Verified live: `Earnings setup NOW: CONSIDER IV/RV=1.05x`. Combined with #20, IV + earnings signals now actually run.
 22. **Watchlist was in-memory only — lost every restart** (fixed 2026-07-22). `_watchlist` in `api/routes.py` was a bare list, so IV/earnings scanning silently reset to empty on each restart. Added a `watchlist` table + `db.get_watchlist/add_watchlist/remove_watchlist`; POST/DELETE persist, and lifespan startup restores it into `_watchlist` (`Watchlist restored: …`).
+23. **Daily report regenerated + git-pushed every 10 min after 20:00 ET** (fixed 2026-10-02). `generate_daily_report` named `daily_<date>.html` from the report's UTC `generated` stamp, but `report_scheduler_loop` dedups on the **ET** date. A first run after 20:00 ET (UTC already tomorrow) was filed under tomorrow, never found, and rebuilt every cycle until midnight ET — and with `REPORT_GIT_PUSH=true`, pushed each time. Latent on the old box (the report always ran at 08:00 ET); surfaced when the new Mac first booted at 20:53 ET and pushed `4aae550`. Fix: `daily_report.report_day()` (the ET date of `generated`) names the file and the HTML heading. +1 test.
 
 ---
 
 ## Recent Work
 
+- ✅ **Rebuilt on a new Mac after malware (2026-10-02)** — old machine lost; repo was intact on GitHub. Full review before re-pushing: commit authorship, all 73 tracked files for injected code, routine prompts, GitHub repo settings (no deploy keys/webhooks/collaborators), full-history secret scan — all clean. Every key that was in `.env` (Alpaca, Kalshi, Telegram, UW, Pushover, Dome) treated as compromised and rotated/revoked. Services now under launchd (`deploy/*.plist`) bound to 127.0.0.1. **Local DB started empty**: `daily_equity` reloaded from `history.jsonl`; `iv_condors`/`iv_rv_evals`/variant history from before 10-02 exist only in the old DB (gone) and in committed `latest.json` snapshots. Running config: Alpaca paper + yfinance + Nasdaq calendar only; UW/Telegram/Discord/Kalshi/Pushover off; `IV_EXEC_ENABLED=false` pending a decision to re-arm.
+- ✅ **Next.js 14.2.35 → 15.5.27 (2026-10-02)** — clears two critical unauthenticated-RCE advisories (Image Optimization API / AVIF; Windows-hosted) plus the SSRF, cache-poisoning and DoS set. Stays on React 18. `npm audit fix` applied. Remaining: postcss bundled inside next (build-time only, needs Next 16) and tailwind 3's braces/micromatch chain (build-time glob DoS, needs Tailwind 4) — neither reachable from outside; deferred.
 - ✅ **Autonomous paper-trading eval loop — Phase 0a–0b (2026-09-03)** — self-improving paper bot on a fresh $50k Alpaca paper account. 0a: strategy attribution (`pending_trades.strategy` from the triggering signal type / pattern via `AutoTradeEngine._current_strategy`; `trade_performance` gains `strategy`/`entry_hour_et`/`hold_minutes`), `daily_equity` table + hourly `daily_equity_loop`, `db._migrate()` for column ALTERs. 0b: perf-sync **attribution join** (`upsert_trade_performance` pulls `strategy` + entry-hour from `pending_trades` via `alpaca_order_id`; `record_exit` sets `hold_minutes`), and the **daily check-in report** — `backend/daily_report.py` (`build_report_data` + `render_html`) served at `GET /api/report/daily?format=json|html`, published as the "Paper Trading Daily Check-in" artifact (equity curve, per-strategy attribution, trades/day "too much/little" read, propose-and-approve suggestions). Next: scheduler (0c) + eval harness (vectorbt/quantstats, 0d). Plan in automation memory.
 - ✅ **IV/RV execution — Phase 2: defined-risk iron condors (2026-09-09, gated OFF)** — the primary edge finally *trades* on paper: sell an iron condor into an imminent earnings print and collect the IV crush. Account is **options level 3** (defined-risk spreads only — no naked shorts), so the structure is a short strangle at ~the implied move + protective wings, sent as one atomic **multi-leg (mleg)** order. alpaca-py 0.29 has no mleg support, so `AlpacaTrader` gets raw-REST multi-leg (`multileg_order`/`close_multileg`) + chain helpers (`get_option_contracts`/`get_option_quotes`/`get_order_raw`) — **verified on paper**: submit/cancel, 4-leg condor accepted, **negative limit = net credit**. `signals/iv_executor.build_iron_condor()` picks the front expiry after the print, shorts at the implied move, 3% wings, sizes by max-loss vs a risk budget (default 1.5% equity, $1.5k cap), skips junk credit/width — live ORCL/ADBE plans sane (ORCL 142p/182.5c ×2, $322 credit / $678 risk). `iv_condors` table tracks each condor; `maybe_execute_condor` (entry, gated by **`IV_EXEC_ENABLED`**, earnings ≤`iv_exec_entry_days_before` out, position/day caps) + `iv_condor_monitor_loop`/`_manage_condor` (confirm entry fill → TP at 50% → close after the print → book P&L). **OFF by default — arm only after a live paper round-trip test.** 21 tests. Knobs: `iv_exec_*` in config.
 - ✅ **Harden yfinance earnings-date fetch (2026-09-09)** — `get_earnings_dates()` rate-limits when the loop hits it every cycle, silently dropping the date → crude signal+7d fallback (ORCL/ADBE logged with `earnings_date=None` while PEP got the real date). Per-ticker cache (5-day TTL for a date, 6h for a miss) + one retry with backoff in `_next_earnings_date`; load cut to ~once/5-days/ticker.

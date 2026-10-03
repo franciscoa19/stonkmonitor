@@ -10,14 +10,17 @@ Nothing gets pushed until the code is reviewed, vetted for secrets, and verified
 - [ ] Note the ask and which components it touches (backend / frontend / DB / infra).
 
 ## 1. Security scan (dependencies + code)
-- [ ] Backend CVEs: `cd backend && python -m pip_audit` — patch anything actionable.
-- [ ] Frontend CVEs: `cd frontend && npm.cmd audit` — patch non-breaking; flag breaking-only fixes.
+- [ ] Backend CVEs: `uvx pip-audit --path backend/venv/lib/python3.13/site-packages` — patch anything actionable.
+- [ ] Frontend CVEs: `cd frontend && npm audit` — patch non-breaking; flag breaking-only fixes.
+- [ ] New/changed npm deps: every lockfile `resolved` URL is registry.npmjs.org, every entry has `integrity`, and no new `hasInstallScript` packages.
 - [ ] Update pins in `requirements.txt` / `package.json` for anything upgraded.
-- [ ] Scan changed code for injected-secret / unsafe patterns (eval, shell=True, hardcoded creds).
+- [ ] Scan changed code for injected-secret / unsafe patterns (eval, shell=True, hardcoded creds,
+      base64/encoded blobs, new external hosts, reads of ~/.ssh / keychain, hidden unicode).
+      This includes `deploy/*-prompt.md` and `CLAUDE.md` — Claude acts on those.
 
 ## 2. Package / dependency updates
 - [ ] Apply safe upgrades; dry-run first for backend (`pip install --dry-run`).
-- [ ] Verify imports still work: `python -c "import main"` (backend), `npm.cmd run build` (frontend).
+- [ ] Verify imports still work: `cd backend && venv/bin/python -c "import main"`, `cd frontend && npm run build`.
 
 ## 3. Code review — correctness + efficiency + refactor
 - [ ] Read the touched modules; look for bugs, race conditions, dead code, N+1 / wasted calls.
@@ -36,10 +39,11 @@ Nothing gets pushed until the code is reviewed, vetted for secrets, and verified
 
 ## 5. Apply + restart
 - [ ] Make the approved edits.
-- [ ] Restart backend: kill the `python.exe` on port 8000 → `start_service.bat` watchdog respawns it.
-- [ ] Frontend: `start_frontend.bat` watchdog respawns it; rebuild if a production build is used.
-- [ ] Verify: backend `GET /api/uw/budget` 200; frontend `http://localhost:3000` 200; scan
-      `backend/logs/service.log` tail for ERROR/Traceback and confirm signals are flowing.
+- [ ] Restart backend: `launchctl kickstart -k gui/$(id -u)/com.stonkmonitor.backend`.
+- [ ] Frontend: `cd frontend && npm run build`, then `launchctl kickstart -k gui/$(id -u)/com.stonkmonitor.frontend`
+      (it serves the production build — no hot reload).
+- [ ] Verify: backend `GET /health` 200; frontend `http://localhost:3000` 200 with no console errors;
+      scan `backend/logs/backend.log` tail for ERROR/Traceback.
 
 ## 6. Secret scan (pre-commit)
 - [ ] `git status` — confirm no `.env` / `*.pem` staged (both must stay gitignored).
@@ -48,20 +52,21 @@ Nothing gets pushed until the code is reviewed, vetted for secrets, and verified
 - [ ] Confirm `CLAUDE.md` and docs contain placeholders only — never real secrets.
 
 ## 7. Commit + push
+- [ ] Anything that pushes counts — including turning on `REPORT_GIT_PUSH`, which lets the
+      backend push on its own (it did within minutes on 2026-10-02).
 - [ ] Stage only the intended files (never `git add -A` blindly).
 - [ ] Clear commit message (what + why); co-author trailer.
 - [ ] `git push origin main`; report the commit hash.
 
 ---
 
-## Infrastructure reference
+## Infrastructure reference (macOS)
 | Piece | Path | Notes |
 |-------|------|-------|
-| Backend watchdog | `backend/start_service.bat` | Restart loop, logs to `backend/logs/service.log` |
-| Backend autostart | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\StonkMonitor.vbs` | Silent launch on login |
-| Frontend watchdog | `frontend/start_frontend.bat` | Restart loop, logs to `frontend/logs/frontend.log` |
-| Frontend autostart | `%APPDATA%\...\Startup\StonkMonitorFrontend.vbs` | Silent launch on login |
-| Credentials | `backend/.env` (+ `backend/kalshi_private.pem`) | Gitignored — never commit |
+| Backend service | `~/Library/LaunchAgents/com.stonkmonitor.backend.plist` (source: `deploy/`) | launchd KeepAlive, logs to `backend/logs/backend.log` |
+| Frontend service | `~/Library/LaunchAgents/com.stonkmonitor.frontend.plist` (source: `deploy/`) | `next start` on the production build, logs to `frontend/logs/frontend.log` |
+| Credentials | `backend/.env` (+ the Kalshi `.pem`, kept outside the repo) | Gitignored — never commit |
+| GitHub auth | `gh` (`~/.local/gh`), token in the macOS keychain | git's credential helper calls gh by absolute path, so launchd pushes work |
 
-**Restart pattern (Windows):** `Stop-Process -Id <pid> -Force` on the port owner, wait ~15s,
-the watchdog `.bat` respawns it. Find owners with `Get-NetTCPConnection -LocalPort <8000|3000>`.
+**Restart pattern:** `launchctl kickstart -k gui/$(id -u)/com.stonkmonitor.<backend|frontend>`.
+Status: `launchctl print gui/$(id -u)/com.stonkmonitor.backend`. Port owners: `lsof -nP -iTCP:8000 -sTCP:LISTEN`.
