@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from statistics import mean
 import html as _html
+import asyncio
 
 from market_time import et_today
 
@@ -46,12 +47,14 @@ def _condor_rollups(condors: list, positions: list) -> list[dict]:
             legs = []
         syms = [l.get("symbol") for l in legs if isinstance(l, dict) and l.get("symbol")]
         matched = [by_symbol[s] for s in syms if s in by_symbol]
-        qty = int(c.get("qty") or 0)
+        qty = int(c.get("qty") or 0) - int(c.get("closed_qty") or 0)
         max_risk = float(c.get("max_loss") or 0) * qty
         pnl = round(sum(float(p.get("pnl") or 0) for p in matched), 2)
         complete = bool(syms) and len(matched) == len(syms)
         out.append({
             "ticker": c.get("ticker"),
+            "status": c.get("status"),
+            "settlement_note": c.get("settlement_note"),
             "qty": qty,
             "expiry": c.get("expiry"),
             "earnings_date": c.get("earnings_date"),
@@ -75,14 +78,14 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
 
     # ── Account ──────────────────────────────────────────────────────────
     try:
-        acct = trader.get_account()
+        acct = await asyncio.to_thread(trader.get_account)
     except Exception as e:
         acct = {"error": str(e)}
     equity = float(acct.get("equity", 0) or 0)
     cash = float(acct.get("cash", 0) or 0)
     buying_power = float(acct.get("buying_power", 0) or 0)
     try:
-        positions = trader.get_positions() or []
+        positions = await asyncio.to_thread(trader.get_positions) or []
     except Exception:
         positions = []
 
@@ -220,7 +223,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
     # this the report shows four unrelated option lines and cannot answer "how is
     # the MU condor doing", which is the one thing the daily digest is asked for.
     try:
-        condor_detail = _condor_rollups(await db.get_open_condors(), positions or [])
+        condor_detail = _condor_rollups(await db.get_active_condors(), positions or [])
     except Exception:
         condor_detail = []
     if isinstance(iv_condors, dict):
@@ -456,6 +459,7 @@ def render_html(d: dict) -> str:
     _open_condor_rows = "".join(
         "<tr>"
         f"<td style='padding:3px 12px 3px 0'><b>{_html.escape(str(c.get('ticker')))}</b></td>"
+        f"<td class='mut'>{_html.escape(str(c.get('settlement_note') or c.get('status') or 'open'))}</td>"
         f"<td style='padding-right:12px'>{_html.escape(str(c.get('strikes')))}</td>"
         f"<td style='text-align:right;padding-right:12px'>x{c.get('qty')}</td>"
         f"<td style='text-align:right;padding-right:12px'>{_money(c.get('credit_collected'))}</td>"
@@ -473,7 +477,7 @@ def render_html(d: dict) -> str:
         "<table style=\"width:100%;border-collapse:collapse;font-family:var(--mono);"
         "font-size:12.5px;margin-top:12px\">"
         "<tr class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase;text-align:right\">"
-        "<th style=\"text-align:left\">Open</th><th style=\"text-align:left\">Strikes</th>"
+        "<th style=\"text-align:left\">Open</th><th style=\"text-align:left\">Status</th><th style=\"text-align:left\">Strikes</th>"
         "<th>Qty</th><th>Credit</th><th>Max risk</th><th>Unrealized</th><th></th></tr>"
         f"{_open_condor_rows}</table>"
         "<div class=\"mut\" style=\"font-size:11.5px;margin-top:8px\">Unrealized is the sum of "

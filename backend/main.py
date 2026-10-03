@@ -239,7 +239,7 @@ async def handle_signal(signal):
     # Auto-trade — vol gate handled inside _pre_flight with fresh regime data
     if signal.score >= auto_threshold:
         try:
-            account = trader.get_account()
+            account = await asyncio.to_thread(trader.get_account)
             await auto_trade.evaluate_signal(signal, account)
         except Exception as e:
             logger.warning(f"Auto-trade eval error: {e}")
@@ -319,7 +319,7 @@ async def process_uw_event(raw: dict):
                 }
                 _bump = score_bump_for_subphase(market_subphase(), _cfg_bumps)
                 _pat_threshold = settings.auto_trade_pattern_threshold + _bump
-                account = trader.get_account()
+                account = await asyncio.to_thread(trader.get_account)
                 for pat in fired_patterns:
                     if pat.score >= _pat_threshold:
                         await auto_trade.evaluate_pattern(
@@ -748,251 +748,52 @@ _alpaca_pos_state: dict[str, dict] = {}
 
 
 async def alpaca_position_monitor():
-    """Every 2 min (configurable): check Alpaca positions for TP/trim/SL.
-
-    Two-tier take-profit:
-        POS_TP_PCT   = +80%  → sell POS_TP_SELL_PCT  (50%) — lock in gains
-        POS_TP2_PCT  = +175% → sell POS_TP2_SELL_PCT (100%) — exit runner
-
-    Loss management:
-        POS_TRIM_PCT = -35%  → sell POS_TRIM_SELL_PCT (50%) — reduce exposure
-        POS_SL_PCT   = -40%  → liquidate entire position
-
-    No confirmation required — executes immediately as market orders,
-    then sends a Telegram notification confirming what happened.
-
-    Only runs during market hours (RTH + extended). Positions can't move
-    when the market is closed, and market orders would reject anyway.
-    """
+    """Reconcile pending exits and manage long positions without blocking I/O."""
+    from signals.position_exits import manage_position_exit
     from feeds.uw_budget import current_session
-    await asyncio.sleep(45)  # let startup finish
-
-    tp_pct         = settings.pos_tp_pct           # +80
-    tp_sell_frac   = settings.pos_tp_sell_pct       # 0.5
-    tp2_pct        = settings.pos_tp2_pct           # +175
-    tp2_sell_frac  = settings.pos_tp2_sell_pct      # 1.0
-    trail_enabled  = settings.pos_trail_after_tp    # True
-    trail_pct      = settings.pos_trail_pct         # 20pp
-    trim_pct       = settings.pos_trim_pct          # -35
-    trim_sell_frac = settings.pos_trim_sell_pct     # 0.5
-    sl_pct         = settings.pos_sl_pct            # -40
-    interval       = settings.pos_monitor_interval  # 120s
-
-    trail_mode = f"trail {trail_pct:.0f}pp below HWM" if trail_enabled else f"T2={tp2_pct:+.0f}%"
-    logger.info(
-        f"Alpaca position monitor started: "
-        f"TP1={tp_pct:+.0f}% (sell {tp_sell_frac*100:.0f}%), "
-        f"after TP1: {trail_mode}, "
-        f"trim={trim_pct:+.0f}% (sell {trim_sell_frac*100:.0f}%), "
-        f"SL={sl_pct:+.0f}% (liquidate)"
-    )
-
+    await asyncio.sleep(45)
+    _alpaca_pos_state.update(await db.get_position_monitor_states())
+    def record_fill(symbol, pnl):
+        import re
+        ticker = re.sub(r"[0-9]{6}[CP][0-9]{8}$", "", symbol)
+        (auto_trade.record_win if pnl >= 0 else auto_trade.record_loss)(ticker, pnl)
     while True:
         try:
-            sess = current_session()
-            if sess in ("overnight", "weekend"):
-                await asyncio.sleep(interval)
-                continue
-
-            positions = trader.get_positions()
-            if not positions:
-                await asyncio.sleep(interval)
-                continue
-
-            # Condor legs must only be managed by _manage_condor().  Applying a
-            # single-contract stop or profit rule to one leg can destroy the
-            # defined-risk structure and leave an unintended directional trade.
-            condor_legs = await db.get_active_condor_leg_symbols()
-
-            for pos in positions:
-                symbol  = pos["symbol"]
-                qty     = pos["qty"]
-                pnl_pct = pos["pnl_pct"]   # already in percent (e.g. -23.5)
-                pnl_usd = pos["pnl"]
-                avg     = pos["avg_price"]
-                cur     = pos["current"]
-
-                if qty <= 0:
-                    continue
-
-                if symbol.upper() in condor_legs:
-                    logger.debug(f"Single-leg monitor skipped active condor leg: {symbol}")
-                    continue
-
-                # Initialize state for new positions
-                if symbol not in _alpaca_pos_state:
-                    _alpaca_pos_state[symbol] = {
-                        "trimmed": False,
-                        "tp_fired": False,
-                        "tp2_fired": False,
-                        "sl_fired": False,
-                        "trailing": False,      # trailing stop active after TP1
-                        "high_watermark": 0.0,  # peak P&L % since TP1
-                    }
-                state = _alpaca_pos_state[symbol]
-
-                # ── STOP LOSS: -40% → liquidate everything ──
-                if pnl_pct <= sl_pct and not state["sl_fired"]:
-                    state["sl_fired"] = True
-                    result = trader.close_position(symbol)
-                    if "error" not in result:
-                        await db.record_exit(symbol, cur, "sl", pnl_usd, pnl_pct)
-                        auto_trade.record_loss(pos["symbol"][:6].rstrip(), pnl_usd)
-                        msg = (
-                            f"\U0001f6d1 <b>STOP LOSS</b> — {symbol}\n"
-                            f"Sold ALL {qty:.0f} shares/contracts\n"
-                            f"Entry: ${avg:.2f} → Exit: ${cur:.2f}\n"
-                            f"P&L: {pnl_pct:+.1f}% (${pnl_usd:+,.2f})"
-                        )
-                        logger.info(f"SL fired: {symbol} {pnl_pct:+.1f}% — closed {qty:.0f}")
-                    else:
-                        msg = (
-                            f"\U0001f6d1 <b>STOP LOSS FAILED</b> — {symbol}\n"
-                            f"Tried to close at {pnl_pct:+.1f}% but got error:\n"
-                            f"{result['error']}"
-                        )
-                        logger.error(f"SL failed: {symbol} — {result['error']}")
-                    if telegram.enabled:
-                        await telegram.send_info(msg)
-
-                # ── TRIM: -35% → sell half ──
-                elif pnl_pct <= trim_pct and not state["trimmed"] and not state["sl_fired"]:
-                    state["trimmed"] = True
-                    sell_qty = max(1, int(qty * trim_sell_frac))
-                    result = trader.market_order(symbol, sell_qty, "sell")
-                    if "error" not in result:
-                        auto_trade.record_loss(pos["symbol"][:6].rstrip(), pnl_usd * trim_sell_frac)
-                        msg = (
-                            f"\u2702\ufe0f <b>TRIM</b> — {symbol}\n"
-                            f"Sold {sell_qty} of {qty:.0f} shares/contracts\n"
-                            f"Entry: ${avg:.2f} → Now: ${cur:.2f}\n"
-                            f"P&L: {pnl_pct:+.1f}% (${pnl_usd:+,.2f})"
-                        )
-                        logger.info(f"Trim fired: {symbol} {pnl_pct:+.1f}% — sold {sell_qty}/{qty:.0f}")
-                    else:
-                        msg = (
-                            f"\u2702\ufe0f <b>TRIM FAILED</b> — {symbol}\n"
-                            f"Tried to sell {sell_qty} at {pnl_pct:+.1f}% but got error:\n"
-                            f"{result['error']}"
-                        )
-                        logger.error(f"Trim failed: {symbol} — {result['error']}")
-                    if telegram.enabled:
-                        await telegram.send_info(msg)
-
-                # ── TRAILING STOP (after TP1) — ratcheting high watermark ──
-                elif state["tp_fired"] and not state["tp2_fired"] and trail_enabled and state["trailing"]:
-                    # Update high watermark
-                    if pnl_pct > state["high_watermark"]:
-                        state["high_watermark"] = pnl_pct
-
-                    trail_floor = state["high_watermark"] - trail_pct
-                    # Floor must be at least TP1 level (never give back below our first take)
-                    trail_floor = max(trail_floor, tp_pct * 0.75)
-
-                    if pnl_pct <= trail_floor:
-                        state["tp2_fired"] = True
-                        result = trader.close_position(symbol)
-                        if "error" not in result:
-                            await db.record_exit(symbol, cur, "trailing_stop", pnl_usd, pnl_pct)
-                            if pnl_usd >= 0:
-                                auto_trade.record_win(pos["symbol"][:6].rstrip(), pnl_usd)
-                            else:
-                                auto_trade.record_loss(pos["symbol"][:6].rstrip(), pnl_usd)
-                            msg = (
-                                f"\U0001f4c9 <b>TRAILING STOP</b> — {symbol}\n"
-                                f"High: {state['high_watermark']:+.1f}% → Fell to {pnl_pct:+.1f}% (floor: {trail_floor:+.1f}%)\n"
-                                f"Sold ALL remaining {qty:.0f} shares/contracts\n"
-                                f"Entry: ${avg:.2f} → Exit: ${cur:.2f}\n"
-                                f"P&L: {pnl_pct:+.1f}% (${pnl_usd:+,.2f})"
-                            )
-                            logger.info(
-                                f"Trailing stop fired: {symbol} HWM={state['high_watermark']:+.1f}% "
-                                f"now={pnl_pct:+.1f}% floor={trail_floor:+.1f}%"
-                            )
-                        else:
-                            msg = (
-                                f"\U0001f4c9 <b>TRAILING STOP FAILED</b> — {symbol}\n"
-                                f"{result['error']}"
-                            )
-                            logger.error(f"Trailing stop failed: {symbol} — {result['error']}")
-                        if telegram.enabled:
-                            await telegram.send_info(msg)
-
-                # ── TAKE PROFIT T2 (fallback if trailing disabled): +175% → sell remaining ──
-                elif state["tp_fired"] and not state["tp2_fired"] and not trail_enabled:
-                    if pnl_pct >= tp2_pct:
-                        state["tp2_fired"] = True
-                        sell_qty = max(1, int(qty * tp2_sell_frac))
-                        if tp2_sell_frac >= 1.0:
-                            result = trader.close_position(symbol)
-                        else:
-                            result = trader.market_order(symbol, sell_qty, "sell")
-                        if "error" not in result:
-                            await db.record_exit(symbol, cur, "tp2", pnl_usd, pnl_pct)
-                            auto_trade.record_win(pos["symbol"][:6].rstrip(), pnl_usd)
-                            msg = (
-                                f"\U0001f680 <b>TAKE PROFIT T2</b> — {symbol}\n"
-                                f"Sold {sell_qty} of {qty:.0f} shares/contracts\n"
-                                f"Entry: ${avg:.2f} → Now: ${cur:.2f}\n"
-                                f"P&L: {pnl_pct:+.1f}% (+${pnl_usd:,.2f})"
-                            )
-                            logger.info(f"TP2 fired: {symbol} {pnl_pct:+.1f}% — sold {sell_qty}/{qty:.0f}")
-                        else:
-                            msg = (
-                                f"\U0001f680 <b>TP2 FAILED</b> — {symbol}\n"
-                                f"Tried to sell {sell_qty} at {pnl_pct:+.1f}% but got error:\n"
-                                f"{result['error']}"
-                            )
-                            logger.error(f"TP2 failed: {symbol} — {result['error']}")
-                        if telegram.enabled:
-                            await telegram.send_info(msg)
-
-                # ── TAKE PROFIT T1: +80% → sell half (lock in gains) ──
-                elif pnl_pct >= tp_pct and not state["tp_fired"]:
-                    state["tp_fired"] = True
-                    sell_qty = max(1, int(qty * tp_sell_frac))
-                    if tp_sell_frac >= 1.0:
-                        result = trader.close_position(symbol)
-                    else:
-                        result = trader.market_order(symbol, sell_qty, "sell")
-                    if "error" not in result:
-                        await db.record_exit(symbol, cur, "tp1", pnl_usd * tp_sell_frac, pnl_pct)
-                        auto_trade.record_win(pos["symbol"][:6].rstrip(), pnl_usd * tp_sell_frac)
-                        # Activate trailing stop for the remaining half
-                        if trail_enabled:
-                            state["trailing"] = True
-                            state["high_watermark"] = pnl_pct
-                            trail_info = f"\nTrailing stop active: {trail_pct:.0f}pp below peak"
-                        else:
-                            trail_info = f"\nT2 target: +{tp2_pct:.0f}%"
-                        msg = (
-                            f"\U0001f3af <b>TAKE PROFIT</b> — {symbol}\n"
-                            f"Sold {sell_qty} of {qty:.0f} shares/contracts\n"
-                            f"Entry: ${avg:.2f} → Now: ${cur:.2f}\n"
-                            f"P&L: {pnl_pct:+.1f}% (+${pnl_usd:,.2f})"
-                            f"{trail_info}"
-                        )
-                        logger.info(f"TP fired: {symbol} {pnl_pct:+.1f}% — sold {sell_qty}/{qty:.0f}")
-                    else:
-                        msg = (
-                            f"\U0001f3af <b>TP FAILED</b> — {symbol}\n"
-                            f"Tried to sell {sell_qty} at {pnl_pct:+.1f}% but got error:\n"
-                            f"{result['error']}"
-                        )
-                        logger.error(f"TP failed: {symbol} — {result['error']}")
-                    if telegram.enabled:
-                        await telegram.send_info(msg)
-
-            # Clean up state for positions we no longer hold
-            current_symbols = {p["symbol"] for p in positions if p["qty"] > 0}
-            for sym in list(_alpaca_pos_state):
-                if sym not in current_symbols:
-                    _alpaca_pos_state.pop(sym, None)
-
+            if current_session() not in ("overnight", "weekend"):
+                positions = await asyncio.to_thread(trader.get_positions_raw)
+                if positions is not None:
+                    # The API wrapper returns our normalized P&L shape. Raw
+                    # positions above distinguish fetch failure from an empty account.
+                    normalized = [{"symbol": p["symbol"], "qty": float(p["qty"]),
+                                   "pnl_pct": float(p.get("unrealized_plpc") or 0) * 100,
+                                   "avg_price": float(p.get("avg_entry_price") or 0)}
+                                  for p in positions if float(p.get("qty") or 0) > 0]
+                    condor_legs = await db.get_active_condor_leg_symbols()
+                    unsettled = {c["ticker"] for c in await db.get_active_condors()
+                                 if c["status"] == "awaiting_settlement"}
+                    for pos in normalized:
+                        symbol = pos["symbol"]
+                        if symbol in condor_legs or symbol in unsettled:
+                            continue
+                        state = _alpaca_pos_state.setdefault(symbol, {})
+                        message = await manage_position_exit(db, trader, pos, settings, state, record_fill)
+                        if message:
+                            logger.info(message)
+                            if telegram.enabled:
+                                await telegram.send_info(message)
+                    held = {p["symbol"] for p in normalized}
+                    # Also reconcile a full exit after its position disappears.
+                    for symbol, state in list(_alpaca_pos_state.items()):
+                        if symbol not in held:
+                            if state.get("pending"):
+                                await manage_position_exit(db, trader,
+                                    {"symbol": symbol, "qty": 0, "pnl_pct": 0}, settings, state, record_fill)
+                            if not state.get("pending"):
+                                _alpaca_pos_state.pop(symbol, None)
+                                await db.delete_position_monitor_state(symbol)
         except Exception as e:
             logger.error(f"Alpaca position monitor error: {e}")
-
-        await asyncio.sleep(interval)
+        await asyncio.sleep(settings.pos_monitor_interval)
 
 
 async def performance_sync_loop():
@@ -1005,7 +806,8 @@ async def performance_sync_loop():
 
     while True:
         try:
-            orders = trader.get_order_history(days=90, limit=500)
+            await auto_trade.reconcile_submissions()
+            orders = await asyncio.to_thread(trader.get_order_history, days=90, limit=500)
             for o in orders:
                 # Extract underlying ticker from OCC symbol or use symbol directly
                 sym = o["symbol"]
@@ -1049,11 +851,11 @@ async def daily_equity_loop():
     await asyncio.sleep(20)  # let startup settle
     while True:
         try:
-            acct = trader.get_account()
+            acct = await asyncio.to_thread(trader.get_account)
             equity = float(acct.get("equity", 0) or 0)
             if equity > 0:
                 try:
-                    n_pos = len(trader.get_positions())
+                    n_pos = len(await asyncio.to_thread(trader.get_positions))
                 except Exception:
                     n_pos = 0
                 await db.record_daily_equity(
@@ -1188,7 +990,7 @@ async def maybe_execute_condor(setup):
         logger.info("IV-exec skip: daily condor cap reached")
         return
 
-    acct = trader.get_account()
+    acct = await asyncio.to_thread(trader.get_account)
     equity = float(acct.get("equity") or getattr(auto_trade, "_cached_equity", 0) or 0)
     if equity <= 0:
         logger.warning("IV-exec skip: no equity")
@@ -1198,14 +1000,14 @@ async def maybe_execute_condor(setup):
     # outright on a losing streak. A streak is the signal that the regime moved,
     # which is precisely when the next trade should be smaller or not happen.
     mult = 1.0
+    rs = await db.get_risk_state(s.iv_risk_loss_factor, s.iv_risk_win_factor,
+                                 s.iv_risk_floor, s.iv_risk_halt_streak)
+    if rs["halted"]:
+        logger.warning(
+            f"IV-exec HALTED — no new condors. {rs['halted_reason']} "
+            f"(tripped {rs['halted_at']}). Clear it deliberately to resume.")
+        return
     if s.iv_risk_throttle_enabled:
-        rs = await db.get_risk_state(s.iv_risk_loss_factor, s.iv_risk_win_factor,
-                                     s.iv_risk_floor, s.iv_risk_halt_streak)
-        if rs["halted"]:
-            logger.warning(
-                f"IV-exec HALTED — no new condors. {rs['halted_reason']} "
-                f"(tripped {rs['halted_at']}). Clear it deliberately to resume.")
-            return
         mult = rs["multiplier"]
         if mult < 1.0:
             logger.info(f"IV-exec {ticker}: throttled to {mult:.0%} of normal size "
@@ -1217,16 +1019,26 @@ async def maybe_execute_condor(setup):
     if not plan.get("ok"):
         logger.info(f"IV-exec {ticker}: no condor ({plan.get('reason')})")
         return
-    res = await loop.run_in_executor(
-        None, lambda: trader.multileg_order(plan["legs"], plan["qty"], plan["limit_price"]))
-    if res.get("error"):
-        logger.error(f"IV-exec {ticker} submit failed: {res['error']}")
-        return
+    # Resolve the order namespace before a row exists: if it fails, nothing is
+    # persisted or submitted.
+    ns = await db.order_namespace()
+    # Persist before submitting: an ambiguous POST must remain tracked and must
+    # not be repeated as a new condor on the next scan.
     cid = await db.record_condor(
         ticker=ticker, earnings_date=setup.next_earnings_date, expiry=plan["expiry"],
         legs_json=plan["legs_json"], strikes=plan["strikes"], qty=plan["qty"],
         credit=plan["credit"], max_loss=plan["max_loss"],
-        entry_order_id=res.get("id"), entry_status=res.get("status"))
+        entry_order_id=None, entry_status="submitting")
+    res = await loop.run_in_executor(
+        None, lambda: trader.multileg_order(plan["legs"], plan["qty"], plan["limit_price"],
+                                            client_order_id=_condor_entry_client_id(ns, cid)))
+    if res.get("error"):
+        if not res.get("ambiguous", True):
+            await db.void_condor(cid, "rejected")
+        logger.error(f"IV-exec {ticker} submit failed: {res['error']}")
+        return
+    await db._exec("UPDATE iv_condors SET entry_order_id=?, entry_status=? WHERE id=?",
+                   (res.get("id"), res.get("status"), cid))
     st = plan["strikes"]
     logger.info(
         f"IV-exec ✅ {ticker} iron condor #{cid}: "
@@ -1582,9 +1394,17 @@ def _condor_expiry_hold(c: dict, spot: float | None, buffer_pct: float) -> bool:
             and (sc - spot) / spot >= buffer_pct)
 
 
+def _condor_entry_client_id(ns: str, cid: int) -> str:
+    """Entry client order ID. `ns` is the per-database namespace, so a recreated
+    DB's row ids can never collide with orders already on the broker account."""
+    return f"sm-{ns}-condor-{cid}-entry"
+
+
 def _condor_wing_width(c: dict) -> float:
-    """Widest wing, in points. A condor can never cost more than this to close,
-    so it doubles as a guaranteed-fill limit when quotes cannot be trusted."""
+    """Widest contractual payoff, used as a close-price ceiling.
+
+    A price ceiling bounds the debit we authorize; it does not guarantee a fill.
+    """
     widths = []
     for a, b in (("short_put", "long_put"), ("long_call", "short_call")):
         try:
@@ -1619,11 +1439,67 @@ def _expiry_force_close_due(expiry, now=None) -> bool:
     return n.hour * 60 + n.minute >= force_minute
 
 
+async def _reconcile_condor_expiry(c: dict, legs: list, remaining: int):
+    """Only finalize worthless expiry after the broker confirms every leg.
+
+    Assignment/exercise changes the account's stock holdings and requires a
+    reviewed accounting decision; stock-close intrinsic is not an actual fill.
+    """
+    cid = c["id"]
+    activities = await asyncio.to_thread(trader.get_option_activities, c["opened_at"])
+    positions = await asyncio.to_thread(trader.get_positions_raw)
+    note = "Awaiting broker option-expiration activities"
+    if activities is None or positions is None:
+        await db.await_condor_settlement(cid, note)
+        return
+    symbols = {l["symbol"] for l in legs}
+    events = [a for a in activities if a.get("symbol") in symbols
+              and a.get("status") == "executed"]
+    if any(a.get("activity_type") in ("OPASN", "OPEXC", "OPXRC") for a in events):
+        note = f"Condor #{cid} {c['ticker']}: assignment/exercise requires settlement review"
+        await db.await_condor_settlement(cid, note)
+        risk = await db.get_risk_state()
+        if not risk["halted"]:
+            await db.set_halt(note)
+            logger.error(note)
+            if telegram.enabled:
+                await telegram.send_info(note)
+        return
+    if any(p.get("symbol") in symbols and float(p.get("qty") or 0) != 0 for p in positions):
+        await db.await_condor_settlement(cid, note)
+        return
+    # Activity IDs deduplicate broker pages; exact quantities avoid assigning
+    # another structure's expiration to this condor.
+    seen, expired = set(), {}
+    for a in events:
+        if a.get("activity_type") != "OPEXP" or str(a.get("date", ""))[:10] != c["expiry"]:
+            continue
+        if not a.get("id") or a["id"] in seen:
+            continue
+        seen.add(a["id"])
+        try:
+            q = abs(float(a["qty"]))
+            from math import isfinite
+            if not isfinite(q):
+                continue
+            expired[a["symbol"]] = expired.get(a["symbol"], 0) + q
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not all(expired.get(l["symbol"], 0) == remaining * l.get("ratio_qty", 1) for l in legs):
+        await db.await_condor_settlement(cid, note)
+        return
+    pnl = float(c.get("close_pnl") or 0) + c["credit"] * 100 * remaining
+    debit = c["credit"] - pnl / (100 * c["qty"])
+    await db.close_condor(cid, max(0, debit), pnl)
+    logger.info("Condor #%s broker-confirmed worthless expiry; P&L $%+.2f", cid, pnl)
+    await _condor_risk_check(pnl)
+
+
 async def _manage_condor(c: dict):
     """Confirm entry fill, then close on profit target / after the print."""
     import json as _json
     from datetime import date as _date
-    from signals.iv_variants import settlement_ready, variant_payoff
+    from signals.iv_variants import settlement_ready
     loop = asyncio.get_event_loop()
     legs = _json.loads(c["legs_json"])
     cid, qty, credit = c["id"], int(c["qty"]), float(c["credit"])
@@ -1639,14 +1515,21 @@ async def _manage_condor(c: dict):
     )
     if needs_entry_sync:
         if not c.get("entry_order_id"):
-            logger.warning(f"IV-exec condor #{cid} has no entry order id; not managing it")
-            return
+            found = await asyncio.to_thread(
+                trader.get_order_by_client_id, _condor_entry_client_id(await db.order_namespace(), cid))
+            if not found.get("id"):
+                logger.warning("Condor #%s awaiting entry submission reconciliation", cid)
+                return
+            c = {**c, "entry_order_id": found["id"]}
+            await db._exec("UPDATE iv_condors SET entry_order_id=? WHERE id=?", (found["id"], cid))
         o = await loop.run_in_executor(None, trader.get_order_raw, c["entry_order_id"])
         est = str((o or {}).get("status") or "unknown").lower()
         filled_qty = float((o or {}).get("filled_qty") or 0)
         filled_avg = float((o or {}).get("filled_avg_price") or 0)
         if est not in entry_terminal:
             await db.update_condor_entry_status(cid, est)
+            if _expiry_force_close_due(c.get("expiry")) and est != "pending_cancel":
+                await asyncio.to_thread(trader.cancel_order_raw, c["entry_order_id"])
             return
         if filled_qty <= 0:
             await db.void_condor(cid, est)
@@ -1681,47 +1564,59 @@ async def _manage_condor(c: dict):
     # A filled/expired option is often no longer returned by the live chain. The
     # broker's order is authoritative, so its fill check must not depend on an
     # option quote response.
-    if c["status"] == "closing" and c.get("close_order_id"):
-        o = await loop.run_in_executor(None, trader.get_order_raw, c["close_order_id"])
-        st = (o or {}).get("status")
-        if st == "filled":
-            raw_exit_debit = (o or {}).get("filled_avg_price")
-            try:
-                exit_debit = abs(float(raw_exit_debit))
-                from math import isfinite
-                if not isfinite(exit_debit):
-                    raise ValueError("non-finite fill price")
-            except (TypeError, ValueError):
-                logger.warning(f"IV-exec condor #{cid} filled but has no usable fill price; retrying")
+    if c["status"] == "closing":
+        if not c.get("close_order_id"):
+            if not c.get("close_client_order_id"):
+                logger.error("Condor #%s closing without an order identity; review required", cid)
                 return
-            pnl = (credit - exit_debit) * 100 * qty
-            await db.close_condor(cid, exit_debit, pnl)
-            logger.info(f"IV-exec condor #{cid} {c['ticker']} CLOSED: "
-                        f"credit ${credit:.2f} exit ${exit_debit:.2f} → P&L ${pnl:+.0f}")
-            await _condor_risk_check(pnl)
-        elif st in ("canceled", "expired", "rejected"):
-            await db._exec("UPDATE iv_condors SET status='open', close_order_id=NULL WHERE id=?", (cid,))
-        return
-
-    # ── Settle a condor that was allowed to expire ──
-    # Holding to expiry produces no close fill, so without this the row would
-    # leak open forever and its P&L would never book. Settled from the expiry
-    # session's underlying close, the same source the variant evals use, with
-    # the same expiry-intrinsic payoff maths.
-    if c["status"] == "open" and expiring and settlement_ready(c.get("expiry")):
-        close_px = await loop.run_in_executor(
-            None, feed.get_daily_close, c["ticker"], c["expiry"])
-        if close_px is None:
-            logger.debug("IV-exec condor #%s awaiting expiry close bar", cid)
+            found = await asyncio.to_thread(trader.get_order_by_client_id, c["close_client_order_id"])
+            if not found.get("id"):
+                logger.warning("Condor #%s awaiting close submission reconciliation", cid)
+                return
+            c = {**c, "close_order_id": found["id"]}
+            await db.mark_condor_closing(cid, found["id"], c["close_client_order_id"])
+        o = await asyncio.to_thread(trader.get_order_raw, c["close_order_id"])
+        st = (o or {}).get("status")
+        if st == "filled" or float((o or {}).get("filled_qty") or 0) > 0:
+            try:
+                filled_qty = float(o["filled_qty"])
+                exit_debit = abs(float(o.get("filled_avg_price")))
+                c = await db.record_condor_close_fill(cid, c["close_order_id"], filled_qty, exit_debit)
+            except (KeyError, TypeError, ValueError):
+                logger.warning("Condor #%s has unusable close fill data; retrying", cid)
+                return
+            if c["closed_qty"] == qty:
+                pnl = c["close_pnl"]
+                average_debit = credit - pnl / (100 * qty)
+                await db.close_condor(cid, average_debit, pnl)
+                await _condor_risk_check(pnl)
+                return
+        if st in ("canceled", "expired", "rejected"):
+            await db._exec(
+                "UPDATE iv_condors SET status='open', close_order_id=NULL, close_client_order_id=NULL WHERE id=?", (cid,))
+            c = {**c, "status": "open", "close_order_id": None}
+        else:
+            # Reprice only after cancellation is acknowledged on a later cycle.
+            # The expiry deadline applies to orders already in flight as well.
+            from datetime import datetime, timezone
+            age = 0
+            try:
+                submitted = datetime.fromisoformat(o.get("created_at", "").replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - submitted.replace(tzinfo=submitted.tzinfo or timezone.utc)).total_seconds()
+            except (TypeError, ValueError):
+                pass
+            ceiling = max(_condor_wing_width(c), 0.05)
+            old_limit = float((o or {}).get("limit_price") or 0)
+            if st not in ("pending_cancel", "pending_replace") and is_rth_now() and (
+                    (forced and old_limit < ceiling) or (not forced and age >= 300)):
+                await asyncio.to_thread(trader.cancel_order_raw, c["close_order_id"])
             return
-        per_spread = variant_payoff(c, close_px)          # $ per spread, incl. credit
-        pnl = per_spread * qty
-        exit_debit = max(0.0, credit - per_spread / 100.0)
-        await db.close_condor(cid, exit_debit, pnl)
-        logger.info(f"IV-exec condor #{cid} {c['ticker']} EXPIRED at ${close_px:.2f} "
-                    f"(zone {c['short_put']}–{c['short_call']}): credit ${credit:.2f} "
-                    f"→ P&L ${pnl:+.0f}")
-        await _condor_risk_check(pnl)
+
+    qty = int(c["qty"]) - int(c.get("closed_qty") or 0)
+    if qty <= 0:
+        return
+    if c["status"] == "awaiting_settlement" or (expiring and settlement_ready(c.get("expiry"))):
+        await _reconcile_condor_expiry(c, legs, qty)
         return
 
     # Every remaining decision uses a live option book. A missing response makes
@@ -1766,7 +1661,9 @@ async def _manage_condor(c: dict):
 
     # Submit the close (marketable-ish debit limit) and mark closing.
     reason = "TP" if tp_hit else ("expiry" if forced and not post_earnings else "post-earnings")
-    if debit is None:
+    if forced or debit is None:
+        # At the expiry deadline, use the bounded-risk ceiling even when a
+        # quote exists. A pending TP order must not strand this close.
         # Only reachable on the forced expiry-day path. Cap the limit at the wing
         # width: a condor cannot cost more than that to buy back, so this fills
         # at or better than the worst case instead of guessing a price.
@@ -1782,11 +1679,17 @@ async def _manage_condor(c: dict):
         base = max(debit, 0.01)
         limit = round(min(max(base * 1.05, base + 0.01),
                           max(_condor_wing_width(c), 0.05)), 2)
-    res = await loop.run_in_executor(None, lambda: trader.close_multileg(legs, qty, limit))
+    from uuid import uuid4
+    client_id = f"sm-condor-{cid}-{uuid4().hex[:16]}"
+    await db.mark_condor_closing(cid, None, client_id)
+    res = await loop.run_in_executor(
+        None, lambda: trader.close_multileg(legs, qty, limit, client_order_id=client_id))
     if res.get("error"):
+        if not res.get("ambiguous", True):
+            await db._exec("UPDATE iv_condors SET status='open', close_client_order_id=NULL WHERE id=?", (cid,))
         logger.warning(f"IV-exec condor #{cid} close submit failed: {res['error']}")
         return
-    await db.mark_condor_closing(cid, res.get("id"))
+    await db.mark_condor_closing(cid, res.get("id"), client_id)
     logger.info(f"IV-exec condor #{cid} {c['ticker']} closing ({reason}) "
                 f"debit{'≈$%.2f' % debit if debit is not None else ' unknown'} "
                 f"limit ${limit:.2f} order={res.get('id')}")
@@ -1976,26 +1879,44 @@ async def uw_budget_monitor_loop():
 
 
 def _git_push_eval_data(day: str):
-    """Commit + push the eval-data exports to GitHub (durable backup + the bridge
-    a cloud delivery routine reads from). Stages only the data files, so it never
-    touches unrelated working-tree changes. Best-effort — logs and moves on."""
+    """Publish only report snapshots in a temporary clone of remote main.
+
+    Neither the developer's index nor unpushed application commits are used.
+    A concurrent remote update fails the fast-forward push and is retried on
+    the next report run; no force push or workspace rebase is performed.
+    """
     import subprocess
+    import tempfile
     from pathlib import Path
     repo = Path(__file__).parent.parent
     files = ["backend/reports/history.jsonl", "backend/reports/trades.csv",
              "backend/reports/latest.json"]
+    def git(args, cwd):
+        return subprocess.run(["git", *args], cwd=cwd, check=True,
+                              capture_output=True, timeout=60)
     try:
-        subprocess.run(["git", "add", *files], cwd=repo, check=True, capture_output=True, timeout=30)
-        r = subprocess.run(["git", "commit", "-m", f"eval-data: daily report {day}"],
-                           cwd=repo, capture_output=True, timeout=30)
-        if r.returncode != 0:
-            if b"nothing to commit" in r.stdout + r.stderr:
+        snapshots = {f: (repo / f).read_bytes() for f in files}
+        remote = git(["remote", "get-url", "origin"], repo).stdout.decode().strip()
+        identity = {k: git(["config", k], repo).stdout.decode().strip()
+                    for k in ("user.name", "user.email")}
+        with tempfile.TemporaryDirectory(prefix="stonkmonitor-reports-") as tmp:
+            checkout = Path(tmp) / "repo"
+            git(["clone", "--quiet", "--depth=1", "--single-branch", "--branch", "main",
+                 remote, str(checkout)], repo)
+            for key, value in identity.items():
+                git(["config", key, value], checkout)
+            for file, data in snapshots.items():
+                (checkout / file).parent.mkdir(parents=True, exist_ok=True)
+                (checkout / file).write_bytes(data)
+            git(["add", "--", *files], checkout)
+            changed = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=checkout,
+                                     capture_output=True, timeout=30)
+            if changed.returncode == 0:
                 return
-            raise RuntimeError((r.stderr or r.stdout).decode()[:200])
-        subprocess.run(["git", "pull", "--rebase", "origin", "main"],
-                       cwd=repo, check=True, capture_output=True, timeout=60)
-        subprocess.run(["git", "push", "origin", "main"],
-                       cwd=repo, check=True, capture_output=True, timeout=60)
+            if changed.returncode != 1:
+                raise RuntimeError("Unable to compare report snapshot")
+            git(["commit", "-m", f"eval-data: daily report {day}"], checkout)
+            git(["push", "origin", "HEAD:main"], checkout)
         logger.info(f"eval-data pushed to GitHub ({day})")
     except Exception as e:
         logger.warning(f"eval-data git push failed: {e}")
@@ -2041,7 +1962,7 @@ async def generate_daily_report(is_weekly: bool = False) -> dict:
     # Durable history export (history.jsonl + trades.csv) → committed to git.
     await export_history(db, reports_dir)
     if settings.report_git_push:
-        _git_push_eval_data(day)
+        await asyncio.to_thread(_git_push_eval_data, day)
 
     a, m = data["account"], data["metrics"]
     summary = (f"Equity ${a['equity']:,.0f} ({a['total_pnl_pct']:+.2f}%) | "
@@ -2154,7 +2075,7 @@ async def lifespan(app: FastAPI):
             logger.info(f"Earnings calendar warmed: {len(_cache['map'])} names (Nasdaq)")
         except Exception as e:
             logger.warning(f"Earnings calendar warm-up failed: {e}")
-    asyncio.create_task(_warm_earnings_calendar())
+    calendar_task = asyncio.create_task(_warm_earnings_calendar())
     perf_sync_task = asyncio.create_task(performance_sync_loop())
     daily_equity_task = asyncio.create_task(daily_equity_loop())
     report_task = asyncio.create_task(report_scheduler_loop())
@@ -2176,7 +2097,7 @@ async def lifespan(app: FastAPI):
         _startup_complete = True
         logger.info("Startup backfill complete — notifications now active")
 
-    asyncio.create_task(enable_notifications())
+    notifications_task = asyncio.create_task(enable_notifications())
     pattern_engine.set_notifiers(discord, pushover)
 
     # Wire auto-trade dependencies
@@ -2184,7 +2105,7 @@ async def lifespan(app: FastAPI):
 
     # Seed cached equity immediately so circuit breaker % is correct from the start
     try:
-        _startup_account = trader.get_account()
+        _startup_account = await asyncio.to_thread(trader.get_account)
         _startup_equity = float(_startup_account.get("equity", 0) or 0)
         if _startup_equity > 0:
             auto_trade._cached_equity = _startup_equity
@@ -2208,17 +2129,13 @@ async def lifespan(app: FastAPI):
 
     yield  # app runs here
 
-    if uw_task:
-        uw_task.cancel()
-    if uw_budget_task:
-        uw_budget_task.cancel()
-    iv_task.cancel()
-    condor_monitor_task.cancel()
-    measure_task.cancel()
-    if kalshi_task:
-        kalshi_task.cancel()
-    if kalshi_monitor_task:
-        kalshi_monitor_task.cancel()
+    tasks = [t for t in (uw_task, uw_budget_task, iv_task, alpaca_monitor_task,
+              condor_monitor_task, measure_task, perf_sync_task, daily_equity_task,
+              report_task, calendar_task, notifications_task, kalshi_task,
+              kalshi_monitor_task) if t is not None]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
     await uw_client.close()
     if kalshi_client:
         await kalshi_client.close()
@@ -2242,6 +2159,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from api.local_access import LocalAccessMiddleware, local_access_allowed
+app.add_middleware(LocalAccessMiddleware, origins=settings.cors_origins.split(","))
+
 app.include_router(router, prefix="/api")
 
 
@@ -2250,6 +2170,9 @@ app.include_router(router, prefix="/api")
 # ------------------------------------------------------------------ #
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    if not local_access_allowed(ws, {x.strip() for x in settings.cors_origins.split(",")}):
+        await ws.close(code=1008)
+        return
     await manager.connect(ws)
     # Send last 50 signals on connect so UI catches up
     if signal_store:

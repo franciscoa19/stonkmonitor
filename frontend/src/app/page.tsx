@@ -80,24 +80,28 @@ export default function Dashboard() {
 
   async function addToWatchlist(ticker: string) {
     try {
-      await fetch(`${API}/api/watchlist`, {
+      const response = await fetch(`${API}/api/watchlist`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticker }),
       })
-      setWatchlist(prev => [...prev, ticker])
+      if (response.ok) setWatchlist((await response.json()).tickers)
     } catch {}
   }
 
   async function removeFromWatchlist(ticker: string) {
     try {
-      await fetch(`${API}/api/watchlist/${ticker}`, { method: 'DELETE' })
-      setWatchlist(prev => prev.filter(t => t !== ticker))
+      const response = await fetch(`${API}/api/watchlist/${encodeURIComponent(ticker)}`, { method: 'DELETE' })
+      if (response.ok) setWatchlist((await response.json()).tickers)
     } catch {}
   }
 
   useEffect(() => {
     refreshAccount()
+    fetch(`${API}/api/watchlist`)
+      .then(async response => {
+        if (response.ok) setWatchlist((await response.json()).tickers)
+      }).catch(() => {})
     const interval = setInterval(refreshAccount, 30_000)
     return () => clearInterval(interval)
   }, [])

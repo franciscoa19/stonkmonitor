@@ -66,13 +66,16 @@ class TelegramNotifier:
         """Auto-detect chat_id from most recent message. Returns True if found."""
         if not self.enabled:
             return False
+        if self.chat_id:
+            return True
         data = await self._call("getUpdates", limit=20, timeout=5)
         updates = data.get("result", [])
         for upd in reversed(updates):
             msg = upd.get("message") or {}
             cb  = upd.get("callback_query", {})
             src_msg = msg or cb.get("message", {})
-            if src_msg.get("chat", {}).get("id"):
+            if (src_msg.get("chat", {}).get("type") == "private"
+                    and src_msg.get("chat", {}).get("id")):
                 self.chat_id = src_msg["chat"]["id"]
                 self._offset = max(self._offset, upd["update_id"] + 1)
                 logger.info(f"Telegram chat_id resolved: {self.chat_id}")
@@ -347,6 +350,13 @@ class TelegramNotifier:
         # ── Button tap (callback_query) ──────────────────────────────────
         cb = update.get("callback_query")
         if cb:
+            chat = cb.get("message", {}).get("chat", {})
+            # Execution cards belong to the configured private chat. Group
+            # membership is not authorization to trade this account.
+            if (not self.chat_id or str(chat.get("id")) != str(self.chat_id)
+                    or str(cb.get("from", {}).get("id")) != str(self.chat_id)):
+                await self.answer_callback(cb["id"], "Unauthorized")
+                return
             cb_id  = cb["id"]
             data   = cb.get("data", "")
             msg_id = cb.get("message", {}).get("message_id")
@@ -401,6 +411,10 @@ class TelegramNotifier:
         # ── Regular message ──────────────────────────────────────────────
         msg = update.get("message", {})
         if msg:
+            if msg.get("chat", {}).get("type") != "private":
+                return
+            if self.chat_id and str(msg.get("chat", {}).get("id")) != str(self.chat_id):
+                return
             if not self.chat_id:
                 self.chat_id = msg["chat"]["id"]
                 logger.info(f"Telegram chat_id set: {self.chat_id}")

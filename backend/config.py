@@ -236,9 +236,9 @@ class Settings(BaseSettings):
     pos_sl_pct: float = Field(-40.0)        # stop loss at -40%
 
     # --- Backend ---
-    backend_host: str = Field("0.0.0.0")
+    backend_host: str = Field("127.0.0.1")
     backend_port: int = Field(8000)
-    cors_origins: str = Field("http://localhost:3000")
+    cors_origins: str = Field("http://localhost:3000,http://127.0.0.1:3000")
 
     # --- Signal Thresholds ---
     min_premium_alert: int = Field(50000)

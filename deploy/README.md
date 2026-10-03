@@ -35,7 +35,7 @@ Same shape as the backend agent, serving the dashboard on 127.0.0.1:3000. It run
 `next start` against the production build, not `next dev`, so it does **not**
 pick up source changes on its own. Build first, and rebuild after edits:
 
-    cd frontend && npm run build
+    (cd frontend && npm run build)
     cp deploy/com.stonkmonitor.frontend.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.stonkmonitor.frontend.plist
 

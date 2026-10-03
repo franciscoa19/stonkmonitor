@@ -10,6 +10,7 @@ Tables (one per feed + signals + pattern_hits):
   pattern_hits    — fired pattern matches (for dedup + history)
 """
 import json
+import asyncio
 import logging
 import aiosqlite
 from datetime import datetime, timezone, date, timedelta
@@ -340,6 +341,21 @@ CREATE TABLE IF NOT EXISTS iv_condors (
 CREATE INDEX IF NOT EXISTS idx_condor_open ON iv_condors(status);
 CREATE INDEX IF NOT EXISTS idx_condor_tkr  ON iv_condors(ticker, status);
 
+CREATE TABLE IF NOT EXISTS iv_condor_close_fills (
+    order_id TEXT PRIMARY KEY,
+    condor_id INTEGER NOT NULL,
+    filled_qty INTEGER NOT NULL,
+    debit REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS position_monitor_state (
+    symbol TEXT PRIMARY KEY,
+    state_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS db_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- ── IV/RV strategy-variant logger (measurement only, NO execution) ──
 -- For each earnings event we log several hypothetical structures side by side
 -- (condor at 0.7/1.0/1.3× the implied move, iron fly, short straddle) priced off
@@ -424,6 +440,10 @@ CREATE INDEX IF NOT EXISTS idx_variant_attempt_source
 # Columns added after initial release — applied by _migrate() on connect for
 # databases created before the column existed (SQLite has no ADD COLUMN IF NOT EXISTS).
 _MIGRATIONS = {
+    "iv_condors": {"closed_qty": "INTEGER NOT NULL DEFAULT 0",
+                   "close_pnl": "REAL NOT NULL DEFAULT 0",
+                   "close_client_order_id": "TEXT",
+                   "settlement_note": "TEXT"},
     "pending_trades":    {"strategy": "TEXT"},
     "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL"},
     "daily_equity":      {"open_equity": "REAL", "updated_at": "TEXT"},
@@ -441,6 +461,29 @@ class Database:
     def __init__(self, path: Path = DB_PATH):
         self.path = path
         self._conn: Optional[aiosqlite.Connection] = None
+        self._condor_fill_lock = asyncio.Lock()
+        self._order_ns: Optional[str] = None
+
+    async def order_namespace(self) -> str:
+        """Random prefix for broker client order IDs, fixed per database file.
+
+        Client IDs are built from row ids, which restart at 1 when the DB is
+        recreated (as on 2026-10-02). Without a per-DB namespace, a new row's
+        ID can equal one already used on the broker account: the POST is
+        rejected as a duplicate and the by-client-ID recovery then adopts the
+        OLD order as this row's. Raises rather than returning '' so no order is
+        ever submitted under an unnamespaced ID.
+        """
+        if self._order_ns:
+            return self._order_ns
+        from uuid import uuid4
+        await self._exec("INSERT OR IGNORE INTO db_meta (key, value) VALUES ('order_namespace', ?)",
+                         (uuid4().hex[:12],))
+        row = await self._scalar("SELECT value FROM db_meta WHERE key='order_namespace'")
+        if not row.get("value"):
+            raise RuntimeError("order namespace unavailable; refusing to build client order IDs")
+        self._order_ns = row["value"]
+        return self._order_ns
 
     async def connect(self):
         self._conn = await aiosqlite.connect(self.path)
@@ -745,7 +788,7 @@ class Database:
     async def has_open_condor(self, ticker: str) -> bool:
         r = await self._query(
             """SELECT id FROM iv_condors
-               WHERE ticker=? AND status IN ('pending_entry','open','closing') LIMIT 1""",
+               WHERE ticker=? AND status IN ('pending_entry','open','closing','awaiting_settlement') LIMIT 1""",
             (ticker,))
         return bool(r)
 
@@ -756,7 +799,7 @@ class Database:
 
     async def count_open_condors(self) -> int:
         row = await self._scalar(
-            "SELECT COUNT(*) AS n FROM iv_condors WHERE status IN ('pending_entry','open','closing')"
+            "SELECT COUNT(*) AS n FROM iv_condors WHERE status IN ('pending_entry','open','closing','awaiting_settlement')"
         )
         return int(row.get("n", 0))
 
@@ -784,7 +827,7 @@ class Database:
 
     async def get_active_condors(self) -> list[dict]:
         return await self._query(
-            "SELECT * FROM iv_condors WHERE status IN ('pending_entry','open','closing')")
+            "SELECT * FROM iv_condors WHERE status IN ('pending_entry','open','closing','awaiting_settlement')")
 
     async def get_active_condor_leg_symbols(self) -> set[str]:
         """OCC symbols owned by an active condor.
@@ -795,7 +838,7 @@ class Database:
         monitor for all other positions.
         """
         rows = await self._query(
-            "SELECT legs_json FROM iv_condors WHERE status IN ('pending_entry','open','closing')"
+            "SELECT legs_json FROM iv_condors WHERE status IN ('pending_entry','open','closing','awaiting_settlement')"
         )
         symbols: set[str] = set()
         for row in rows:
@@ -822,10 +865,13 @@ class Database:
         """
         row = await self._scalar(
             "SELECT short_put,long_put,short_call,long_call FROM iv_condors WHERE id=?", (condor_id,))
-        qty = int(float(filled_qty or 0))
+        raw_qty = float(filled_qty or 0)
         credit = abs(float(filled_avg_price or 0))
-        if not row or qty < 1 or credit <= 0:
+        from math import isfinite
+        if (not row or not isfinite(raw_qty) or not raw_qty.is_integer()
+                or raw_qty < 1 or not isfinite(credit) or credit <= 0):
             raise ValueError("filled condor requires positive quantity and net credit")
+        qty = int(raw_qty)
         width = max(
             float(row["long_call"] or 0) - float(row["short_call"] or 0),
             float(row["short_put"] or 0) - float(row["long_put"] or 0),
@@ -847,10 +893,11 @@ class Database:
             (entry_status, datetime.utcnow().isoformat(), condor_id),
         )
 
-    async def mark_condor_closing(self, condor_id: int, close_order_id: str) -> None:
+    async def mark_condor_closing(self, condor_id: int, close_order_id: Optional[str],
+                                  client_order_id: Optional[str] = None) -> None:
         await self._exec(
-            "UPDATE iv_condors SET status='closing', close_order_id=? WHERE id=?",
-            (close_order_id, condor_id))
+            "UPDATE iv_condors SET status='closing', close_order_id=?, close_client_order_id=? WHERE id=?",
+            (close_order_id, client_order_id, condor_id))
 
     async def close_condor(self, condor_id: int, exit_debit: float, pnl: float) -> None:
         await self._exec(
@@ -858,13 +905,67 @@ class Database:
                WHERE id=?""",
             (round(exit_debit, 2), round(pnl, 2), datetime.utcnow().isoformat(), condor_id))
 
+    async def record_condor_close_fill(self, condor_id: int, order_id: str,
+                                       filled_qty: float, debit: float) -> dict:
+        """Store cumulative fills once per broker order, including partial fills.
+
+        Quantity on iv_condors remains the entry quantity. closed_qty is the sum
+        across all replacement closes; close_pnl books only those actual fills.
+        """
+        from math import isfinite
+        q, d = float(filled_qty), float(debit)
+        if not isfinite(q) or q < 0 or not q.is_integer() or not isfinite(d) or d < 0:
+            raise ValueError("invalid condor close fill")
+        async with self._condor_fill_lock:
+            row = await self._scalar("SELECT * FROM iv_condors WHERE id=?", (condor_id,))
+            old = await self._scalar("SELECT * FROM iv_condor_close_fills WHERE order_id=?", (order_id,))
+            if not row or (old and old["condor_id"] != condor_id):
+                raise ValueError("close fill has no matching condor")
+            if old and q < old["filled_qty"]:
+                return row  # an older broker snapshot must not unbook fills
+            total = await self._scalar(
+                "SELECT COALESCE(SUM(filled_qty),0) AS n FROM iv_condor_close_fills WHERE condor_id=? AND order_id<>?",
+                (condor_id, order_id))
+            if total["n"] + q > row["qty"]:
+                raise ValueError("close fills exceed entry quantity")
+            await self._exec(
+                """INSERT INTO iv_condor_close_fills VALUES (?,?,?,?)
+                   ON CONFLICT(order_id) DO UPDATE SET filled_qty=excluded.filled_qty, debit=excluded.debit""",
+                (order_id, condor_id, int(q), d))
+            totals = await self._scalar(
+                """SELECT COALESCE(SUM(filled_qty),0) AS n,
+                          COALESCE(SUM(filled_qty * debit),0) AS cost
+                   FROM iv_condor_close_fills WHERE condor_id=?""", (condor_id,))
+            pnl = (row["credit"] * totals["n"] - totals["cost"]) * 100
+            await self._exec("UPDATE iv_condors SET closed_qty=?, close_pnl=? WHERE id=?",
+                             (totals["n"], round(pnl, 2), condor_id))
+            return await self._scalar("SELECT * FROM iv_condors WHERE id=?", (condor_id,))
+
+    async def await_condor_settlement(self, condor_id: int, note: str) -> None:
+        await self._exec(
+            "UPDATE iv_condors SET status='awaiting_settlement', settlement_note=? WHERE id=?",
+            (note, condor_id))
+
+    async def get_position_monitor_states(self) -> dict:
+        rows = await self._query("SELECT * FROM position_monitor_state")
+        return {r["symbol"]: json.loads(r["state_json"]) for r in rows}
+
+    async def save_position_monitor_state(self, symbol: str, state: dict) -> None:
+        await self._exec(
+            """INSERT INTO position_monitor_state VALUES (?,?)
+               ON CONFLICT(symbol) DO UPDATE SET state_json=excluded.state_json""",
+            (symbol, json.dumps(state)))
+
+    async def delete_position_monitor_state(self, symbol: str) -> None:
+        await self._exec("DELETE FROM position_monitor_state WHERE symbol=?", (symbol,))
+
     async def get_condor_summary(self) -> dict:
         rows = await self._query("SELECT * FROM iv_condors WHERE status='closed'")
         n = len(rows)
         wins = sum(1 for r in rows if (r["pnl"] or 0) > 0)
         pnl = round(sum(r["pnl"] or 0 for r in rows), 2)
         open_row = await self._scalar(
-            "SELECT COUNT(*) AS n FROM iv_condors WHERE status IN ('open','closing')")
+            "SELECT COUNT(*) AS n FROM iv_condors WHERE status IN ('open','closing','awaiting_settlement')")
         pending = await self._scalar(
             "SELECT COUNT(*) AS n FROM iv_condors WHERE status='pending_entry'")
         return {"closed": n, "wins": wins,
@@ -1650,7 +1751,7 @@ class Database:
                  MIN(CASE WHEN side='buy'  THEN filled_at END) AS entry_at,
                  MAX(CASE WHEN side='sell' THEN filled_at END) AS exit_at
                FROM trade_performance
-               WHERE order_status='filled' AND filled_qty > 0
+               WHERE filled_qty > 0 AND filled_avg_price > 0
                GROUP BY symbol
                HAVING sell_qty > 0 AND buy_qty > 0""",
         )

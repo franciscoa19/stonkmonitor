@@ -44,7 +44,7 @@
   <Actions Context="Author">
     <Exec>
       <Command>C:\Users\franc\AppData\Local\Programs\Python\Python313\python.exe</Command>
-      <Arguments>-m uvicorn main:app --host 0.0.0.0 --port 8000</Arguments>
+      <Arguments>-m uvicorn main:app --host 127.0.0.1 --port 8000</Arguments>
       <WorkingDirectory>C:\Users\franc\claude\backend</WorkingDirectory>
     </Exec>
   </Actions>

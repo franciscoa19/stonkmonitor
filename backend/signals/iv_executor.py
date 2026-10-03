@@ -156,7 +156,10 @@ def build_iron_condor(trader, setup, equity: float, settings,
     if width <= 0 or credit / width < MIN_CREDIT_WIDTH_RATIO:
         return {"ok": False, "reason": f"credit/width {credit/width:.2f} too thin"}
 
-    max_loss_per = (width - credit) * CONTRACT_MULTIPLIER
+    # Size against the least credit this order accepts, rather than the planning
+    # mid. Giving up credit for a fill increases the loss we must budget for.
+    accepted_credit = round(max(credit * 0.90, settings.iv_exec_min_credit), 2)
+    max_loss_per = (width - accepted_credit) * CONTRACT_MULTIPLIER
     if max_loss_per <= 0:
         return {"ok": False, "reason": "non-positive max loss"}
     qty = int(risk_budget // max_loss_per)
@@ -165,14 +168,15 @@ def build_iron_condor(trader, setup, equity: float, settings,
     qty = min(qty, QTY_HARD_CAP)
 
     # Entry limit: give up a little credit for fill probability into the print.
-    limit_price = -round(max(credit * 0.90, settings.iv_exec_min_credit), 2)
+    limit_price = -accepted_credit
 
     return {
         "ok": True, "ticker": ticker, "expiry": exp_str, "earnings_date": setup.next_earnings_date,
         "legs": legs, "legs_json": json.dumps(legs),
         "strikes": {"short_put": short_put, "long_put": long_put,
                     "short_call": short_call, "long_call": long_call},
-        "credit": round(credit, 2), "max_loss": round(max_loss_per, 2),
+        "credit": accepted_credit, "credit_mid": round(credit, 2),
+        "max_loss": round(max_loss_per, 2),
         "qty": qty, "limit_price": limit_price,
         "risk_usd": round(max_loss_per * qty, 2),
     }

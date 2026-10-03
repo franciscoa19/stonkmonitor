@@ -90,6 +90,8 @@ class AutoTradeEngine:
         self._db = None
         self._trader = None
         self._pending: dict[int, TradeSuggestion] = {}
+        self._confirm_lock = asyncio.Lock()
+        self._uncertain_submissions: set[int] = set()
         self._current_strategy = ""   # setup that triggered the trade being queued
 
         # ── Filter state ───────────────────────────────────────────────────
@@ -276,7 +278,7 @@ class AutoTradeEngine:
         """Returns (ok, reason). Blocks if open Alpaca positions >= max."""
         try:
             limit = self.settings.auto_trade_max_open_positions
-            positions = self._trader.get_positions()
+            positions = await asyncio.to_thread(self._trader.get_positions)
             open_count = len([p for p in positions if p.get("qty", 0) > 0])
             if open_count >= limit:
                 return False, f"Position cap: {open_count}/{limit} positions already open"
@@ -976,6 +978,8 @@ class AutoTradeEngine:
 
     async def _expire(self, trade_id: int):
         await asyncio.sleep(5 * 60)
+        if trade_id in self._uncertain_submissions:
+            return  # broker acceptance must be reconciled, not expired locally
         s = self._pending.pop(trade_id, None)
         if s is None:
             return  # already confirmed or skipped
@@ -991,7 +995,11 @@ class AutoTradeEngine:
     # ── Confirm / Skip (called by Telegram callbacks + API) ──────────────────
 
     async def confirm_trade(self, trade_id: int, msg_id: int) -> dict:
-        """User tapped EXECUTE. Place the Alpaca order."""
+        """Serialize confirmations so a double tap cannot submit twice."""
+        async with self._confirm_lock:
+            return await self._confirm_trade(trade_id, msg_id)
+
+    async def _confirm_trade(self, trade_id: int, msg_id: int) -> dict:
         s = self._pending.get(trade_id)
         if not s:
             if self._telegram and msg_id:
@@ -1005,39 +1013,60 @@ class AutoTradeEngine:
         tp_price = round(s.limit_price * (1 + s.target_pct / 100), 2)
         sl_price = round(s.limit_price * (1 - s.stop_pct / 100), 2)
 
+        # Stable IDs survive ambiguous acceptance and repeated confirmation. The
+        # per-DB namespace keeps a recreated DB's trade ids off old broker orders.
         try:
-            result = self._trader.bracket_order(
-                ticker=s.symbol,
-                qty=s.qty,
-                side="buy",
-                limit_price=s.limit_price,
-                take_profit_price=tp_price,
-                stop_loss_price=sl_price,
-            )
-            # If bracket fails (e.g. options don't support it), fall back to plain limit
-            if "error" in result:
-                logger.warning(f"Bracket order failed, falling back to limit: {result['error']}")
-                result = self._trader.limit_order(
-                    ticker=s.symbol,
-                    qty=s.qty,
-                    side="buy",
-                    limit_price=s.limit_price,
-                )
-        except Exception as e:
-            logger.error(f"Order execution error: {e}")
-            result = {"error": str(e)}
+            ns = await self._db.order_namespace()
+        except RuntimeError as e:
+            return {"error": str(e), "ambiguous": False}
+        bracket_id, limit_id = f"sm-{ns}-trade-{trade_id}-bracket", f"sm-{ns}-trade-{trade_id}-limit"
+        result = None
+        for client_id in (bracket_id, limit_id):
+            found = await asyncio.to_thread(self._trader.get_order_by_client_id, client_id)
+            if found.get("id"):
+                result = {"id": found["id"], "status": found.get("status"), "protection": found.get("order_class")}
+                break
+            if not found.get("not_found"):
+                return {"error": "Broker reconciliation unavailable; no new order submitted"}
+        if result is None:
+            if trade_id in self._uncertain_submissions:
+                return {"error": "Prior submission outcome unknown; awaiting broker confirmation"}
+            if s.expires_at and datetime.utcnow() > s.expires_at:
+                self._pending.pop(trade_id, None)
+                await self._db.update_pending_trade(trade_id, status="expired")
+                return {"error": "expired"}
+            self._uncertain_submissions.add(trade_id)
+            await self._db.update_pending_trade(trade_id, status="submitting")
+            try:
+                result = await asyncio.to_thread(
+                    self._trader.bracket_order, ticker=s.symbol, qty=s.qty, side="buy",
+                    limit_price=s.limit_price, take_profit_price=tp_price,
+                    stop_loss_price=sl_price, client_order_id=bracket_id)
+                if result.get("unsupported_bracket"):
+                    result = await asyncio.to_thread(
+                        self._trader.limit_order, ticker=s.symbol, qty=s.qty, side="buy",
+                        limit_price=s.limit_price, client_order_id=limit_id)
+            except Exception as e:
+                result = {"error": str(e), "ambiguous": True}
 
         if "error" in result:
+            outcome = "SUBMISSION UNCONFIRMED" if result.get("ambiguous", True) else "ORDER REJECTED"
             if self._telegram and msg_id:
                 await self._telegram.edit_message(
                     msg_id,
-                    f"❌ <b>ORDER FAILED</b>\n"
+                    f"⚠️ <b>{outcome}</b>\n"
                     f"{s.ticker}: <code>{result['error']}</code>"
                 )
-            await self._db.update_pending_trade(trade_id, status="failed")
+            if result.get("ambiguous", True):
+                await self._db.update_pending_trade(trade_id, status="submission_unknown")
+            else:
+                self._uncertain_submissions.discard(trade_id)
+                self._pending.pop(trade_id, None)
+                await self._db.update_pending_trade(trade_id, status="failed")
             return result
 
         # Success
+        self._uncertain_submissions.discard(trade_id)
         self._pending.pop(trade_id, None)
         order_id = result.get("id", "")
         await self._db.update_pending_trade(
@@ -1059,7 +1088,8 @@ class AutoTradeEngine:
         if self._telegram and msg_id:
             await self._telegram.edit_message(
                 msg_id,
-                f"✅ <b>ORDER PLACED (BRACKET)</b>\n"
+                f"✅ <b>ORDER SUBMITTED</b>\n"
+                f"{'Server-side bracket' if result.get('protection') == 'bracket' else 'TP/SL managed by position monitor'}\n"
                 f"{s.ticker} {type_label}  {s.qty}x @ ${s.limit_price:.2f}\n"
                 f"🎯 TP: ${tp_price:.2f} (+{s.target_pct:.0f}%)  |  🛑 SL: ${sl_price:.2f} (-{s.stop_pct:.0f}%)\n"
                 f"Risk: ${s.risk_amount:,.0f}\n"
@@ -1070,7 +1100,15 @@ class AutoTradeEngine:
         return result
 
     async def skip_trade(self, trade_id: int, msg_id: int):
-        """User tapped SKIP."""
+        """Serialize skips against an in-flight confirmation."""
+        async with self._confirm_lock:
+            if trade_id in self._uncertain_submissions:
+                if self._telegram and msg_id:
+                    await self._telegram.edit_message(msg_id, "Submission awaiting broker reconciliation; cannot skip.")
+                return
+            await self._skip_trade(trade_id, msg_id)
+
+    async def _skip_trade(self, trade_id: int, msg_id: int):
         s = self._pending.pop(trade_id, None)
         await self._db.update_pending_trade(trade_id, status="skipped")
         if self._telegram and msg_id:
@@ -1080,6 +1118,23 @@ class AutoTradeEngine:
                 f"❌ <b>SKIPPED</b> — {ticker} passed"
             )
         logger.info(f"Trade skipped: id={trade_id}")
+
+    async def reconcile_submissions(self):
+        """Recover accepted orders after a crash/timeout without submitting again."""
+        async with self._confirm_lock:
+            ns = await self._db.order_namespace()
+            for status in ("submitting", "submission_unknown"):
+                for row in await self._db.get_pending_trades(status=status):
+                    for kind in ("bracket", "limit"):
+                        order = await asyncio.to_thread(
+                            self._trader.get_order_by_client_id, f"sm-{ns}-trade-{row['id']}-{kind}")
+                        if order.get("id"):
+                            await self._db.update_pending_trade(
+                                row["id"], status="confirmed", alpaca_order_id=order["id"],
+                                executed_at=order.get("created_at") or datetime.utcnow().isoformat())
+                            self._uncertain_submissions.discard(row["id"])
+                            self._pending.pop(row["id"], None)
+                            break
 
     async def get_pending(self) -> list[dict]:
         return await self._db.get_pending_trades(status="pending")

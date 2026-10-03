@@ -1748,7 +1748,7 @@ async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeyp
                 return {}
             return {s: {"bid": 1.0, "ask": 0.0, "mid": 1.0} for s in symbols}
 
-        def close_multileg(self, legs_, qty, limit, tif="day"):
+        def close_multileg(self, legs_, qty, limit, tif="day", client_order_id=None):
             submitted.append(limit)
             return {"id": "close-1"}
 
@@ -1850,8 +1850,8 @@ def test_force_close_moves_before_an_early_market_close():
 
 
 async def test_expiry_settlement_does_not_require_an_option_chain(db, monkeypatch):
-    """Expired options disappear from the live chain; settlement must use the
-    underlying close without first requiring a quote that cannot exist."""
+    """Expired options disappear from the live chain; confirmed broker expiry
+    must settle without first requiring a quote that cannot exist."""
     import main
     from datetime import timedelta
     from market_time import et_today
@@ -1868,6 +1868,14 @@ async def test_expiry_settlement_does_not_require_an_option_chain(db, monkeypatc
     await db._exec("UPDATE iv_condors SET status='open' WHERE id=?", (cid,))
 
     class NoOptions:
+        def get_option_activities(self, _after):
+            return [{"id": symbol, "activity_type": "OPEXP", "status": "executed",
+                     "date": expiry, "symbol": symbol, "qty": "1"}
+                    for symbol in ("SC", "LC", "SP", "LP")]
+
+        def get_positions_raw(self):
+            return []
+
         def get_option_quotes(self, _symbols):
             raise AssertionError("settlement must not read an expired option chain")
     monkeypatch.setattr(main, "trader", NoOptions())
@@ -1898,7 +1906,7 @@ async def test_close_fill_without_a_usable_price_stays_open_for_reconciliation(
 
     class MissingPrice:
         def get_order_raw(self, _oid):
-            return {"status": "filled", "filled_avg_price": fill_price}
+            return {"status": "filled", "filled_qty": "1", "filled_avg_price": fill_price}
 
         def get_option_quotes(self, _symbols):
             raise AssertionError("closing reconciliation must not require quotes")

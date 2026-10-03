@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev --port 3000",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "node --test tests/*.test.cjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -21,8 +22,11 @@
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.20",
-    "postcss": "^8.5.10",
+    "postcss": "^8.5.28",
     "tailwindcss": "^3.4.11",
     "typescript": "^5.5.4"
+  },
+  "overrides": {
+    "postcss": "$postcss"
   }
 }

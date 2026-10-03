@@ -67,7 +67,7 @@ class AlpacaFeed:
                 end=end,
             )
             bars = self.stock_client.get_stock_bars(req)
-            bar_list = bars.get(ticker.upper(), [])
+            bar_list = bars.data.get(ticker.upper(), [])
             return [
                 {
                     "t": b.timestamp.isoformat(),
@@ -125,19 +125,24 @@ class AlpacaFeed:
             results = []
             for symbol, snapshot in chain.items():
                 try:
+                    # Snapshots contain quotes/greeks, not contract metadata.
+                    # OCC's trailing 15 characters encode date, type and strike.
+                    suffix = symbol[-15:]
+                    expiry = datetime.strptime(suffix[:6], "%y%m%d").date()
+                    option_type = {"C": "call", "P": "put"}[suffix[6]]
                     results.append({
                         "symbol": symbol,
                         "underlying": ticker.upper(),
-                        "strike": float(snapshot.details.strike_price),
-                        "expiry": snapshot.details.expiration_date,
-                        "type": snapshot.details.option_type,
+                        "strike": int(suffix[7:]) / 1000,
+                        "expiry": expiry.isoformat(),
+                        "type": option_type,
                         "iv": float(snapshot.implied_volatility or 0),
                         "delta": float(snapshot.greeks.delta if snapshot.greeks else 0),
                         "gamma": float(snapshot.greeks.gamma if snapshot.greeks else 0),
                         "theta": float(snapshot.greeks.theta if snapshot.greeks else 0),
                         "vega": float(snapshot.greeks.vega if snapshot.greeks else 0),
-                        "open_interest": int(snapshot.open_interest or 0),
-                        "volume": int(snapshot.day.volume if snapshot.day else 0),
+                        "open_interest": None,
+                        "volume": None,
                         "bid": float(snapshot.latest_quote.bid_price if snapshot.latest_quote else 0),
                         "ask": float(snapshot.latest_quote.ask_price if snapshot.latest_quote else 0),
                     })

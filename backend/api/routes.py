@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional, Literal
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -34,19 +35,19 @@ class WatchlistRequest(BaseModel):
 async def get_account(trader=Depends(lambda: None)):
     """Get Alpaca account info."""
     from main import trader as t
-    return t.get_account()
+    return await asyncio.to_thread(t.get_account)
 
 
 @router.get("/positions")
 async def get_positions():
     from main import trader as t
-    return t.get_positions()
+    return await asyncio.to_thread(t.get_positions)
 
 
 @router.get("/orders")
 async def get_orders(status: str = "open"):
     from main import trader as t
-    return t.get_orders(status=status)
+    return await asyncio.to_thread(t.get_orders, status=status)
 
 
 # ------------------------------------------------------------------ #
@@ -56,11 +57,11 @@ async def get_orders(status: str = "open"):
 async def place_order(req: OrderRequest):
     from main import trader as t
     if req.order_type == "market":
-        result = t.market_order(req.ticker, req.qty, req.side, req.tif)
+        result = await asyncio.to_thread(t.market_order, req.ticker, req.qty, req.side, req.tif)
     elif req.order_type == "limit":
         if not req.limit_price:
             raise HTTPException(400, "limit_price required for limit orders")
-        result = t.limit_order(req.ticker, req.qty, req.side, req.limit_price, req.tif)
+        result = await asyncio.to_thread(t.limit_order, req.ticker, req.qty, req.side, req.limit_price, req.tif)
     else:
         raise HTTPException(400, "Unsupported order type")
 
@@ -72,7 +73,7 @@ async def place_order(req: OrderRequest):
 @router.delete("/order/{order_id}")
 async def cancel_order(order_id: str):
     from main import trader as t
-    ok = t.cancel_order(order_id)
+    ok = await asyncio.to_thread(t.cancel_order, order_id)
     if not ok:
         raise HTTPException(400, "Failed to cancel order")
     return {"status": "cancelled"}
@@ -81,7 +82,7 @@ async def cancel_order(order_id: str):
 @router.delete("/positions/{ticker}")
 async def close_position(ticker: str):
     from main import trader as t
-    result = t.close_position(ticker)
+    result = await asyncio.to_thread(t.close_position, ticker)
     if "error" in result:
         raise HTTPException(400, result["error"])
     return result
@@ -93,19 +94,19 @@ async def close_position(ticker: str):
 @router.get("/quote/{ticker}")
 async def get_quote(ticker: str):
     from main import feed as f
-    return f.get_latest_quote(ticker)
+    return await asyncio.to_thread(f.get_latest_quote, ticker)
 
 
 @router.get("/options/{ticker}")
 async def get_option_chain(ticker: str, expiry_days: int = 45):
     from main import feed as f
-    return f.get_option_chain(ticker, expiry_days)
+    return await asyncio.to_thread(f.get_option_chain, ticker, expiry_days)
 
 
 @router.get("/bars/{ticker}")
 async def get_bars(ticker: str, days: int = 30, timeframe: str = "1Day"):
     from main import feed as f
-    return f.get_bars(ticker, days, timeframe)
+    return await asyncio.to_thread(f.get_bars, ticker, days, timeframe)
 
 
 # ------------------------------------------------------------------ #
@@ -393,7 +394,7 @@ async def generate_report_now(weekly: bool = False):
 async def get_current_positions_with_pnl():
     """Get current Alpaca positions with real-time P&L."""
     from main import trader as t
-    return t.get_positions()
+    return await asyncio.to_thread(t.get_positions)
 
 
 @router.get("/trade/filters")

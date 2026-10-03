@@ -149,6 +149,7 @@ class AlpacaTrader:
         qty: float,
         side: Literal["buy", "sell"],
         tif: str = "day",
+        client_order_id: Optional[str] = None,
     ) -> dict:
         try:
             req = MarketOrderRequest(
@@ -156,13 +157,14 @@ class AlpacaTrader:
                 qty=qty,
                 side=OrderSide(side),
                 time_in_force=TimeInForce(tif),
+                client_order_id=client_order_id,
             )
             order = self.client.submit_order(req)
             logger.info(f"Market order submitted: {side} {qty} {ticker} | id={order.id}")
             return {"id": str(order.id), "status": order.status.value}
         except Exception as e:
             logger.error(f"market_order error: {e}")
-            return {"error": str(e)}
+            return self._submission_error(e, client_order_id)
 
     def limit_order(
         self,
@@ -171,6 +173,7 @@ class AlpacaTrader:
         side: Literal["buy", "sell"],
         limit_price: float,
         tif: str = "day",
+        client_order_id: Optional[str] = None,
     ) -> dict:
         try:
             req = LimitOrderRequest(
@@ -179,13 +182,14 @@ class AlpacaTrader:
                 side=OrderSide(side),
                 time_in_force=TimeInForce(tif),
                 limit_price=limit_price,
+                client_order_id=client_order_id,
             )
             order = self.client.submit_order(req)
             logger.info(f"Limit order submitted: {side} {qty} {ticker} @ {limit_price} | id={order.id}")
             return {"id": str(order.id), "status": order.status.value}
         except Exception as e:
             logger.error(f"limit_order error: {e}")
-            return {"error": str(e)}
+            return self._submission_error(e, client_order_id)
 
     def bracket_order(
         self,
@@ -196,6 +200,7 @@ class AlpacaTrader:
         take_profit_price: float,
         stop_loss_price: float,
         tif: str = "day",
+        client_order_id: Optional[str] = None,
     ) -> dict:
         """Bracket order: entry limit + server-side TP limit + SL stop."""
         try:
@@ -206,6 +211,7 @@ class AlpacaTrader:
                 time_in_force=TimeInForce(tif),
                 limit_price=limit_price,
                 order_class=OrderClass.BRACKET,
+                client_order_id=client_order_id,
                 take_profit=TakeProfitRequest(limit_price=round(take_profit_price, 2)),
                 stop_loss=StopLossRequest(stop_price=round(stop_loss_price, 2)),
             )
@@ -214,10 +220,71 @@ class AlpacaTrader:
                 f"Bracket order submitted: {side} {qty} {ticker} @ {limit_price} "
                 f"TP={take_profit_price:.2f} SL={stop_loss_price:.2f} | id={order.id}"
             )
-            return {"id": str(order.id), "status": order.status.value}
+            return {"id": str(order.id), "status": order.status.value, "protection": "bracket"}
         except Exception as e:
             logger.error(f"bracket_order error: {e}")
-            return {"error": str(e)}
+            result = self._submission_error(e, client_order_id)
+            # Only a definitive broker rejection of bracket support permits a
+            # new, plain-limit submission. Timeouts and 5xx are ambiguous.
+            message = str(e).lower()
+            result["unsupported_bracket"] = (
+                not result.get("ambiguous", True) and "error" in result
+                and ("bracket" in message or "complex" in message)
+                and ("not supported" in message or "unsupported" in message))
+            return result
+
+    def _submission_error(self, error: Exception, client_order_id: Optional[str]) -> dict:
+        from alpaca.common.exceptions import APIError
+        code = error.status_code if isinstance(error, APIError) else None
+        ambiguous = not isinstance(error, ValueError) and not (code and 400 <= code < 500)
+        if client_order_id:
+            found = self.get_order_by_client_id(client_order_id)
+            if found.get("id"):
+                return {"id": found["id"], "status": found.get("status"), "protection": found.get("order_class")}
+        return {"error": str(error), "ambiguous": ambiguous}
+
+    def get_order_by_client_id(self, client_order_id: str) -> dict:
+        import urllib.parse
+        query = urllib.parse.urlencode({"client_order_id": client_order_id})
+        code, body = self._rest("GET", f"{self._trade_base}/v2/orders:by_client_order_id?{query}")
+        return body if code == 200 else {"error": body.get("error", f"HTTP {code}"),
+                                        "not_found": code == 404}
+
+    def cancel_order_raw(self, order_id: str) -> bool:
+        code, _ = self._rest("DELETE", f"{self._trade_base}/v2/orders/{order_id}")
+        return code in (200, 204)
+
+    def get_option_activities(self, after: str) -> Optional[list[dict]]:
+        """Complete option-event history, or None on failure/incomplete paging.
+
+        OPEXP proves worthless expiry. OPASN/OPEXC/OPXRC need human review;
+        they are never turned into intrinsic-based realized P&L.
+        """
+        import urllib.parse
+        from datetime import datetime, timezone
+        start = datetime.fromisoformat(after.replace("Z", "+00:00"))
+        start = start.replace(tzinfo=start.tzinfo or timezone.utc,
+                              hour=0, minute=0, second=0, microsecond=0)
+        out, token = [], None
+        for _ in range(100):
+            params = {"after": start.isoformat(), "direction": "asc", "page_size": 100}
+            if token:
+                params["page_token"] = token
+            code, body = self._rest("GET", f"{self._trade_base}/v2/account/activities?{urllib.parse.urlencode(params)}")
+            if code != 200 or not isinstance(body, list):
+                return None
+            out.extend(x for x in body if x.get("activity_type") in ("OPEXP", "OPASN", "OPEXC", "OPXRC"))
+            if len(body) < 100:
+                return out
+            next_token = body[-1].get("id")
+            if not next_token or next_token == token:
+                return None
+            token = next_token
+        return None
+
+    def get_positions_raw(self) -> Optional[list[dict]]:
+        code, body = self._rest("GET", f"{self._trade_base}/v2/positions")
+        return body if code == 200 and isinstance(body, list) else None
 
     def trailing_stop(
         self,
@@ -337,7 +404,8 @@ class AlpacaTrader:
         return out
 
     def multileg_order(self, legs: list[dict], qty: int, limit_price: float,
-                       order_type: str = "limit", tif: str = "day") -> dict:
+                       order_type: str = "limit", tif: str = "day",
+                       client_order_id: Optional[str] = None) -> dict:
         """Submit a multi-leg (mleg) options order via REST.
 
         legs: [{symbol, side('buy'|'sell'), position_intent, ratio_qty(int=1)}]
@@ -358,6 +426,8 @@ class AlpacaTrader:
         }
         if order_type == "limit":
             payload["limit_price"] = str(round(float(limit_price), 2))
+        if client_order_id:
+            payload["client_order_id"] = client_order_id
         code, body = self._rest("POST", f"{self._trade_base}/v2/orders", payload)
         if code in (200, 201) and body.get("id"):
             logger.info(f"MLEG order submitted: {len(legs)} legs qty={qty} "
@@ -365,10 +435,15 @@ class AlpacaTrader:
             return {"id": body["id"], "status": body.get("status"),
                     "legs": body.get("legs", [])}
         logger.error(f"multileg_order failed ({code}): {body.get('error')}")
-        return {"error": body.get("error", f"HTTP {code}")}
+        if client_order_id:
+            found = self.get_order_by_client_id(client_order_id)
+            if found.get("id"):
+                return {"id": found["id"], "status": found.get("status"), "protection": found.get("order_class")}
+        return {"error": body.get("error", f"HTTP {code}"),
+                "ambiguous": not (400 <= code < 500)}
 
     def close_multileg(self, legs: list[dict], qty: int, limit_price: float,
-                       tif: str = "day") -> dict:
+                       tif: str = "day", client_order_id: Optional[str] = None) -> dict:
         """Close an existing spread by submitting the inverse legs (…_to_close)."""
         inv = []
         for l in legs:
@@ -376,4 +451,4 @@ class AlpacaTrader:
             intent = "buy_to_close" if l["side"] == "sell" else "sell_to_close"
             inv.append({"symbol": l["symbol"], "side": side,
                         "position_intent": intent, "ratio_qty": l.get("ratio_qty", 1)})
-        return self.multileg_order(inv, qty, limit_price, "limit", tif)
+        return self.multileg_order(inv, qty, limit_price, "limit", tif, client_order_id)
