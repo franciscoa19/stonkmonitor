@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-03T01:11:44.565014+00:00",
+  "generated": "2026-10-03T01:14:15.893601+00:00",
   "account": {
     "equity": 52157.59,
     "cash": 52157.59,
@@ -7,7 +7,7 @@
     "start_equity": 49992.8,
     "total_pnl": 2164.7899999999936,
     "total_pnl_pct": 4.330203549311087,
-    "open_positions": 2,
+    "open_positions": 0,
     "days_running": 24,
     "error": null
   },
@@ -245,8 +245,8 @@
     "closes_counted": 0
   },
   "heartbeat": {
-    "last_seen": "2026-10-03T01:01:19.513028",
-    "age_minutes": 10.4,
+    "last_seen": "2026-10-03T01:13:50.931055",
+    "age_minutes": 0.4,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -254,22 +254,7 @@
   "by_strategy": [],
   "by_hour": [],
   "recent": [],
-  "open_positions": [
-    {
-      "symbol": "NKE261002C00040500",
-      "qty": 20.0,
-      "pnl": -680.0,
-      "pnl_pct": -100.0,
-      "market_val": 0.0
-    },
-    {
-      "symbol": "NKE261002P00031500",
-      "qty": 20.0,
-      "pnl": -280.0,
-      "pnl_pct": -100.0,
-      "market_val": 0.0
-    }
-  ],
+  "open_positions": [],
   "proposals": [
     "No closed trades in 24 days. Note the flow/pattern engine is OFF (AUTO_TRADE_FLOW_ENABLED=false), so AUTO_TRADE_SCORE_THRESHOLD is not the constraint \u2014 lowering it would change nothing. The live path is the IV/earnings condor: widen the watchlist or relax the scanner gates to grow the sample."
   ]
