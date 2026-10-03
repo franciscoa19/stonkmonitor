@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.stonkmonitor.frontend</string>
+
+    <!-- Serves the production build in .next/ — run `npm run build` and
+         kickstart this agent after frontend changes; it does not hot-reload. -->
+    <key>WorkingDirectory</key>
+    <string>/Users/francisco/code/stonkmonitor/frontend</string>
+
+    <!-- node is invoked directly: launchd's PATH does not include ~/.local/bin,
+         so node_modules/.bin/next's `#!/usr/bin/env node` would not resolve. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/francisco/.local/node/bin/node</string>
+        <string>node_modules/next/dist/bin/next</string>
+        <string>start</string>
+        <string>--port</string>
+        <string>3000</string>
+        <string>--hostname</string>
+        <string>127.0.0.1</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <!-- Don't hot-loop if it dies on startup (missing build, port taken, etc.). -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/francisco/code/stonkmonitor/frontend/logs/frontend.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/francisco/code/stonkmonitor/frontend/logs/frontend.log</string>
+</dict>
+</plist>

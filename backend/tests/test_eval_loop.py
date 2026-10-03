@@ -1747,6 +1747,20 @@ async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeyp
            "legs_json": json.dumps(legs), "short_put": 965.0, "long_put": 935.0,
            "short_call": 1140.0, "long_call": 1170.0}
 
+    import market_time
+    from types import SimpleNamespace as _NS
+
+    def feed_at(px):
+        return _NS(get_latest_quote=lambda _t: {"bid": px, "ask": px, "mid": px},
+                   get_daily_close=lambda _t, _d: None)
+
+    # Pin the clock to the day between the print and expiry. Read off the wall
+    # clock, these first phases became the forced expiry-day close on 10-02.
+    monkeypatch.setattr(market_time, "et_today", lambda *a: _dtdate(2026, 10, 1))
+    monkeypatch.setattr(market_time, "et_now",
+                        lambda *a: _dtdatetime(2026, 10, 1, 11, 0, tzinfo=market_time.ET))
+    monkeypatch.setattr(main, "feed", feed_at(1050.0))
+
     # Post-earnings, but outside RTH → defer rather than price off a dead book.
     monkeypatch.setattr(main, "is_rth_now", lambda: False)
     await main._manage_condor(dict(row))
@@ -1760,16 +1774,10 @@ async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeyp
     # Expiry day, past the force hour. The spot decides between holding for the
     # full credit and closing to avoid assignment, so it has to be controlled
     # here rather than read off the live feed.
-    import market_time
-    from types import SimpleNamespace as _NS
     monkeypatch.setattr(main, "is_rth_now", lambda: False)
     monkeypatch.setattr(market_time, "et_today", lambda *a: _dtdate(2026, 10, 2))
     monkeypatch.setattr(market_time, "et_now",
                         lambda *a: _dtdatetime(2026, 10, 2, 15, 30, tzinfo=market_time.ET))
-
-    def feed_at(px):
-        return _NS(get_latest_quote=lambda _t: {"bid": px, "ask": px, "mid": px},
-                   get_daily_close=lambda _t, _d: None)
 
     # Pressed against the put short: 1% of room is pin risk, so close — and with
     # no usable book, at the wing-width ceiling.

@@ -28,3 +28,20 @@ Check / restart / remove:
 nobody logs in, the backend stays down. Covering that needs a LaunchDaemon in
 /Library/LaunchDaemons, which requires sudo — do that by hand if the machine is
 ever expected to run headless.
+
+## `com.stonkmonitor.frontend.plist` — keep the dashboard alive
+
+Same shape as the backend agent, serving the dashboard on 127.0.0.1:3000. It runs
+`next start` against the production build, not `next dev`, so it does **not**
+pick up source changes on its own. Build first, and rebuild after edits:
+
+    cd frontend && npm run build
+    cp deploy/com.stonkmonitor.frontend.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.stonkmonitor.frontend.plist
+
+After a frontend change: `npm run build`, then
+`launchctl kickstart -k gui/$(id -u)/com.stonkmonitor.frontend`.
+
+`ProgramArguments` calls node by absolute path (`~/.local/node/bin/node`) because
+launchd's PATH doesn't include it. Update that path if node is reinstalled
+elsewhere (e.g. Homebrew).

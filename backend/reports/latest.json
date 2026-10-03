@@ -1,20 +1,20 @@
 {
-  "generated": "2026-10-02T12:00:05.977662+00:00",
+  "generated": "2026-10-03T01:11:44.565014+00:00",
   "account": {
-    "equity": 51418.59,
-    "cash": 52278.59,
-    "buying_power": 201114.36,
+    "equity": 52157.59,
+    "cash": 52157.59,
+    "buying_power": 208630.36,
     "start_equity": 49992.8,
-    "total_pnl": 1425.7899999999936,
-    "total_pnl_pct": 2.851990686658866,
-    "open_positions": 4,
+    "total_pnl": 2164.7899999999936,
+    "total_pnl_pct": 4.330203549311087,
+    "open_positions": 2,
     "days_running": 24,
     "error": null
   },
   "metrics": {
     "closed_trades": 0,
-    "closed_condors": 4,
-    "closed_all": 4,
+    "closed_condors": 0,
+    "closed_all": 0,
     "wins": 0,
     "losses": 0,
     "win_rate": 0.0,
@@ -23,12 +23,12 @@
     "avg_loss": 0.0,
     "realized_total": 0,
     "avg_hold_min": null,
-    "trades_7d": 0,
-    "trades_per_day": 0.0
+    "trades_7d": 2,
+    "trades_per_day": 0.2857142857142857
   },
   "activity": {
     "tag": "MEASURED",
-    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 4 closed, 1 open."
+    "note": "~0.3 entries/day."
   },
   "equity_curve": [
     {
@@ -125,225 +125,74 @@
     },
     {
       "date": "2026-10-02",
-      "equity": 51418.59
+      "equity": 52157.59
     }
   ],
   "iv_rv": {
-    "resolved": 2,
-    "wins": 2,
-    "win_rate": 100.0,
-    "avg_edge_pct": 3.08,
-    "open": 1
+    "resolved": 0,
+    "wins": 0,
+    "win_rate": 0.0,
+    "avg_edge_pct": 0.0,
+    "open": 0
   },
   "iv_condors": {
-    "closed": 4,
-    "wins": 4,
-    "win_rate": 100.0,
-    "total_pnl": 1832.0,
-    "open": 1,
+    "closed": 0,
+    "wins": 0,
+    "win_rate": 0.0,
+    "total_pnl": 0,
+    "open": 0,
     "pending": 0,
-    "open_detail": [
-      {
-        "ticker": "NKE",
-        "qty": 20,
-        "expiry": "2026-10-02",
-        "earnings_date": "2026-10-01",
-        "strikes": "31.5/32.5 \u2014 39.5/40.5",
-        "credit_collected": 460.0,
-        "max_risk": 1540.0,
-        "unrealized_pnl": -400.0,
-        "pct_of_max_risk": -26.0,
-        "legs_matched": 4,
-        "legs_expected": 4,
-        "partial": false
-      }
-    ]
+    "open_detail": []
   },
-  "iv_variants": [
-    {
-      "n_events": 1,
-      "n_wins": 1,
-      "win_rate": 100.0,
-      "total_pnl": 29.8,
-      "expectancy": 29.8,
-      "profit_factor": null,
-      "avg_win": 29.8,
-      "avg_loss": null,
-      "largest_single_loss": null,
-      "max_drawdown": 0.0,
-      "sharpe": null,
-      "sortino": null,
-      "tail_ratio": null,
-      "tail_events": 1,
-      "tail_pct_effective": 100.0,
-      "pct_events_exceeding_implied": 0.0,
-      "sufficient_sample": false,
-      "events_needed": 99,
-      "variant": "condor_1.0sd",
-      "avg_pnl": 29.8,
-      "avg_ror_pct": 17.5,
-      "n": 1,
-      "pin_events": 0,
-      "collapsed_n": 0
-    },
-    {
-      "n_events": 1,
-      "n_wins": 1,
-      "win_rate": 100.0,
-      "total_pnl": 20.4,
-      "expectancy": 20.4,
-      "profit_factor": null,
-      "avg_win": 20.4,
-      "avg_loss": null,
-      "largest_single_loss": null,
-      "max_drawdown": 0.0,
-      "sharpe": null,
-      "sortino": null,
-      "tail_ratio": null,
-      "tail_events": 1,
-      "tail_pct_effective": 100.0,
-      "pct_events_exceeding_implied": 0.0,
-      "sufficient_sample": false,
-      "events_needed": 99,
-      "variant": "straddle",
-      "avg_pnl": 20.4,
-      "avg_ror_pct": null,
-      "n": 1,
-      "pin_events": 0,
-      "collapsed_n": 0
-    },
-    {
-      "n_events": 1,
-      "n_wins": 1,
-      "win_rate": 100.0,
-      "total_pnl": 8.8,
-      "expectancy": 8.8,
-      "profit_factor": null,
-      "avg_win": 8.8,
-      "avg_loss": null,
-      "largest_single_loss": null,
-      "max_drawdown": 0.0,
-      "sharpe": null,
-      "sortino": null,
-      "tail_ratio": null,
-      "tail_events": 1,
-      "tail_pct_effective": 100.0,
-      "pct_events_exceeding_implied": 0.0,
-      "sufficient_sample": false,
-      "events_needed": 99,
-      "variant": "condor_1.3sd",
-      "avg_pnl": 8.8,
-      "avg_ror_pct": 4.6,
-      "n": 1,
-      "pin_events": 0,
-      "collapsed_n": 0
-    },
-    {
-      "n_events": 1,
-      "n_wins": 0,
-      "win_rate": 0.0,
-      "total_pnl": -11.2,
-      "expectancy": -11.2,
-      "profit_factor": 0.0,
-      "avg_win": null,
-      "avg_loss": -11.2,
-      "largest_single_loss": -11.2,
-      "max_drawdown": 11.2,
-      "sharpe": null,
-      "sortino": -1.0,
-      "tail_ratio": null,
-      "tail_events": 1,
-      "tail_pct_effective": 100.0,
-      "pct_events_exceeding_implied": 0.0,
-      "sufficient_sample": false,
-      "events_needed": 99,
-      "variant": "condor_0.7sd",
-      "avg_pnl": -11.2,
-      "avg_ror_pct": -7.3,
-      "n": 1,
-      "pin_events": 1,
-      "collapsed_n": 0
-    },
-    {
-      "n_events": 1,
-      "n_wins": 0,
-      "win_rate": 0.0,
-      "total_pnl": -177.2,
-      "expectancy": -177.2,
-      "profit_factor": 0.0,
-      "avg_win": null,
-      "avg_loss": -177.2,
-      "largest_single_loss": -177.2,
-      "max_drawdown": 177.2,
-      "sharpe": null,
-      "sortino": -1.0,
-      "tail_ratio": null,
-      "tail_events": 1,
-      "tail_pct_effective": 100.0,
-      "pct_events_exceeding_implied": 0.0,
-      "sufficient_sample": false,
-      "events_needed": 99,
-      "variant": "fly",
-      "avg_pnl": -177.2,
-      "avg_ror_pct": -80.5,
-      "n": 1,
-      "pin_events": 0,
-      "collapsed_n": 0
-    }
-  ],
+  "iv_variants": [],
   "iv_gate_comparison": {
     "gated": {
-      "n_events": 1,
-      "n_wins": 1,
-      "win_rate": 100.0,
-      "total_pnl": 29.8,
-      "expectancy": 29.8,
+      "n_events": 0,
+      "n_wins": 0,
+      "win_rate": null,
+      "total_pnl": 0.0,
+      "expectancy": null,
       "profit_factor": null,
-      "avg_win": 29.8,
+      "avg_win": null,
       "avg_loss": null,
       "largest_single_loss": null,
       "max_drawdown": 0.0,
       "sharpe": null,
       "sortino": null,
       "tail_ratio": null,
-      "tail_events": 1,
-      "tail_pct_effective": 100.0,
+      "tail_events": 0,
+      "tail_pct_effective": null,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": false,
-      "events_needed": 99
+      "events_needed": 100
     },
     "ungated": {
-      "n_events": 2,
-      "n_wins": 1,
-      "win_rate": 50.0,
-      "total_pnl": -815.9,
-      "expectancy": -407.95,
-      "profit_factor": 0.12,
-      "avg_win": 108.8,
-      "avg_loss": -924.7,
-      "largest_single_loss": -924.7,
-      "max_drawdown": 924.7,
-      "sharpe": -0.56,
-      "sortino": -0.62,
-      "tail_ratio": -8.5,
-      "tail_events": 1,
-      "tail_pct_effective": 50.0,
+      "n_events": 0,
+      "n_wins": 0,
+      "win_rate": null,
+      "total_pnl": 0.0,
+      "expectancy": null,
+      "profit_factor": null,
+      "avg_win": null,
+      "avg_loss": null,
+      "largest_single_loss": null,
+      "max_drawdown": 0.0,
+      "sharpe": null,
+      "sortino": null,
+      "tail_ratio": null,
+      "tail_events": 0,
+      "tail_pct_effective": null,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": false,
-      "events_needed": 98
+      "events_needed": 100
     }
   },
   "iv_quote_coverage": {
-    "events": 10,
-    "structures_attempted": 50,
-    "structures_priced": 41,
-    "priced_pct": 82.0,
-    "dropped_variants": {
-      "condor_0.7sd": 2,
-      "condor_1.0sd": 2,
-      "condor_1.3sd": 3,
-      "fly": 2
-    }
+    "events": 0,
+    "structures_attempted": 0,
+    "structures_priced": 0,
+    "priced_pct": null,
+    "dropped_variants": {}
   },
   "implied_vs_realized": {
     "watchlist": {
@@ -356,62 +205,32 @@
       "events": [],
       "lead_cutoff_days": 2,
       "stale_capture": {
-        "n_events": 1,
-        "pct_exceeding_implied": 100.0,
-        "n_exceeding": 1,
-        "avg_implied_pct": 1.22,
-        "avg_realized_pct": 3.65,
-        "avg_edge_pct": -2.43,
-        "events": [
-          {
-            "ticker": "COST",
-            "earnings_date": "2026-09-24",
-            "implied_pct": 1.22,
-            "realized_pct": 3.65,
-            "edge_pct": -2.43,
-            "exceeded": true,
-            "lead_days": 7
-          }
-        ]
+        "n_events": 0,
+        "pct_exceeding_implied": null,
+        "n_exceeding": 0,
+        "avg_implied_pct": null,
+        "avg_realized_pct": null,
+        "avg_edge_pct": null,
+        "events": []
       }
     },
     "measurement": {
-      "n_events": 1,
-      "pct_exceeding_implied": 0.0,
+      "n_events": 0,
+      "pct_exceeding_implied": null,
       "n_exceeding": 0,
-      "avg_implied_pct": 6.35,
-      "avg_realized_pct": 5.26,
-      "avg_edge_pct": 1.09,
-      "events": [
-        {
-          "ticker": "LEN",
-          "earnings_date": "2026-09-16",
-          "implied_pct": 6.35,
-          "realized_pct": 5.26,
-          "edge_pct": 1.09,
-          "exceeded": false,
-          "lead_days": 0
-        }
-      ],
+      "avg_implied_pct": null,
+      "avg_realized_pct": null,
+      "avg_edge_pct": null,
+      "events": [],
       "lead_cutoff_days": 2,
       "stale_capture": {
-        "n_events": 1,
-        "pct_exceeding_implied": 0.0,
+        "n_events": 0,
+        "pct_exceeding_implied": null,
         "n_exceeding": 0,
-        "avg_implied_pct": 1.76,
-        "avg_realized_pct": 0.1,
-        "avg_edge_pct": 1.66,
-        "events": [
-          {
-            "ticker": "CTAS",
-            "earnings_date": "2026-09-23",
-            "implied_pct": 1.76,
-            "realized_pct": 0.1,
-            "edge_pct": 1.66,
-            "exceeded": false,
-            "lead_days": 7
-          }
-        ]
+        "avg_implied_pct": null,
+        "avg_realized_pct": null,
+        "avg_edge_pct": null,
+        "events": []
       }
     }
   },
@@ -423,11 +242,11 @@
     "halted_at": null,
     "halted_reason": null,
     "rearmed_at": null,
-    "closes_counted": 4
+    "closes_counted": 0
   },
   "heartbeat": {
-    "last_seen": "2026-10-02T11:00:42.426297",
-    "age_minutes": 59.4,
+    "last_seen": "2026-10-03T01:01:19.513028",
+    "age_minutes": 10.4,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -437,35 +256,21 @@
   "recent": [],
   "open_positions": [
     {
-      "symbol": "NKE261002C00039500",
-      "qty": -20.0,
-      "pnl": 80.0,
-      "pnl_pct": 8.89,
-      "market_val": -820.0
-    },
-    {
       "symbol": "NKE261002C00040500",
       "qty": 20.0,
-      "pnl": -160.0,
-      "pnl_pct": -23.53,
-      "market_val": 520.0
+      "pnl": -680.0,
+      "pnl_pct": -100.0,
+      "market_val": 0.0
     },
     {
       "symbol": "NKE261002P00031500",
       "qty": 20.0,
-      "pnl": 240.0,
-      "pnl_pct": 85.71,
-      "market_val": 520.0
-    },
-    {
-      "symbol": "NKE261002P00032500",
-      "qty": -20.0,
-      "pnl": -560.0,
-      "pnl_pct": -107.69,
-      "market_val": -1080.0
+      "pnl": -280.0,
+      "pnl_pct": -100.0,
+      "market_val": 0.0
     }
   ],
   "proposals": [
-    "No changes proposed \u2014 baseline accruing. Keep collecting."
+    "No closed trades in 24 days. Note the flow/pattern engine is OFF (AUTO_TRADE_FLOW_ENABLED=false), so AUTO_TRADE_SCORE_THRESHOLD is not the constraint \u2014 lowering it would change nothing. The live path is the IV/earnings condor: widen the watchlist or relax the scanner gates to grow the sample."
   ]
 }

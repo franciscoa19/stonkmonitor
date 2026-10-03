@@ -7,14 +7,14 @@
 
     <!-- WorkingDirectory matters: config.py reads .env relative to cwd. -->
     <key>WorkingDirectory</key>
-    <string>/Users/franciscoesqueda/Claude/stonkmonitor/backend</string>
+    <string>/Users/francisco/code/stonkmonitor/backend</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/franciscoesqueda/Claude/stonkmonitor/backend/venv/bin/uvicorn</string>
+        <string>/Users/francisco/code/stonkmonitor/backend/venv/bin/uvicorn</string>
         <string>main:app</string>
         <string>--host</string>
-        <string>0.0.0.0</string>
+        <string>127.0.0.1</string>
         <string>--port</string>
         <string>8000</string>
     </array>
@@ -30,8 +30,8 @@
     <integer>30</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/franciscoesqueda/Claude/stonkmonitor/backend/logs/backend.log</string>
+    <string>/Users/francisco/code/stonkmonitor/backend/logs/backend.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/franciscoesqueda/Claude/stonkmonitor/backend/logs/backend.log</string>
+    <string>/Users/francisco/code/stonkmonitor/backend/logs/backend.log</string>
 </dict>
 </plist>
