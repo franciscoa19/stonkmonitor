@@ -80,7 +80,9 @@ class UnusualWhalesClient:
         # Hard safety: if we're over the pause threshold, refuse the call.
         # stream_flow already backs off proactively; this catches stray callers
         # (IV scanner, manual endpoints) before they push us over the limit.
-        if budget.should_pause():
+        # allow_request() lets one refresh probe through per interval while
+        # paused, so a quota reset on UW's side is eventually observed.
+        if not budget.allow_request():
             logger.warning(
                 f"UW budget pause ({budget.daily_count}/{budget.daily_limit}) "
                 f"— skipping {path}"
@@ -287,9 +289,10 @@ class UnusualWhalesClient:
         )
 
         while True:
-            # Budget pause: sleep a long time then re-check. The daily counter
-            # resets on UW's end at midnight UTC so we'll eventually recover.
-            if budget.should_pause():
+            # Budget pause: idle, then re-check. The counter only moves when a
+            # response arrives, so when a refresh probe is due this cycle runs
+            # and _get() lets exactly one request through to re-read the quota.
+            if budget.should_pause() and not budget.probe_due():
                 logger.warning(
                     f"UW budget PAUSE {budget.daily_count}/{budget.daily_limit} "
                     f"({budget.usage_pct*100:.0f}%) — idling 5 min"

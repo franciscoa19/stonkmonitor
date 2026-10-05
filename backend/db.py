@@ -2026,6 +2026,38 @@ class Database:
             stats[tbl] = r.get("n", 0)
         return stats
 
+    async def get_signal_stats(self) -> dict:
+        """Counts over every persisted signal — the History tab's `Stats` shape."""
+        empty = {"total": 0, "elite": 0, "high": 0, "bull": 0, "bear": 0,
+                 "avg_score": None, "last_signal": None}
+        row = await self._scalar(
+            """SELECT COUNT(*) AS total,
+                      COALESCE(SUM(CASE WHEN score >= 9 THEN 1 ELSE 0 END), 0) AS elite,
+                      COALESCE(SUM(CASE WHEN score >= 7 THEN 1 ELSE 0 END), 0) AS high,
+                      COALESCE(SUM(CASE WHEN side='bullish' THEN 1 ELSE 0 END), 0) AS bull,
+                      COALESCE(SUM(CASE WHEN side='bearish' THEN 1 ELSE 0 END), 0) AS bear,
+                      AVG(score) AS avg_score,
+                      MAX(created_at) AS last_signal
+               FROM signals""")
+        return {**empty, **row}
+
+    async def get_signal_top_tickers(self, limit: int = 10) -> list[dict]:
+        """All-time ranking by signal count — the History tab's `TopTicker` shape.
+        (get_top_tickers below is the Analytics tab's windowed ranking, with
+        different field names; the two are not interchangeable.)"""
+        return await self._query(
+            """SELECT ticker,
+                      COUNT(*) AS signal_count,
+                      MAX(score) AS max_score,
+                      AVG(score) AS avg_score,
+                      SUM(CASE WHEN side='bullish' THEN 1 ELSE 0 END) AS bull_count,
+                      SUM(CASE WHEN side='bearish' THEN 1 ELSE 0 END) AS bear_count
+               FROM signals
+               GROUP BY ticker
+               ORDER BY signal_count DESC, max_score DESC
+               LIMIT ?""",
+            (int(limit),))
+
     async def get_top_tickers(self, days: int = 7, limit: int = 20) -> list[dict]:
         """Cross-feed ticker ranking by total signal activity."""
         return await self._query(

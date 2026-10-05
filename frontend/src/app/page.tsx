@@ -1,6 +1,7 @@
 'use client'
 import { useState, useCallback, useEffect } from 'react'
 import { useWebSocket, Signal } from '@/lib/useWebSocket'
+import { isAccount } from '@/lib/account'
 import { SignalFeed } from '@/components/SignalFeed'
 import { TradePanel } from '@/components/TradePanel'
 import { Watchlist } from '@/components/Watchlist'
@@ -48,6 +49,7 @@ export default function Dashboard() {
   const [watchlist, setWatchlist] = useState<string[]>([])
   const [positions, setPositions] = useState([])
   const [account, setAccount]     = useState(null)
+  const [accountStale, setAccountStale] = useState(false)
   const [activeTab, setActiveTab] = useState<'feed' | 'history' | 'trade' | 'analytics' | 'kalshi'>('feed')
   const [kalshiScan, setKalshiScan] = useState<Record<string, unknown> | null>(null)
 
@@ -73,9 +75,15 @@ export default function Dashboard() {
         fetch(`${API}/api/account`),
         fetch(`${API}/api/positions`),
       ])
-      if (accRes.ok) setAccount(await accRes.json())
+      // Keep the last good account when the broker is unreachable (HTTP 503)
+      // or the payload is not a usable account; never store a partial one.
+      const next = accRes.ok ? await accRes.json() : null
+      if (isAccount(next)) setAccount(next)
+      setAccountStale(!isAccount(next))
       if (posRes.ok) setPositions(await posRes.json())
-    } catch {}
+    } catch {
+      setAccountStale(true)
+    }
   }
 
   async function addToWatchlist(ticker: string) {
@@ -209,6 +217,7 @@ export default function Dashboard() {
               <TradePanel
                 positions={positions}
                 account={account}
+                accountStale={accountStale}
                 onRefresh={refreshAccount}
               />
             </div>

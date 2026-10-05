@@ -249,6 +249,8 @@ class UWBudget:
     last_path:      str   = ""
     throttle_pct:   float = 0.80   # start slowing above 80%
     pause_pct:      float = 0.95   # hard-pause above 95%
+    probe_after_s:  float = 1800.0 # while paused, one refresh request per 30 min
+    last_probe_ts:  float = 0.0
 
     def update_from_headers(self, path: str, headers: dict) -> None:
         """Parse UW rate-limit headers off any response."""
@@ -274,7 +276,36 @@ class UWBudget:
         return self.usage_pct >= self.throttle_pct
 
     def should_pause(self) -> bool:
+        """True while the last *reported* usage is at or above the pause level.
+
+        The count only changes when a response arrives, so this cannot notice
+        UW resetting its quota on its own — see probe_due()/allow_request().
+        """
         return self.usage_pct >= self.pause_pct
+
+    def probe_due(self, now: Optional[float] = None) -> bool:
+        """Paused, and the reading is old enough to be worth re-checking."""
+        if not self.should_pause():
+            return False
+        now = time.time() if now is None else now
+        return now - max(self.last_update_ts, self.last_probe_ts) >= self.probe_after_s
+
+    def allow_request(self, now: Optional[float] = None) -> bool:
+        """Whether a UW request may be sent now.
+
+        While paused, nothing was sent, so no response headers ever arrived to
+        show that the daily quota had reset: once at 95% the client stayed
+        blocked until restart. One request per probe_after_s is let through to
+        refresh the count (at most ~48 a day against a 15,000 limit); if usage
+        is still high, the next response re-arms the pause.
+        """
+        if not self.should_pause():
+            return True
+        now = time.time() if now is None else now
+        if now - max(self.last_update_ts, self.last_probe_ts) >= self.probe_after_s:
+            self.last_probe_ts = now
+            return True
+        return False
 
     def status(self) -> dict:
         return {

@@ -294,7 +294,7 @@ def test_report_push_uses_remote_base_and_preserves_developer_index(tmp_path, mo
     before, head = git(["diff", "--cached"]), git(["rev-parse", "HEAD"])
     for file in files: (reports / file).write_text("new")
     monkeypatch.setattr(main, "__file__", str(local / "backend" / "main.py"))
-    main._git_push_eval_data("2026-10-02")
+    assert main._git_push_eval_data("2026-10-02") is True
     assert git(["diff", "--cached"]) == before and git(["rev-parse", "HEAD"]) == head
     changed = git(["--git-dir", str(remote), "show", "--format=", "--name-only", "main"]).decode().splitlines()
     assert set(changed) == {f"backend/reports/{f}" for f in files}

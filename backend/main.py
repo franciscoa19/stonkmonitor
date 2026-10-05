@@ -1750,10 +1750,6 @@ async def iv_scanner_loop():
         if sess == "weekend":
             await asyncio.sleep(1800)  # check again in 30 min
             continue
-        if budget.should_pause():
-            logger.info("IV scanner paused — UW budget exhausted")
-            await asyncio.sleep(600)
-            continue
 
         for ticker in list(_watchlist):
             try:
@@ -1763,7 +1759,11 @@ async def iv_scanner_loop():
                 # UW returns a term-structure list, not a dict — reduce it to
                 # the 30-day point. UW gives IV *percentile*, not a separate
                 # rank, so we use it for both args of score_iv_rank.
-                if settings.uw_enabled:
+                # The UW quota gates only this call. It used to pause the whole
+                # loop, stopping the yfinance earnings scan below along with it.
+                # Checked per ticker: once a refresh probe has gone out, the rest
+                # of the cycle skips quietly instead of logging a block each.
+                if settings.uw_enabled and (not budget.should_pause() or budget.probe_due()):
                     iv_data = await uw_client.get_iv_rank(ticker)
                     iv = iv_summary_from_termstructure(iv_data)
                     if iv:
@@ -1894,12 +1894,14 @@ async def uw_budget_monitor_loop():
         await asyncio.sleep(600)  # 10 min
 
 
-def _git_push_eval_data(day: str):
+def _git_push_eval_data(day: str) -> bool:
     """Publish only report snapshots in a temporary clone of remote main.
 
     Neither the developer's index nor unpushed application commits are used.
-    A concurrent remote update fails the fast-forward push and is retried on
-    the next report run; no force push or workspace rebase is performed.
+    A concurrent remote update fails the fast-forward push; no force push or
+    workspace rebase is performed. Returns True when the remote holds these
+    snapshots (pushed, or already identical) and False on any failure, so the
+    scheduler can retry the publish stage.
     """
     import subprocess
     import tempfile
@@ -1928,26 +1930,107 @@ def _git_push_eval_data(day: str):
             changed = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=checkout,
                                      capture_output=True, timeout=30)
             if changed.returncode == 0:
-                return
+                return True
             if changed.returncode != 1:
                 raise RuntimeError("Unable to compare report snapshot")
             git(["commit", "-m", f"eval-data: daily report {day}"], checkout)
             git(["push", "origin", "HEAD:main"], checkout)
         logger.info(f"eval-data pushed to GitHub ({day})")
+        return True
     except Exception as e:
         logger.warning(f"eval-data git push failed: {e}")
+        return False
 
 
-async def generate_daily_report(is_weekly: bool = False) -> dict:
-    """Build the daily check-in, persist it to backend/reports/, and Pushover
-    a one-line summary. Autonomous — no Claude needed. Returns the report data
-    (a scheduled Claude routine reads latest.json to republish the artifact +
-    surface proposals for approval)."""
+# ── Daily-report stage tracking ─────────────────────────────────────────────
+# The report has four stages: generate → export → publish (git) → notify. The
+# scheduler used to treat daily_<day>.html as "done", but that file is written
+# first — a failure in any later stage was never retried that day. Each stage's
+# outcome is now recorded in daily_<day>.state.json and the scheduler keeps
+# going until the state says complete.
+def _report_state_path(reports_dir, day: str):
+    return reports_dir / f"daily_{day}.state.json"
+
+
+def _load_report_state(reports_dir, day: str) -> dict:
+    import json as _json
+    try:
+        state = _json.loads(_report_state_path(reports_dir, day).read_text())
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _atomic_write(path, text: str) -> None:
+    """Replace `path` in one step so a reader never sees a half-written file."""
+    import os
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def _save_report_state(reports_dir, day: str, state: dict) -> None:
+    import json as _json
+    _atomic_write(_report_state_path(reports_dir, day), _json.dumps(state, indent=2))
+
+
+def _report_complete(reports_dir, day: str) -> bool:
+    """Whether every stage of `day`'s report has finished."""
+    if _report_state_path(reports_dir, day).exists():
+        return bool(_load_report_state(reports_dir, day).get("complete"))
+    # Reports written before stage tracking have no state file; for those the
+    # HTML was the completion marker. New runs write the state file first.
+    return (reports_dir / f"daily_{day}.html").exists()
+
+
+async def _finish_report(reports_dir, day: str, state: dict, always_notify: bool) -> None:
+    """Run the publish and notify stages that are still pending, then record
+    the result. Each stage runs at most once per day unless it failed."""
+    if settings.report_git_push and not state.get("published"):
+        state["published"] = bool(await asyncio.to_thread(_git_push_eval_data, day))
+        if not state["published"]:
+            logger.warning(f"Daily report {day}: publish failed — will retry")
+    if always_notify or not state.get("notified"):
+        try:
+            if pushover.enabled:
+                await pushover.send_alert(state.get("title", "StonkMonitor daily check-in"),
+                                          state.get("summary", ""))
+            state["notified"] = True
+        except Exception as e:
+            logger.warning(f"Report Pushover send failed: {e}")
+    state["complete"] = bool(state.get("exported") and state.get("notified")
+                             and (state.get("published") or not settings.report_git_push))
+    _save_report_state(reports_dir, day, state)
+
+
+async def generate_daily_report(is_weekly: bool = False, scheduled: bool = False) -> dict:
+    """Build the daily check-in, persist it to backend/reports/, publish it and
+    Pushover a one-line summary. Autonomous — no Claude needed. Returns the
+    report data (a scheduled Claude routine reads latest.json to republish the
+    artifact + surface proposals for approval).
+
+    `scheduled=True` is the scheduler's call: it resumes a report whose files
+    were written but whose publish/notify stage failed, without rebuilding it
+    and without notifying twice. A manual run (the API route) always rebuilds
+    and always notifies.
+    """
     from pathlib import Path
     import json as _json
     from daily_report import (build_report_data, render_html, build_watchlist_review,
                               export_history, report_day)
     from api.routes import _watchlist
+    from market_time import et_today
+
+    reports_dir = Path(__file__).parent / "reports"
+    reports_dir.mkdir(exist_ok=True)
+
+    if scheduled:
+        today = et_today().isoformat()
+        pending = _load_report_state(reports_dir, today)
+        if (pending.get("exported") and not pending.get("complete")
+                and (reports_dir / f"daily_{today}.html").exists()):
+            await _finish_report(reports_dir, today, pending, always_notify=False)
+            return {"resumed": True, "day": today, "complete": pending["complete"]}
 
     data = await build_report_data(db, trader, thresholds={
         "score": settings.auto_trade_score_threshold,
@@ -1967,37 +2050,40 @@ async def generate_daily_report(is_weekly: bool = False) -> dict:
     if is_weekly:
         data["proposals"] = (await build_watchlist_review(db, list(_watchlist))) + data["proposals"]
 
-    reports_dir = Path(__file__).parent / "reports"
-    reports_dir.mkdir(exist_ok=True)
     day = report_day(data)
-    html = render_html(data)
-    (reports_dir / f"daily_{day}.html").write_text(html)
-    (reports_dir / "latest.html").write_text(html)
-    (reports_dir / "latest.json").write_text(_json.dumps(data, default=str, indent=2))
-
-    # Durable history export (history.jsonl + trades.csv) → committed to git.
-    await export_history(db, reports_dir)
-    if settings.report_git_push:
-        await asyncio.to_thread(_git_push_eval_data, day)
-
     a, m = data["account"], data["metrics"]
     summary = (f"Equity ${a['equity']:,.0f} ({a['total_pnl_pct']:+.2f}%) | "
                f"{m['closed_trades']} closed {m['win_rate']:.0f}%WR | "
                f"{a['open_positions']} open | {len(data['proposals'])} proposal(s)")
-    try:
-        if pushover.enabled:
-            await pushover.send_alert(
-                f"StonkMonitor {'weekly' if is_weekly else 'daily'} check-in", summary)
-    except Exception as e:
-        logger.warning(f"Report Pushover send failed: {e}")
-    logger.info(f"Daily report generated ({day}): {summary}")
+    # Record the run as incomplete BEFORE writing the HTML, so a failure below
+    # is seen as unfinished rather than mistaken for a completed legacy report.
+    state = {"exported": False, "published": False, "notified": False, "complete": False,
+             "title": f"StonkMonitor {'weekly' if is_weekly else 'daily'} check-in",
+             "summary": summary}
+    _save_report_state(reports_dir, day, state)
+
+    html = render_html(data)
+    _atomic_write(reports_dir / f"daily_{day}.html", html)
+    _atomic_write(reports_dir / "latest.html", html)
+    _atomic_write(reports_dir / "latest.json", _json.dumps(data, default=str, indent=2))
+
+    # Durable history export (history.jsonl + trades.csv) → committed to git.
+    await export_history(db, reports_dir)
+    state["exported"] = True
+    _save_report_state(reports_dir, day, state)
+
+    await _finish_report(reports_dir, day, state, always_notify=not scheduled)
+    logger.info(f"Daily report generated ({day}): {summary}"
+                + ("" if state["complete"] else " — stages pending, will retry"))
     return data
 
 
 async def report_scheduler_loop():
     """Fire the daily check-in once per weekday at REPORT_HOUR_ET (and the weekly
-    watchlist review on Mondays). Checks every 10 min; dedups on the day's report
-    file so a restart never double-fires."""
+    watchlist review on Mondays). Checks every 10 min and keeps going until
+    every stage of the day's report has completed, so a failed export or push
+    is retried rather than waiting for tomorrow. Restart-safe: completion is
+    read from the day's state file."""
     from zoneinfo import ZoneInfo
     from datetime import datetime
     from pathlib import Path
@@ -2006,10 +2092,10 @@ async def report_scheduler_loop():
     while True:
         try:
             now = datetime.now(_ET)
-            done = (Path(__file__).parent / "reports" / f"daily_{now:%Y-%m-%d}.html").exists()
+            done = _report_complete(Path(__file__).parent / "reports", f"{now:%Y-%m-%d}")
             if (settings.report_enabled and now.weekday() < 5
                     and now.hour >= settings.report_hour_et and not done):
-                await generate_daily_report(is_weekly=(now.weekday() == 0))
+                await generate_daily_report(is_weekly=(now.weekday() == 0), scheduled=True)
         except Exception as e:
             logger.error(f"Report scheduler error: {e}")
         await asyncio.sleep(600)  # re-check every 10 min

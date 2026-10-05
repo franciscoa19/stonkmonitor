@@ -33,9 +33,14 @@ class WatchlistRequest(BaseModel):
 # ------------------------------------------------------------------ #
 @router.get("/account")
 async def get_account(trader=Depends(lambda: None)):
-    """Get Alpaca account info."""
+    """Get Alpaca account info. 503 when the broker cannot be reached."""
     from main import trader as t
-    return await asyncio.to_thread(t.get_account)
+    account = await asyncio.to_thread(t.get_account)
+    # get_account() returns {} on a failed broker call. Passed through as a 200,
+    # the dashboard stored it as the account and crashed rendering its fields.
+    if not account or account.get("error") or "equity" not in account:
+        raise HTTPException(503, "Broker account unavailable")
+    return account
 
 
 @router.get("/positions")
@@ -175,6 +180,18 @@ async def db_get_signals(
     from main import db
     return await db.get_signals(ticker=ticker, signal_type=type,
                                 min_score=min_score, limit=limit, offset=offset)
+
+@router.get("/db/signals/stats")
+async def db_signal_stats():
+    """Totals for the History tab's stat cards."""
+    from main import db
+    return await db.get_signal_stats()
+
+@router.get("/db/signals/top-tickers")
+async def db_signal_top_tickers(limit: int = 10):
+    """All-time ticker ranking for the History tab."""
+    from main import db
+    return await db.get_signal_top_tickers(limit=max(1, min(limit, 100)))
 
 @router.get("/db/options-flow")
 async def db_options_flow(

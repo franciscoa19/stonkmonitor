@@ -1,5 +1,6 @@
 'use client'
 import { useState } from 'react'
+import { Account, isAccount } from '@/lib/account'
 
 const API = process.env.NEXT_PUBLIC_API_URL
 
@@ -14,21 +15,15 @@ interface Position {
   market_val: number
 }
 
-interface Account {
-  equity: number
-  cash: number
-  buying_power: number
-  day_trade_count: number
-  status: string
-}
-
 export function TradePanel({
   positions,
   account,
+  accountStale = false,
   onRefresh,
 }: {
   positions: Position[]
   account: Account | null
+  accountStale?: boolean
   onRefresh: () => void
 }) {
   const [ticker, setTicker] = useState('')
@@ -77,7 +72,14 @@ export function TradePanel({
   return (
     <div className="flex flex-col gap-4">
       {/* Account Summary */}
-      {account && (
+      {accountStale && (
+        <div className="bg-card border border-border rounded p-3 text-xs text-gold">
+          {isAccount(account)
+            ? 'Broker unreachable — showing the last known account values.'
+            : 'Broker account unavailable.'}
+        </div>
+      )}
+      {isAccount(account) && (
         <div className="bg-card border border-border rounded p-3 grid grid-cols-3 gap-2 text-xs">
           <div>
             <div className="text-muted">Equity</div>
