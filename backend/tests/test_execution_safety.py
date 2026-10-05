@@ -345,3 +345,33 @@ async def test_recreated_db_never_adopts_an_old_condor_entry(tmp_path, monkeypat
     finally:
         await old.close()
         await new.close()
+
+
+
+async def test_condor_entry_waits_for_regular_hours(database, session, monkeypatch):
+    """The scanner runs pre-market, after the close and overnight. An entry
+    planned there is sized and limited off stale option marks, so nothing is
+    recorded or submitted until regular hours."""
+    from signals import iv_executor
+    plan = {"ok": True, "expiry": "2026-11-27", "legs_json": "[]", "legs": [],
+            "strikes": {"short_put": 90, "long_put": 85, "short_call": 110, "long_call": 115},
+            "qty": 1, "credit": 1, "max_loss": 400, "limit_price": -1, "risk_usd": 400}
+    calls, planned = [], []
+    monkeypatch.setattr(session, "db", database)
+    monkeypatch.setattr(session, "settings", Settings(
+        _env_file=None, alpaca_api_key="unused", alpaca_secret_key="unused",
+        iv_exec_enabled=True, auto_trade_auto_execute=False))
+    monkeypatch.setattr(session, "trader", NS(get_account=lambda: {"equity": 100000},
+        multileg_order=lambda *a, **kw: calls.append(kw) or {"id": "entry", "status": "accepted"}))
+    monkeypatch.setattr(iv_executor, "is_pre_earnings_entry_window", lambda *a, **kw: True)
+    monkeypatch.setattr(iv_executor, "build_iron_condor", lambda *a: planned.append(a) or plan)
+    setup = NS(ticker="TEST", recommendation="SELL_PREMIUM",
+               next_earnings_date="2026-11-25", earnings_report_time="AMC")
+
+    monkeypatch.setattr(session, "is_rth_now", lambda: False)
+    await session.maybe_execute_condor(setup)
+    assert calls == [] and planned == [] and await database.get_active_condors() == []
+
+    monkeypatch.setattr(session, "is_rth_now", lambda: True)
+    await session.maybe_execute_condor(setup)
+    assert len(calls) == 1 and len(await database.get_active_condors()) == 1

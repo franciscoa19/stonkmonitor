@@ -952,6 +952,14 @@ async def maybe_execute_condor(setup):
     rec = getattr(setup, "recommendation", "AVOID")
     if rec != "SELL_PREMIUM" and not (rec == "CONSIDER" and s.iv_exec_allow_consider):
         return
+    # Entries are priced off the option book, which is two-sided only in regular
+    # hours. The scanner also runs pre-market, after the close and overnight; a
+    # condor planned there is sized and limited off stale marks and would rest
+    # until the next open. Closes already wait for RTH — so must entries.
+    if not is_rth_now():
+        logger.debug("IV-exec %s: entry deferred to regular trading hours",
+                     getattr(setup, "ticker", "?"))
+        return
     # A same-day BMO print has already happened. Fail closed when report timing
     # is unknown, and permit same-day entries only before a confirmed post-close
     # report. This must remain independent of the broader alert/eval gate.

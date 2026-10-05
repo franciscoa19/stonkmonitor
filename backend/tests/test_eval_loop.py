@@ -169,6 +169,70 @@ async def test_open_trade_not_booked(db):
     assert row["realized_pnl"] is None
 
 
+async def _buy_rows(db, symbol):
+    return await db._query(
+        "SELECT * FROM trade_performance WHERE symbol=? AND side='buy' ORDER BY filled_at", (symbol,))
+
+
+async def test_reconcile_repeat_round_trips_book_each_lot_once(db):
+    """Two round trips in one symbol, +$100 each. Pooling the symbol's history
+    wrote the $200 total onto BOTH buy rows, so the summary reported $400."""
+    await seed_entry(db, "r1", "AAPL", "AAPL", 100.0, 10, trade_type="equity", submitted_at="2026-09-03T14:00:00Z")
+    await seed_exit(db, "r2", "AAPL", "AAPL", 110.0, 10, trade_type="equity", filled_at="2026-09-03T15:00:00Z")
+    await seed_entry(db, "r3", "AAPL", "AAPL", 120.0, 10, trade_type="equity", submitted_at="2026-09-04T14:00:00Z")
+    await seed_exit(db, "r4", "AAPL", "AAPL", 130.0, 10, trade_type="equity", filled_at="2026-09-04T15:00:00Z")
+    assert await db.reconcile_trades() == 2
+    first, second = await _buy_rows(db, "AAPL")
+    assert (first["realized_pnl"], second["realized_pnl"]) == (100.0, 100.0)
+    assert (first["exit_price"], second["exit_price"]) == (110.0, 130.0)
+    assert (await db.get_performance_summary())["total_pnl"] == 200.0
+    assert await db.reconcile_trades() == 0          # nothing changed → nothing rewritten
+
+
+async def test_reconcile_later_open_buy_leaves_the_closed_lot_alone(db):
+    await seed_entry(db, "o1", "AAPL", "AAPL", 100.0, 10, trade_type="equity", submitted_at="2026-09-03T14:00:00Z")
+    await seed_exit(db, "o2", "AAPL", "AAPL", 110.0, 10, trade_type="equity", filled_at="2026-09-03T15:00:00Z")
+    await db.reconcile_trades()
+    await seed_entry(db, "o3", "AAPL", "AAPL", 150.0, 10, trade_type="equity", submitted_at="2026-09-04T14:00:00Z")
+    await db.reconcile_trades()
+    closed, still_open = await _buy_rows(db, "AAPL")
+    assert closed["realized_pnl"] == 100.0           # basis not re-averaged with the new buy
+    assert still_open["realized_pnl"] is None
+
+
+async def test_reconcile_scale_in_matches_sells_fifo(db):
+    # buy 5 @ 100, buy 5 @ 120, sell 7 @ 130 → lot 1 fully (+150), lot 2 two shares (+20)
+    await seed_entry(db, "f1", "AAPL", "AAPL", 100.0, 5, trade_type="equity", submitted_at="2026-09-03T14:00:00Z")
+    await seed_entry(db, "f2", "AAPL", "AAPL", 120.0, 5, trade_type="equity", submitted_at="2026-09-03T14:30:00Z")
+    await seed_exit(db, "f3", "AAPL", "AAPL", 130.0, 7, trade_type="equity", filled_at="2026-09-03T15:00:00Z")
+    await db.reconcile_trades()
+    lot1, lot2 = await _buy_rows(db, "AAPL")
+    assert (lot1["realized_pnl"], lot2["realized_pnl"]) == (150.0, 20.0)
+
+
+async def test_reconcile_does_not_pair_a_sell_with_a_later_buy(db):
+    # A short opened first (sell, then buy to close) is not a long round trip.
+    await seed_exit(db, "s-open", URI, "URI", 5.00, 1, filled_at="2026-09-03T14:00:00Z")
+    await seed_entry(db, "b-close", URI, "URI", 3.00, 1, submitted_at="2026-09-03T15:00:00Z")
+    assert await db.reconcile_trades() == 0
+    assert (await _buy_rows(db, URI))[0]["realized_pnl"] is None
+
+
+async def test_reconcile_clears_pooled_pnl_from_an_open_lot_and_keeps_explicit_reasons(db):
+    await seed_entry(db, "c1", "AAPL", "AAPL", 100.0, 10, trade_type="equity", submitted_at="2026-09-03T14:00:00Z")
+    await seed_exit(db, "c2", "AAPL", "AAPL", 110.0, 10, trade_type="equity", filled_at="2026-09-03T15:00:00Z")
+    await seed_entry(db, "c3", "AAPL", "AAPL", 120.0, 10, trade_type="equity", submitted_at="2026-09-04T14:00:00Z")
+    # What the pooled scheme left behind: the open lot carrying the symbol total.
+    await db._exec("UPDATE trade_performance SET realized_pnl=200, exit_price=110, exit_reason='closed_win' "
+                   "WHERE alpaca_order_id='c3'")
+    # An exit reason set explicitly (not by reconcile) must survive.
+    await db._exec("UPDATE trade_performance SET exit_reason='tp1' WHERE alpaca_order_id='c1'")
+    await db.reconcile_trades()
+    closed, still_open = await _buy_rows(db, "AAPL")
+    assert (closed["realized_pnl"], closed["exit_reason"]) == (100.0, "tp1")
+    assert (still_open["realized_pnl"], still_open["exit_reason"]) == (None, None)
+
+
 # ── Attribution join ────────────────────────────────────────────────────
 async def test_attribution_and_entry_hour(db):
     await seed_entry(db, "b7", URI, "URI", 8.50, 1, strategy="triple_confluence",
@@ -1467,6 +1531,36 @@ def test_settlement_uses_the_calendar_early_close():
     assert market_close_minute(datetime(2026, 11, 27, 12, 0, tzinfo=ET)) == 13 * 60
     assert settlement_ready(early, datetime(2026, 11, 27, 13, 29, tzinfo=ET)) is False
     assert settlement_ready(early, datetime(2026, 11, 27, 13, 30, tzinfo=ET)) is True
+
+
+def test_a_normal_close_is_not_a_closed_day():
+    """After 16:00 on an ordinary weekday the session is extended, then overnight.
+    Comparing against the 16:00 close made every weekday evening 'weekend', which
+    switched off the after-hours earnings scan and the extended-hours monitor."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from feeds.uw_budget import (current_session, is_auto_trade_window,
+                                 is_market_closed_now, market_subphase)
+    ET = ZoneInfo("America/New_York")
+    mon = lambda h, m=0: datetime(2026, 10, 5, h, m, tzinfo=ET)       # ordinary Monday
+
+    assert [current_session(mon(*t)) for t in ((3, 59), (4, 0), (9, 29), (9, 30), (15, 59))] == \
+        ["overnight", "extended", "extended", "rth", "rth"]
+    assert [current_session(mon(*t)) for t in ((16, 0), (16, 15), (17, 15), (19, 59), (20, 0), (23, 30))] == \
+        ["extended", "extended", "extended", "extended", "overnight", "overnight"]
+    assert not is_market_closed_now(mon(16, 15))
+    assert market_subphase(mon(16, 15)) == "extended"
+    assert is_auto_trade_window(mon(17, 59)) and not is_auto_trade_window(mon(18, 0))
+    # The host timezone must not matter: 20:15 UTC is 16:15 ET.
+    assert current_session(datetime(2026, 10, 5, 20, 15, tzinfo=ZoneInfo("UTC"))) == "extended"
+
+    # Genuinely closed days still are: weekend, full holiday, and a half day after 13:00.
+    assert current_session(datetime(2026, 10, 3, 11, 0, tzinfo=ET)) == "weekend"      # Saturday
+    assert current_session(datetime(2026, 11, 26, 11, 0, tzinfo=ET)) == "weekend"     # Thanksgiving
+    half = lambda h, m=0: datetime(2026, 11, 27, h, m, tzinfo=ET)
+    assert current_session(half(12, 59)) == "rth"
+    assert [current_session(half(*t)) for t in ((13, 0), (16, 30), (21, 0))] == ["weekend"] * 3
+    assert not is_auto_trade_window(half(13, 30))
 
 
 async def test_reprice_never_drops_a_capture_it_cannot_replace(db, monkeypatch):

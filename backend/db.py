@@ -1786,50 +1786,97 @@ class Database:
 
     async def reconcile_trades(self) -> int:
         """Book realized P&L for entries closed by *server-side* exits (bracket
-        TP/SL fills), which never call record_exit(). Pairs filled buy entries
-        with filled sell exits per symbol and writes the result onto the buy
-        (entry) row so it carries the strategy attribution. Options use a ×100
-        multiplier. Idempotent — recomputes the same values each run.
+        TP/SL fills), which never call record_exit(). Writes the result onto the
+        buy (entry) row so it carries the strategy attribution. Options use a
+        ×100 multiplier.
 
-        Returns the number of entry rows updated. Note: assumes one open entry
-        per symbol (re-entries would need lot matching — future work).
+        Fills are matched FIFO within a symbol: each sell closes the oldest
+        still-open buy lots, and a buy row carries only the P&L of the quantity
+        actually sold out of it. Pooling a symbol's whole history into one
+        average (the previous behaviour) wrote the same total onto every buy
+        row — two round trips of +$100 each reported +$400 — and a later open
+        buy rewrote an earlier closed trade's basis.
+
+        A sell with no open lot ahead of it (a short opened first, or an entry
+        older than the sync window) stays unmatched rather than being paired
+        with a later buy. Idempotent: rows are written only when their values
+        change. Returns the number of entry rows written.
         """
         rows = await self._query(
-            """SELECT symbol,
-                 SUM(CASE WHEN side='buy'  THEN filled_qty ELSE 0 END) AS buy_qty,
-                 SUM(CASE WHEN side='sell' THEN filled_qty ELSE 0 END) AS sell_qty,
-                 SUM(CASE WHEN side='buy'  THEN filled_qty*filled_avg_price ELSE 0 END) AS buy_val,
-                 SUM(CASE WHEN side='sell' THEN filled_qty*filled_avg_price ELSE 0 END) AS sell_val,
-                 MIN(CASE WHEN side='buy'  THEN filled_at END) AS entry_at,
-                 MAX(CASE WHEN side='sell' THEN filled_at END) AS exit_at
+            """SELECT id, symbol, side, filled_qty, filled_avg_price,
+                      COALESCE(filled_at, submitted_at) AS at,
+                      realized_pnl, realized_pnl_pct, exit_price, exit_reason
                FROM trade_performance
                WHERE filled_qty > 0 AND filled_avg_price > 0
-               GROUP BY symbol
-               HAVING sell_qty > 0 AND buy_qty > 0""",
+               ORDER BY symbol, COALESCE(filled_at, submitted_at), id""",
         )
+        by_symbol: dict[str, list[dict]] = {}
+        for r in rows:
+            by_symbol.setdefault(r["symbol"], []).append(r)
+
+        # Reasons this function owns. Anything else (tp1/sl/manual…) was set by
+        # an explicit exit and is never overwritten or cleared here.
+        own_reasons = (None, "", "closed_win", "closed_loss")
         updated = 0
         now = datetime.utcnow().isoformat()
-        for r in rows:
-            buy_qty, sell_qty = float(r["buy_qty"] or 0), float(r["sell_qty"] or 0)
-            if buy_qty <= 0 or sell_qty <= 0:
-                continue
-            avg_entry = float(r["buy_val"]) / buy_qty
-            avg_exit = float(r["sell_val"]) / sell_qty
-            closed_qty = min(buy_qty, sell_qty)     # realized only on the portion sold
-            mult = 100 if _is_occ(r["symbol"]) else 1
-            pnl = round((avg_exit - avg_entry) * closed_qty * mult, 2)
-            pnl_pct = round((avg_exit / avg_entry - 1) * 100, 2) if avg_entry else 0.0
-            reason = "closed_win" if pnl >= 0 else "closed_loss"
-            hold = _minutes_between(r["entry_at"], r["exit_at"])
-            await self._exec(
-                """UPDATE trade_performance
-                   SET realized_pnl=?, realized_pnl_pct=?, exit_price=?,
-                       exit_reason=COALESCE(NULLIF(exit_reason,''), ?),
-                       hold_minutes=COALESCE(hold_minutes, ?), updated_at=?
-                   WHERE symbol=? AND side='buy'""",
-                (pnl, pnl_pct, round(avg_exit, 4), reason, hold, now, r["symbol"]),
-            )
-            updated += 1
+        for symbol, fills in by_symbol.items():
+            mult = 100 if _is_occ(symbol) else 1
+            lots: list[dict] = []
+            for f in fills:
+                qty, price = float(f["filled_qty"]), float(f["filled_avg_price"])
+                if f["side"] == "buy":
+                    lots.append({"row": f, "price": price, "open": qty,
+                                 "sold": 0.0, "proceeds": 0.0, "exit_at": None})
+                    continue
+                if f["side"] != "sell":
+                    continue
+                for lot in lots:
+                    if qty <= 0:
+                        break
+                    take = min(qty, lot["open"])
+                    if take <= 0:
+                        continue
+                    lot["open"] -= take
+                    lot["sold"] += take
+                    lot["proceeds"] += take * price
+                    lot["exit_at"] = f["at"]
+                    qty -= take
+
+            for lot in lots:
+                row = lot["row"]
+                if lot["sold"] <= 0:
+                    # Still fully open. Clear a P&L the pooled scheme booked here.
+                    if row["realized_pnl"] is not None and row["exit_reason"] in ("closed_win", "closed_loss"):
+                        await self._exec(
+                            """UPDATE trade_performance
+                               SET realized_pnl=NULL, realized_pnl_pct=NULL, exit_price=NULL,
+                                   exit_reason=NULL, hold_minutes=NULL, updated_at=?
+                               WHERE id=?""", (now, row["id"]))
+                        updated += 1
+                    continue
+                avg_exit = lot["proceeds"] / lot["sold"]
+                pnl = round((avg_exit - lot["price"]) * lot["sold"] * mult, 2)
+                pnl_pct = round((avg_exit / lot["price"] - 1) * 100, 2)
+                exit_price = round(avg_exit, 4)
+                if (row["realized_pnl"], row["realized_pnl_pct"], row["exit_price"]) == (pnl, pnl_pct, exit_price):
+                    continue
+                reason = "closed_win" if pnl >= 0 else "closed_loss"
+                hold = _minutes_between(row["at"], lot["exit_at"])
+                if row["exit_reason"] in own_reasons:
+                    await self._exec(
+                        """UPDATE trade_performance
+                           SET realized_pnl=?, realized_pnl_pct=?, exit_price=?,
+                               exit_reason=?, hold_minutes=?, updated_at=?
+                           WHERE id=?""",
+                        (pnl, pnl_pct, exit_price, reason, hold, now, row["id"]))
+                else:
+                    await self._exec(
+                        """UPDATE trade_performance
+                           SET realized_pnl=?, realized_pnl_pct=?, exit_price=?,
+                               hold_minutes=COALESCE(hold_minutes, ?), updated_at=?
+                           WHERE id=?""",
+                        (pnl, pnl_pct, exit_price, hold, now, row["id"]))
+                updated += 1
         return updated
 
     async def get_trade_performance(self, limit: int = 100, ticker: str = None,

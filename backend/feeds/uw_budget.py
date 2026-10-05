@@ -96,15 +96,21 @@ def market_close_minute(now: Optional[datetime] = None) -> Optional[int]:
 
 
 def is_market_closed_now(now: Optional[datetime] = None) -> bool:
-    """True if the equity market is closed right now: weekend, full holiday, or
-    past the 13:00 ET early-close on a half day. Used to suppress options/darkpool
-    polling so we don't ingest stale last-session data on a closed market."""
+    """True on a closed *calendar day*: weekend, full holiday, or past the 13:00 ET
+    early-close on a half day. Used to suppress options/darkpool polling so we
+    don't ingest stale last-session data on a closed market.
+
+    The ordinary 16:00 close does NOT make the day closed — the evening is
+    'extended' and then 'overnight'. Comparing against market_close_minute()
+    here (2026-09-29 → 10-05) classified every weekday after 16:00 as 'weekend',
+    which switched off the after-hours earnings scan, the extended-hours
+    position monitor and the 16:00–18:00 auto-trade window.
+    """
     n = _ny(now)
     if n.weekday() >= 5 or is_market_holiday(n):
         return True
-    close_minute = market_close_minute(n)
-    if close_minute is not None and (n.hour * 60 + n.minute) >= close_minute:
-        return True
+    if (n.year, n.month, n.day) in MARKET_EARLY_CLOSES:
+        return (n.hour * 60 + n.minute) >= _EARLY_CLOSE_MINUTE
     return False
 
 # Session → (channel → poll interval seconds). INF (-1) disables the channel
