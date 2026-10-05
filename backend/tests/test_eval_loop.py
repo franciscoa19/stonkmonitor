@@ -1758,6 +1758,11 @@ async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeyp
            "earnings_date": "2026-09-30", "expiry": "2026-10-02",
            "legs_json": json.dumps(legs), "short_put": 965.0, "long_put": 935.0,
            "short_call": 1140.0, "long_call": 1170.0}
+    # Execution requires a durable row before any close can be submitted.
+    row["id"] = await db.record_condor(
+        row["ticker"], row["earnings_date"], row["expiry"], row["legs_json"],
+        {key: row[key] for key in ("short_put", "long_put", "short_call", "long_call")},
+        row["qty"], row["credit"], 2080, row["entry_order_id"], "filled")
 
     import market_time
     from types import SimpleNamespace as _NS

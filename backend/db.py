@@ -22,6 +22,10 @@ from zoneinfo import ZoneInfo
 _ET = ZoneInfo("America/New_York")
 
 
+class DatabaseError(RuntimeError):
+    """A required execution-state read or write could not be completed."""
+
+
 def _et_hour(iso: Optional[str]):
     """Hour-of-day (0-23) in US/Eastern for an ISO timestamp; None if unparseable."""
     if not iso:
@@ -444,7 +448,7 @@ _MIGRATIONS = {
                    "close_pnl": "REAL NOT NULL DEFAULT 0",
                    "close_client_order_id": "TEXT",
                    "settlement_note": "TEXT"},
-    "pending_trades":    {"strategy": "TEXT"},
+    "pending_trades":    {"strategy": "TEXT", "entry_order_status": "TEXT"},
     "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL"},
     "daily_equity":      {"open_equity": "REAL", "updated_at": "TEXT"},
     "iv_rv_evals":       {"earnings_date": "TEXT"},
@@ -462,6 +466,7 @@ class Database:
         self.path = path
         self._conn: Optional[aiosqlite.Connection] = None
         self._condor_fill_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
         self._order_ns: Optional[str] = None
 
     async def order_namespace(self) -> str:
@@ -478,8 +483,8 @@ class Database:
             return self._order_ns
         from uuid import uuid4
         await self._exec("INSERT OR IGNORE INTO db_meta (key, value) VALUES ('order_namespace', ?)",
-                         (uuid4().hex[:12],))
-        row = await self._scalar("SELECT value FROM db_meta WHERE key='order_namespace'")
+                         (uuid4().hex[:12],), strict=True)
+        row = await self._scalar("SELECT value FROM db_meta WHERE key='order_namespace'", strict=True)
         if not row.get("value"):
             raise RuntimeError("order namespace unavailable; refusing to build client order IDs")
         self._order_ns = row["value"]
@@ -638,30 +643,58 @@ class Database:
         if self._conn:
             await self._conn.close()
 
-    async def _exec(self, sql: str, params=()):
-        try:
-            await self._conn.execute(sql, params)
-            await self._conn.commit()
-        except aiosqlite.IntegrityError:
-            pass  # duplicate primary key — already stored
-        except Exception as e:
-            logger.error(f"DB write error: {e} | sql={sql[:60]}")
+    async def _exec(self, sql: str, params=(), *, strict: bool = False,
+                    expected_rows: Optional[int] = None):
+        """Commit one write; execution state must opt into propagating failures.
 
-    async def _query(self, sql: str, params=()) -> list[dict]:
+        Serialize writes through commit/rollback so a failed critical write
+        cannot roll back another coroutine's write on the shared connection.
+        Return the INSERT cursor's identity, never connection-wide last_insert_rowid.
+        """
+        async with self._write_lock:
+            try:
+                async with self._conn.execute(sql, params) as cur:
+                    if expected_rows is not None and cur.rowcount != expected_rows:
+                        raise DatabaseError("Execution-state write did not match its expected row")
+                    inserted_id = cur.lastrowid
+                    await self._conn.commit()
+                    return inserted_id
+            except BaseException as e:
+                # Also roll back a cancelled write before releasing the lock.
+                try:
+                    await self._conn.rollback()
+                except Exception as rollback_error:
+                    logger.error(f"DB rollback error: {rollback_error}")
+                    # An unusable connection must not expose uncommitted state.
+                    await self._conn.close()
+                if not isinstance(e, Exception):
+                    raise
+                if strict:
+                    raise DatabaseError("Required database write failed") from e
+                if not isinstance(e, aiosqlite.IntegrityError):
+                    logger.error(f"DB write error: {e} | sql={sql[:60]}")
+
+    async def _query(self, sql: str, params=(), *, strict: bool = False) -> list[dict]:
         try:
-            async with self._conn.execute(sql, params) as cur:
-                rows = await cur.fetchall()
-                return [dict(r) for r in rows]
+            async with self._write_lock:
+                async with self._conn.execute(sql, params) as cur:
+                    rows = await cur.fetchall()
+                    return [dict(r) for r in rows]
         except Exception as e:
+            if strict:
+                raise DatabaseError("Required database query failed") from e
             logger.error(f"DB query error: {e}")
             return []
 
-    async def _scalar(self, sql: str, params=()):
+    async def _scalar(self, sql: str, params=(), *, strict: bool = False):
         try:
-            async with self._conn.execute(sql, params) as cur:
-                row = await cur.fetchone()
-                return dict(row) if row else {}
+            async with self._write_lock:
+                async with self._conn.execute(sql, params) as cur:
+                    row = await cur.fetchone()
+                    return dict(row) if row else {}
         except Exception as e:
+            if strict:
+                raise DatabaseError("Required database query failed") from e
             logger.error(f"DB scalar error: {e}")
             return {}
 
@@ -789,17 +822,18 @@ class Database:
         r = await self._query(
             """SELECT id FROM iv_condors
                WHERE ticker=? AND status IN ('pending_entry','open','closing','awaiting_settlement') LIMIT 1""",
-            (ticker,))
+            (ticker,), strict=True)
         return bool(r)
 
     async def count_condors_opened_today(self, today: str) -> int:
         row = await self._scalar(
-            "SELECT COUNT(*) AS n FROM iv_condors WHERE substr(opened_at,1,10)=?", (today,))
+            "SELECT COUNT(*) AS n FROM iv_condors WHERE substr(opened_at,1,10)=?", (today,), strict=True)
         return int(row.get("n", 0))
 
     async def count_open_condors(self) -> int:
         row = await self._scalar(
-            "SELECT COUNT(*) AS n FROM iv_condors WHERE status IN ('pending_entry','open','closing','awaiting_settlement')"
+            "SELECT COUNT(*) AS n FROM iv_condors WHERE status IN ('pending_entry','open','closing','awaiting_settlement')",
+            strict=True,
         )
         return int(row.get("n", 0))
 
@@ -808,7 +842,7 @@ class Database:
                             max_loss: float, entry_order_id: Optional[str],
                             entry_status: Optional[str]) -> int:
         now = datetime.utcnow().isoformat()
-        await self._exec(
+        inserted_id = await self._exec(
             """INSERT INTO iv_condors
                  (ticker, earnings_date, expiry, legs_json, short_put, long_put,
                   short_call, long_call, qty, credit, max_loss, entry_order_id,
@@ -818,16 +852,15 @@ class Database:
              strikes.get("short_put"), strikes.get("long_put"),
              strikes.get("short_call"), strikes.get("long_call"),
              int(qty), round(credit, 2), round(max_loss, 2),
-             entry_order_id, entry_status, now))
-        row = await self._scalar("SELECT last_insert_rowid() AS id")
-        return int(row.get("id", 0))
+             entry_order_id, entry_status, now), strict=True, expected_rows=1)
+        return int(inserted_id)
 
     async def get_open_condors(self) -> list[dict]:
         return await self._query("SELECT * FROM iv_condors WHERE status='open'")
 
     async def get_active_condors(self) -> list[dict]:
         return await self._query(
-            "SELECT * FROM iv_condors WHERE status IN ('pending_entry','open','closing','awaiting_settlement')")
+            "SELECT * FROM iv_condors WHERE status IN ('pending_entry','open','closing','awaiting_settlement')", strict=True)
 
     async def get_active_condor_leg_symbols(self) -> set[str]:
         """OCC symbols owned by an active condor.
@@ -838,7 +871,8 @@ class Database:
         monitor for all other positions.
         """
         rows = await self._query(
-            "SELECT legs_json FROM iv_condors WHERE status IN ('pending_entry','open','closing','awaiting_settlement')"
+            "SELECT legs_json FROM iv_condors WHERE status IN ('pending_entry','open','closing','awaiting_settlement')",
+            strict=True,
         )
         symbols: set[str] = set()
         for row in rows:
@@ -853,7 +887,8 @@ class Database:
 
     async def update_condor_entry_status(self, condor_id: int, entry_status: str) -> None:
         await self._exec(
-            "UPDATE iv_condors SET entry_status=? WHERE id=?", (entry_status, condor_id))
+            "UPDATE iv_condors SET entry_status=? WHERE id=?", (entry_status, condor_id),
+            strict=True, expected_rows=1)
 
     async def activate_condor(self, condor_id: int, filled_qty: float,
                               filled_avg_price: float, entry_status: str = "filled") -> dict:
@@ -864,7 +899,7 @@ class Database:
         Recalculate max loss from that actual credit rather than the planning mid.
         """
         row = await self._scalar(
-            "SELECT short_put,long_put,short_call,long_call FROM iv_condors WHERE id=?", (condor_id,))
+            "SELECT short_put,long_put,short_call,long_call FROM iv_condors WHERE id=?", (condor_id,), strict=True)
         raw_qty = float(filled_qty or 0)
         credit = abs(float(filled_avg_price or 0))
         from math import isfinite
@@ -881,7 +916,7 @@ class Database:
             """UPDATE iv_condors
                SET status='open', qty=?, credit=?, max_loss=?, entry_status=?
                WHERE id=?""",
-            (qty, round(credit, 2), round(max_loss, 2), entry_status, condor_id),
+            (qty, round(credit, 2), round(max_loss, 2), entry_status, condor_id), strict=True, expected_rows=1,
         )
         return {"qty": qty, "credit": round(credit, 2), "max_loss": round(max_loss, 2)}
 
@@ -890,20 +925,21 @@ class Database:
         await self._exec(
             """UPDATE iv_condors
                SET status='void', entry_status=?, closed_at=? WHERE id=?""",
-            (entry_status, datetime.utcnow().isoformat(), condor_id),
+            (entry_status, datetime.utcnow().isoformat(), condor_id), strict=True, expected_rows=1,
         )
 
     async def mark_condor_closing(self, condor_id: int, close_order_id: Optional[str],
                                   client_order_id: Optional[str] = None) -> None:
         await self._exec(
             "UPDATE iv_condors SET status='closing', close_order_id=?, close_client_order_id=? WHERE id=?",
-            (close_order_id, client_order_id, condor_id))
+            (close_order_id, client_order_id, condor_id), strict=True, expected_rows=1)
 
     async def close_condor(self, condor_id: int, exit_debit: float, pnl: float) -> None:
         await self._exec(
             """UPDATE iv_condors SET status='closed', exit_debit=?, pnl=?, closed_at=?
                WHERE id=?""",
-            (round(exit_debit, 2), round(pnl, 2), datetime.utcnow().isoformat(), condor_id))
+            (round(exit_debit, 2), round(pnl, 2), datetime.utcnow().isoformat(), condor_id),
+            strict=True, expected_rows=1)
 
     async def record_condor_close_fill(self, condor_id: int, order_id: str,
                                        filled_qty: float, debit: float) -> dict:
@@ -917,47 +953,47 @@ class Database:
         if not isfinite(q) or q < 0 or not q.is_integer() or not isfinite(d) or d < 0:
             raise ValueError("invalid condor close fill")
         async with self._condor_fill_lock:
-            row = await self._scalar("SELECT * FROM iv_condors WHERE id=?", (condor_id,))
-            old = await self._scalar("SELECT * FROM iv_condor_close_fills WHERE order_id=?", (order_id,))
+            row = await self._scalar("SELECT * FROM iv_condors WHERE id=?", (condor_id,), strict=True)
+            old = await self._scalar("SELECT * FROM iv_condor_close_fills WHERE order_id=?", (order_id,), strict=True)
             if not row or (old and old["condor_id"] != condor_id):
                 raise ValueError("close fill has no matching condor")
             if old and q < old["filled_qty"]:
                 return row  # an older broker snapshot must not unbook fills
             total = await self._scalar(
                 "SELECT COALESCE(SUM(filled_qty),0) AS n FROM iv_condor_close_fills WHERE condor_id=? AND order_id<>?",
-                (condor_id, order_id))
+                (condor_id, order_id), strict=True)
             if total["n"] + q > row["qty"]:
                 raise ValueError("close fills exceed entry quantity")
             await self._exec(
                 """INSERT INTO iv_condor_close_fills VALUES (?,?,?,?)
                    ON CONFLICT(order_id) DO UPDATE SET filled_qty=excluded.filled_qty, debit=excluded.debit""",
-                (order_id, condor_id, int(q), d))
+                (order_id, condor_id, int(q), d), strict=True, expected_rows=1)
             totals = await self._scalar(
                 """SELECT COALESCE(SUM(filled_qty),0) AS n,
                           COALESCE(SUM(filled_qty * debit),0) AS cost
-                   FROM iv_condor_close_fills WHERE condor_id=?""", (condor_id,))
+                   FROM iv_condor_close_fills WHERE condor_id=?""", (condor_id,), strict=True)
             pnl = (row["credit"] * totals["n"] - totals["cost"]) * 100
             await self._exec("UPDATE iv_condors SET closed_qty=?, close_pnl=? WHERE id=?",
-                             (totals["n"], round(pnl, 2), condor_id))
-            return await self._scalar("SELECT * FROM iv_condors WHERE id=?", (condor_id,))
+                             (totals["n"], round(pnl, 2), condor_id), strict=True, expected_rows=1)
+            return await self._scalar("SELECT * FROM iv_condors WHERE id=?", (condor_id,), strict=True)
 
     async def await_condor_settlement(self, condor_id: int, note: str) -> None:
         await self._exec(
             "UPDATE iv_condors SET status='awaiting_settlement', settlement_note=? WHERE id=?",
-            (note, condor_id))
+            (note, condor_id), strict=True, expected_rows=1)
 
     async def get_position_monitor_states(self) -> dict:
-        rows = await self._query("SELECT * FROM position_monitor_state")
+        rows = await self._query("SELECT * FROM position_monitor_state", strict=True)
         return {r["symbol"]: json.loads(r["state_json"]) for r in rows}
 
     async def save_position_monitor_state(self, symbol: str, state: dict) -> None:
         await self._exec(
             """INSERT INTO position_monitor_state VALUES (?,?)
                ON CONFLICT(symbol) DO UPDATE SET state_json=excluded.state_json""",
-            (symbol, json.dumps(state)))
+            (symbol, json.dumps(state)), strict=True, expected_rows=1)
 
     async def delete_position_monitor_state(self, symbol: str) -> None:
-        await self._exec("DELETE FROM position_monitor_state WHERE symbol=?", (symbol,))
+        await self._exec("DELETE FROM position_monitor_state WHERE symbol=?", (symbol,), strict=True)
 
     async def get_condor_summary(self) -> dict:
         rows = await self._query("SELECT * FROM iv_condors WHERE status='closed'")
@@ -1240,7 +1276,9 @@ class Database:
         Only closes AFTER `rearmed_at` count, so clearing a halt genuinely
         resets the streak instead of leaving the bot one loss from re-halting.
         """
-        ctl = await self._scalar("SELECT * FROM risk_control WHERE id=1") or {}
+        ctl = await self._scalar("SELECT * FROM risk_control WHERE id=1", strict=True)
+        if not ctl:
+            raise DatabaseError("Risk control row is missing")
         rearmed = ctl.get("rearmed_at")
         params: tuple = ()
         where = "WHERE status='closed' AND pnl IS NOT NULL"
@@ -1249,7 +1287,7 @@ class Database:
             params = (rearmed,)
         rows = await self._query(
             f"SELECT ticker, pnl, closed_at FROM iv_condors {where} ORDER BY closed_at, id",
-            params)
+            params, strict=True)
 
         mult, streak = 1.0, 0
         for r in rows:
@@ -1275,7 +1313,7 @@ class Database:
     async def set_halt(self, reason: str) -> None:
         await self._exec(
             "UPDATE risk_control SET halted=1, halted_at=?, halted_reason=? WHERE id=1",
-            (datetime.utcnow().isoformat(), reason))
+            (datetime.utcnow().isoformat(), reason), strict=True, expected_rows=1)
 
     async def clear_halt(self) -> None:
         """Re-arm. Also resets the streak so the bot is not one loss from
@@ -1283,7 +1321,7 @@ class Database:
         await self._exec(
             """UPDATE risk_control SET halted=0, halted_at=NULL, halted_reason=NULL,
                  rearmed_at=? WHERE id=1""",
-            (datetime.utcnow().isoformat(),))
+            (datetime.utcnow().isoformat(),), strict=True, expected_rows=1)
 
     async def get_variant_summary(self, gate_passed: Optional[bool] = True,
                                   source: Optional[str] = None,
@@ -1577,9 +1615,7 @@ class Database:
                 datetime.utcnow().isoformat(),
                 expires_at.isoformat() if hasattr(expires_at, "isoformat") else str(expires_at),
             )
-            async with self._conn.execute(sql, params) as cur:
-                await self._conn.commit()
-                return cur.lastrowid
+            return await self._exec(sql, params, strict=True, expected_rows=1)
         except Exception as e:
             logger.error(f"save_pending_trade error: {e}")
             return None
@@ -1589,20 +1625,30 @@ class Database:
         if not kwargs:
             return
         allowed = {
-            "status", "telegram_msg_id", "alpaca_order_id", "executed_at"
+            "status", "telegram_msg_id", "alpaca_order_id", "executed_at", "entry_order_status"
         }
         cols = {k: v for k, v in kwargs.items() if k in allowed}
         if not cols:
             return
         set_clause = ", ".join(f"{k}=?" for k in cols)
         params = list(cols.values()) + [trade_id]
-        await self._exec(f"UPDATE pending_trades SET {set_clause} WHERE id=?", params)
+        await self._exec(f"UPDATE pending_trades SET {set_clause} WHERE id=?", params,
+                         strict=True, expected_rows=1)
 
     async def get_pending_trades(self, status: str = "pending") -> list[dict]:
         return await self._query(
             "SELECT * FROM pending_trades WHERE status=? ORDER BY created_at DESC",
-            (status,),
+            (status,), strict=True,
         )
+
+    async def get_entry_reservations(self) -> list[dict]:
+        """Entries not yet reconciled to terminal broker state, including crashes."""
+        return await self._query(
+            """SELECT * FROM pending_trades
+               WHERE status IN ('submitting','submission_unknown')
+                  OR (status='confirmed' AND COALESCE(entry_order_status,'unknown')
+                      NOT IN ('filled','canceled','expired','rejected'))""",
+            strict=True)
 
     async def expire_stale_pending_trades(self) -> int:
         """Mark any still-'pending' trades whose expires_at is in the past as 'expired'.
@@ -1634,18 +1680,24 @@ class Database:
             (limit,),
         )
 
-    async def count_confirmed_today(self, date_str: str) -> int:
-        """Count confirmed trades on a given date (YYYY-MM-DD, ET).
-        Used by the max-trades-per-day circuit breaker.
+    async def count_confirmed_today(self, date_str: str, *, include_unresolved: bool = False) -> int:
+        """Count submissions in an ET day; unresolved attempts reserve daily capacity.
+
+        Use execution time rather than queue creation time. Naive stored timestamps
+        are UTC; the day bounds account for ET's changing UTC offset.
         """
-        # _scalar returns a dict ({"n": N}) or {} — extract the count safely.
+        start = datetime.combine(date.fromisoformat(date_str), datetime.min.time(), _ET)
+        end = start + timedelta(days=1)
+        extra = " OR status IN ('submitting','submission_unknown')" if include_unresolved else ""
         result = await self._scalar(
-            "SELECT COUNT(*) AS n FROM pending_trades WHERE status='confirmed' AND created_at LIKE ?",
-            (f"{date_str}%",),
+            f"""SELECT COUNT(*) AS n FROM pending_trades
+                WHERE (status='confirmed'
+                  AND julianday(COALESCE(executed_at,created_at)) >= julianday(?)
+                  AND julianday(COALESCE(executed_at,created_at)) < julianday(?)){extra}""",
+            (start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()),
+            strict=True,
         )
-        if not result:
-            return 0
-        return int(result.get("n") or 0)
+        return int(result["n"])
 
     # ── Write/Read: Trade Performance ──────────────────────────────────────
     async def upsert_trade_performance(self, **kwargs):

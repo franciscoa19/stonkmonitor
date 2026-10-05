@@ -752,13 +752,18 @@ async def alpaca_position_monitor():
     from signals.position_exits import manage_position_exit
     from feeds.uw_budget import current_session
     await asyncio.sleep(45)
-    _alpaca_pos_state.update(await db.get_position_monitor_states())
+    restored = False
     def record_fill(symbol, pnl):
         import re
         ticker = re.sub(r"[0-9]{6}[CP][0-9]{8}$", "", symbol)
         (auto_trade.record_win if pnl >= 0 else auto_trade.record_loss)(ticker, pnl)
     while True:
         try:
+            if not restored:
+                saved = await db.get_position_monitor_states()
+                _alpaca_pos_state.clear()
+                _alpaca_pos_state.update(saved)
+                restored = True
             if current_session() not in ("overnight", "weekend"):
                 positions = await asyncio.to_thread(trader.get_positions_raw)
                 if positions is not None:
@@ -789,8 +794,8 @@ async def alpaca_position_monitor():
                                 await manage_position_exit(db, trader,
                                     {"symbol": symbol, "qty": 0, "pnl_pct": 0}, settings, state, record_fill)
                             if not state.get("pending"):
-                                _alpaca_pos_state.pop(symbol, None)
                                 await db.delete_position_monitor_state(symbol)
+                                _alpaca_pos_state.pop(symbol, None)
         except Exception as e:
             logger.error(f"Alpaca position monitor error: {e}")
         await asyncio.sleep(settings.pos_monitor_interval)
@@ -1038,7 +1043,7 @@ async def maybe_execute_condor(setup):
         logger.error(f"IV-exec {ticker} submit failed: {res['error']}")
         return
     await db._exec("UPDATE iv_condors SET entry_order_id=?, entry_status=? WHERE id=?",
-                   (res.get("id"), res.get("status"), cid))
+                   (res.get("id"), res.get("status"), cid), strict=True, expected_rows=1)
     st = plan["strikes"]
     logger.info(
         f"IV-exec ✅ {ticker} iron condor #{cid}: "
@@ -1521,7 +1526,8 @@ async def _manage_condor(c: dict):
                 logger.warning("Condor #%s awaiting entry submission reconciliation", cid)
                 return
             c = {**c, "entry_order_id": found["id"]}
-            await db._exec("UPDATE iv_condors SET entry_order_id=? WHERE id=?", (found["id"], cid))
+            await db._exec("UPDATE iv_condors SET entry_order_id=? WHERE id=?", (found["id"], cid),
+                           strict=True, expected_rows=1)
         o = await loop.run_in_executor(None, trader.get_order_raw, c["entry_order_id"])
         est = str((o or {}).get("status") or "unknown").lower()
         filled_qty = float((o or {}).get("filled_qty") or 0)
@@ -1593,7 +1599,8 @@ async def _manage_condor(c: dict):
                 return
         if st in ("canceled", "expired", "rejected"):
             await db._exec(
-                "UPDATE iv_condors SET status='open', close_order_id=NULL, close_client_order_id=NULL WHERE id=?", (cid,))
+                "UPDATE iv_condors SET status='open', close_order_id=NULL, close_client_order_id=NULL WHERE id=?", (cid,),
+                strict=True, expected_rows=1)
             c = {**c, "status": "open", "close_order_id": None}
         else:
             # Reprice only after cancellation is acknowledged on a later cycle.
@@ -1686,7 +1693,8 @@ async def _manage_condor(c: dict):
         None, lambda: trader.close_multileg(legs, qty, limit, client_order_id=client_id))
     if res.get("error"):
         if not res.get("ambiguous", True):
-            await db._exec("UPDATE iv_condors SET status='open', close_client_order_id=NULL WHERE id=?", (cid,))
+            await db._exec("UPDATE iv_condors SET status='open', close_client_order_id=NULL WHERE id=?", (cid,),
+                           strict=True, expected_rows=1)
         logger.warning(f"IV-exec condor #{cid} close submit failed: {res['error']}")
         return
     await db.mark_condor_closing(cid, res.get("id"), client_id)

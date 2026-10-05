@@ -39,6 +39,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
+from math import isfinite
+
+from db import DatabaseError
 
 logger = logging.getLogger(__name__)
 
@@ -267,23 +270,91 @@ class AutoTradeEngine:
             from zoneinfo import ZoneInfo
             today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
             # Count rows confirmed today in pending_trades
-            count = await self._db.count_confirmed_today(today)
+            count = await self._db.count_confirmed_today(today, include_unresolved=True)
             if count >= limit:
                 return False, f"Daily trade cap: {count}/{limit} trades already confirmed today"
         except Exception as e:
-            logger.debug(f"Max trades check error (non-blocking): {e}")
+            logger.warning(f"Daily trade capacity unavailable: {e}")
+            return False, "Daily trade capacity unavailable; no new order submitted"
         return True, ""
 
     async def _max_positions_check(self) -> tuple[bool, str]:
-        """Returns (ok, reason). Blocks if open Alpaca positions >= max."""
+        """Count held symbols and outstanding entries without double-counting a fill."""
         try:
             limit = self.settings.auto_trade_max_open_positions
-            positions = await asyncio.to_thread(self._trader.get_positions)
-            open_count = len([p for p in positions if p.get("qty", 0) > 0])
+            reserved = set()
+            terminal_updates = []
+            # Local reservations survive broker-list lag and application restarts.
+            for row in await self._db.get_entry_reservations():
+                status = row.get("entry_order_status")
+                order = None
+                if row["status"] == "confirmed" and row.get("alpaca_order_id"):
+                    order = await asyncio.to_thread(self._trader.get_order_raw, row["alpaca_order_id"])
+                    if not order.get("error"):
+                        status = order.get("status")
+                # A terminal partial fill still reserves a slot for this check;
+                # positions are fetched AFTER order reconciliation below.
+                filled = float((order or {}).get("filled_qty") or 0)
+                if not isfinite(filled) or filled < 0:
+                    raise ValueError("Invalid broker entry fill quantity")
+                if order and not order.get("error") and status in ("filled", "canceled", "expired", "rejected"):
+                    if status == "filled" and filled <= 0:
+                        raise ValueError("Filled broker entry has no fill quantity")
+                    terminal_updates.append((row["id"], status))
+                if (row["status"] != "confirmed" or status not in ("canceled", "expired", "rejected")
+                        or filled > 0):
+                    reserved.add(row["symbol"])
+
+            orders = await asyncio.to_thread(self._trader.get_open_orders_raw)
+            if orders is None:
+                return False, "Open-order snapshot unavailable; no new order submitted"
+            for order in orders:
+                for leg in [order, *(order.get("legs") or [])]:
+                    if leg.get("side") == "buy" and leg.get("position_intent") != "buy_to_close":
+                        if not leg.get("symbol"):
+                            raise ValueError("Broker entry order has no symbol")
+                        reserved.add(leg["symbol"])
+
+            positions = await asyncio.to_thread(self._trader.get_positions_raw)
+            if positions is None:
+                return False, "Position snapshot unavailable; no new order submitted"
+            for pos in positions:
+                qty = float(pos["qty"])
+                if not isfinite(qty):
+                    raise ValueError("Invalid broker position quantity")
+                if qty != 0:
+                    if not pos.get("symbol"):
+                        raise ValueError("Broker position has no symbol")
+                    reserved.add(pos["symbol"])
+            # Do not release durable reservations during a failed/incomplete
+            # check: both broker snapshots must have been read successfully.
+            for trade_id, status in terminal_updates:
+                await self._db.update_pending_trade(trade_id, entry_order_status=status)
+            open_count = len(reserved)
             if open_count >= limit:
-                return False, f"Position cap: {open_count}/{limit} positions already open"
+                return False, f"Position cap: {open_count}/{limit} held or reserved symbols"
         except Exception as e:
-            logger.debug(f"Max positions check error (non-blocking): {e}")
+            logger.warning(f"Position capacity unavailable: {e}")
+            return False, "Position capacity unavailable; no new order submitted"
+        return True, ""
+
+    async def _execution_limits(self, ticker: str) -> tuple[bool, str]:
+        """Recheck mutable safety limits under the confirmation lock before POST."""
+        if self._circuit_breaker_active():
+            return False, f"Circuit breaker: daily P&L ${self._daily_pnl:+,.0f}"
+        if self._ticker_in_cooldown(ticker):
+            return False, f"Cooldown: {ticker} had a recent losing exit"
+        ok, reason = await self._max_trades_today_check()
+        if not ok:
+            return ok, reason
+        ok, reason = await self._max_positions_check()
+        if not ok:
+            return ok, reason
+        # A monitor can book a loss while broker snapshots are being fetched.
+        if self._circuit_breaker_active():
+            return False, f"Circuit breaker: daily P&L ${self._daily_pnl:+,.0f}"
+        if self._ticker_in_cooldown(ticker):
+            return False, f"Cooldown: {ticker} had a recent losing exit"
         return True, ""
 
     # ── Symbol helpers ───────────────────────────────────────────────────────
@@ -885,6 +956,11 @@ class AutoTradeEngine:
 
     async def _queue(self, **kwargs):
         """Persist → in-memory → Telegram alert → schedule expiry."""
+        # Defense in depth if settings are mutated after validation or injected.
+        if self.settings.auto_trade_auto_execute and (
+                not self.settings.alpaca_paper or not self._trader.paper):
+            logger.error("Autonomous trade blocked: both settings and trader must be in paper mode")
+            return
         ticker = kwargs.get("ticker", "")
         symbol = kwargs.get("symbol", "")
 
@@ -972,18 +1048,20 @@ class AutoTradeEngine:
         # All pre-flight filters and risk caps already ran before we got here.
         if self.settings.auto_trade_auto_execute:
             logger.info(f"AUTO-EXECUTE: confirming {symbol} immediately (autonomous paper mode)")
-            await self.confirm_trade(trade_id, msg_id=0)
-        else:
+            await self.confirm_trade(trade_id, msg_id=0, autonomous=True)
+        if trade_id in self._pending and trade_id not in self._uncertain_submissions:
             asyncio.create_task(self._expire(trade_id))
 
     async def _expire(self, trade_id: int):
         await asyncio.sleep(5 * 60)
-        if trade_id in self._uncertain_submissions:
-            return  # broker acceptance must be reconciled, not expired locally
-        s = self._pending.pop(trade_id, None)
-        if s is None:
-            return  # already confirmed or skipped
-        await self._db.update_pending_trade(trade_id, status="expired")
+        async with self._confirm_lock:
+            if trade_id in self._uncertain_submissions:
+                return  # broker acceptance must be reconciled, not expired locally
+            s = self._pending.get(trade_id)
+            if s is None:
+                return  # already confirmed or skipped
+            await self._db.update_pending_trade(trade_id, status="expired")
+            self._pending.pop(trade_id, None)
         if self._telegram and s.telegram_msg_id:
             await self._telegram.edit_message(
                 s.telegram_msg_id,
@@ -994,12 +1072,17 @@ class AutoTradeEngine:
 
     # ── Confirm / Skip (called by Telegram callbacks + API) ──────────────────
 
-    async def confirm_trade(self, trade_id: int, msg_id: int) -> dict:
+    async def confirm_trade(self, trade_id: int, msg_id: int, *, autonomous: bool = False) -> dict:
         """Serialize confirmations so a double tap cannot submit twice."""
         async with self._confirm_lock:
-            return await self._confirm_trade(trade_id, msg_id)
+            try:
+                return await self._confirm_trade(trade_id, msg_id, autonomous=autonomous)
+            except DatabaseError as e:
+                logger.error(f"Trade {trade_id} persistence unavailable: {e}")
+                return {"error": "Execution state unavailable; reconcile before retrying",
+                        "ambiguous": trade_id in self._uncertain_submissions}
 
-    async def _confirm_trade(self, trade_id: int, msg_id: int) -> dict:
+    async def _confirm_trade(self, trade_id: int, msg_id: int, *, autonomous: bool = False) -> dict:
         s = self._pending.get(trade_id)
         if not s:
             if self._telegram and msg_id:
@@ -1032,11 +1115,16 @@ class AutoTradeEngine:
             if trade_id in self._uncertain_submissions:
                 return {"error": "Prior submission outcome unknown; awaiting broker confirmation"}
             if s.expires_at and datetime.utcnow() > s.expires_at:
-                self._pending.pop(trade_id, None)
                 await self._db.update_pending_trade(trade_id, status="expired")
+                self._pending.pop(trade_id, None)
                 return {"error": "expired"}
+            ok, reason = await self._execution_limits(s.ticker)
+            if not ok:
+                return {"error": reason, "ambiguous": False}
+            if autonomous and (not self.settings.alpaca_paper or not self._trader.paper):
+                return {"error": "Autonomous execution requires paper settings and broker", "ambiguous": False}
+            await self._db.update_pending_trade(trade_id, status="submitting", entry_order_status="unknown")
             self._uncertain_submissions.add(trade_id)
-            await self._db.update_pending_trade(trade_id, status="submitting")
             try:
                 result = await asyncio.to_thread(
                     self._trader.bracket_order, ticker=s.symbol, qty=s.qty, side="buy",
@@ -1060,21 +1148,24 @@ class AutoTradeEngine:
             if result.get("ambiguous", True):
                 await self._db.update_pending_trade(trade_id, status="submission_unknown")
             else:
+                await self._db.update_pending_trade(trade_id, status="failed", entry_order_status="rejected")
                 self._uncertain_submissions.discard(trade_id)
                 self._pending.pop(trade_id, None)
-                await self._db.update_pending_trade(trade_id, status="failed")
             return result
 
         # Success
-        self._uncertain_submissions.discard(trade_id)
-        self._pending.pop(trade_id, None)
         order_id = result.get("id", "")
         await self._db.update_pending_trade(
             trade_id,
             status="confirmed",
             alpaca_order_id=order_id,
             executed_at=datetime.utcnow().isoformat(),
+            # Reconcile terminal status with a fresh position snapshot before
+            # releasing capacity, including immediate-fill and legacy orders.
+            entry_order_status="unknown",
         )
+        self._uncertain_submissions.discard(trade_id)
+        self._pending.pop(trade_id, None)
 
         if s.trade_type == "equity_long":
             type_label = "📈 LONG-TERM EQUITY"
@@ -1109,8 +1200,11 @@ class AutoTradeEngine:
             await self._skip_trade(trade_id, msg_id)
 
     async def _skip_trade(self, trade_id: int, msg_id: int):
-        s = self._pending.pop(trade_id, None)
+        s = self._pending.get(trade_id)
+        if s is None:
+            return  # an accepted/reconciled trade must never be relabeled skipped
         await self._db.update_pending_trade(trade_id, status="skipped")
+        self._pending.pop(trade_id, None)
         if self._telegram and msg_id:
             ticker = s.ticker if s else "Trade"
             await self._telegram.edit_message(
@@ -1131,7 +1225,8 @@ class AutoTradeEngine:
                         if order.get("id"):
                             await self._db.update_pending_trade(
                                 row["id"], status="confirmed", alpaca_order_id=order["id"],
-                                executed_at=order.get("created_at") or datetime.utcnow().isoformat())
+                                executed_at=order.get("created_at") or datetime.utcnow().isoformat(),
+                                entry_order_status=order.get("status") or "unknown")
                             self._uncertain_submissions.discard(row["id"])
                             self._pending.pop(row["id"], None)
                             break

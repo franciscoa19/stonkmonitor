@@ -2,12 +2,18 @@
 Central config — reads from .env, validates, and exposes typed settings.
 """
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, model_validator
 from functools import lru_cache
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+
+    @model_validator(mode="after")
+    def require_paper_for_auto_execute(self):
+        if self.auto_trade_auto_execute and not self.alpaca_paper:
+            raise ValueError("AUTO_TRADE_AUTO_EXECUTE requires ALPACA_PAPER=true")
+        return self
 
     # --- Unusual Whales ---
     # Optional now that the earnings IV/RV edge runs on yfinance + Alpaca only.

@@ -286,6 +286,15 @@ class AlpacaTrader:
         code, body = self._rest("GET", f"{self._trade_base}/v2/positions")
         return body if code == 200 and isinstance(body, list) else None
 
+    def get_open_orders_raw(self) -> Optional[list[dict]]:
+        """Risk-check snapshot, retaining MLegs and distinguishing errors from empty.
+
+        At the API's page limit we cannot prove the snapshot complete, so fail
+        closed instead of overlooking outstanding entry orders.
+        """
+        code, body = self._rest("GET", f"{self._trade_base}/v2/orders?status=open&limit=500&nested=true")
+        return body if code == 200 and isinstance(body, list) and len(body) < 500 else None
+
     def trailing_stop(
         self,
         ticker: str,

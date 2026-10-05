@@ -10,6 +10,7 @@ import pytest
 import pytest_asyncio
 
 from db import Database
+from config import Settings
 from signals.position_exits import manage_position_exit
 from signals.auto_trade import AutoTradeEngine
 from trading.alpaca_trader import AlpacaTrader
@@ -138,7 +139,7 @@ async def test_rejected_stop_can_retry_and_waits_for_fill(database):
     fills = []
     await manage_position_exit(database, trader, POSITION, EXIT_SETTINGS, restored,
                                lambda *a: fills.append(a))
-    assert restored["sl_fired"] and not restored.get("pending")
+    assert restored == {}  # a full exit retires flags before same-symbol re-entry
     assert fills == [("AAPL", -90)]
 
 
@@ -153,7 +154,10 @@ async def test_ambiguous_stop_survives_restart_without_second_order(database):
 
 
 async def engine_with_trade(db, trader):
-    engine = AutoTradeEngine(NS())
+    engine = AutoTradeEngine(Settings(_env_file=None, alpaca_api_key="unused",
+        alpaca_secret_key="unused", auto_trade_auto_execute=False))
+    trader.get_positions_raw = lambda: []
+    trader.get_open_orders_raw = lambda: []
     engine.set_dependencies(None, db, trader)
     tid = await db.save_pending_trade(datetime.now(timezone.utc) + timedelta(minutes=5),
                                       ticker="AAPL", symbol="AAPL", qty=1, limit_price=100)
