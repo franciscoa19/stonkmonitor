@@ -282,6 +282,74 @@ class AlpacaTrader:
             token = next_token
         return None
 
+    def get_fill_activities(self, after: Optional[str] = None) -> Optional[list[dict]]:
+        """All executions (optionally since `after`), or None on paging failure.
+
+        Order filled_at is absent for canceled partials and describes only the
+        final execution for completed orders. Account FILL activities provide
+        the individual quantities, prices and transaction timestamps instead.
+        """
+        import urllib.parse
+        out, token, seen = [], None, set()
+        for _ in range(100):
+            params = {"activity_types": "FILL", "direction": "asc", "page_size": 100}
+            if after:
+                params["after"] = after
+            if token:
+                params["page_token"] = token
+            code, body = self._rest(
+                "GET", f"{self._trade_base}/v2/account/activities?{urllib.parse.urlencode(params)}")
+            if (code != 200 or not isinstance(body, list)
+                    or any(not isinstance(a, dict) or a.get("activity_type") != "FILL" for a in body)):
+                return None
+            out.extend(body)
+            if len(body) < 100:
+                return out
+            next_token = body[-1].get("id")
+            if not isinstance(next_token, str) or not next_token or next_token in seen:
+                return None
+            seen.add(next_token)
+            token = next_token
+        return None
+
+    def get_mleg_leg_order_ids(self) -> Optional[set[str]]:
+        """Order IDs of every multi-leg order's legs, or None if the listing is
+        unavailable or incomplete.
+
+        A FILL activity for a condor leg carries the leg's own order ID, but
+        GET /v2/orders/{leg id} answers 404: legs exist only nested under their
+        parent order. The nested listing is the one place those IDs can be read
+        (verified on paper 2026-10-05: 16 parents, 64 legs, matching all 44 leg
+        fills). Pages ascend by submission time.
+        """
+        import urllib.parse
+        ids, after, seen = set(), None, set()
+        for _ in range(100):
+            params = {"status": "all", "nested": "true", "limit": 500, "direction": "asc"}
+            if after:
+                params["after"] = after
+            code, body = self._rest(
+                "GET", f"{self._trade_base}/v2/orders?{urllib.parse.urlencode(params)}")
+            if (code != 200 or not isinstance(body, list)
+                    or any(not isinstance(o, dict) for o in body)):
+                return None
+            for order in body:
+                if order.get("order_class") != "mleg":
+                    continue
+                legs = order.get("legs")
+                if not isinstance(legs, list) or any(
+                        not isinstance(leg, dict) or not leg.get("id") for leg in legs):
+                    return None          # a parent whose legs cannot be read
+                ids.update(str(leg["id"]) for leg in legs)
+            if len(body) < 500:
+                return ids
+            cursor = body[-1].get("submitted_at")
+            if not isinstance(cursor, str) or not cursor or cursor in seen:
+                return None
+            seen.add(cursor)
+            after = cursor
+        return None
+
     def get_positions_raw(self) -> Optional[list[dict]]:
         code, body = self._rest("GET", f"{self._trade_base}/v2/positions")
         return body if code == 200 and isinstance(body, list) else None

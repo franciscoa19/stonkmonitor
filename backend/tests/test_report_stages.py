@@ -35,6 +35,7 @@ def report(tmp_path, monkeypatch):
 
     async def send_alert(title, message):
         calls.notify.append(title)
+        return True
 
     monkeypatch.setattr(daily_report, "build_report_data", build)
     monkeypatch.setattr(daily_report, "export_history", export)
@@ -94,6 +95,81 @@ async def test_publish_stage_is_skipped_when_git_push_is_off(report, monkeypatch
                                              auto_trade_pattern_threshold=9.5))
     await main.generate_daily_report(scheduled=True)
     assert calls.push == [] and main._report_complete(reports, DAY)
+
+
+@pytest.mark.parametrize("failure", ["transport", "http", "rejected", "invalid_json"])
+async def test_real_notifier_failure_retries_only_notification(report, monkeypatch, failure):
+    """Exercise the real adapter; a mock that raises misses swallowed failures."""
+    from notifications import pushover as module
+    main, calls, reports = report
+    requests, closed, timeouts = [], [], []
+    failing = True
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            self.status = 503 if failing and failure == "http" else 200
+            return self
+
+        async def __aexit__(self, *args):
+            closed.append(True)
+
+        async def json(self):
+            if failing and failure == "invalid_json":
+                raise ValueError("bad JSON")
+            return {"status": 0 if failing and failure == "rejected" else 1}
+
+    class Session:
+        def __init__(self, *, timeout):
+            timeouts.append(timeout.total)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def post(self, url, data):
+            requests.append(data["title"])
+            if failing and failure == "transport":
+                raise OSError("offline")
+            return Response()
+
+    monkeypatch.setattr(module.aiohttp, "ClientSession", Session)
+    monkeypatch.setattr(main, "pushover", module.PushoverNotifier("local-fake-token", "local-fake-user"))
+    await main.generate_daily_report(scheduled=True)
+    state = main._load_report_state(reports, DAY)
+    assert state["exported"] and state["published"]
+    assert not state["notified"] and not state["complete"]
+
+    failing = False
+    assert await main.generate_daily_report(scheduled=True) == {"resumed": True, "day": DAY, "complete": True}
+    assert main._report_complete(reports, DAY)
+    # The scheduler stops retrying once the durable completion check passes.
+    assert (calls.build, calls.export, len(calls.push), len(requests)) == (1, 1, 1, 2)
+    assert timeouts == [10, 10]
+    assert len(closed) == (1 if failure == "transport" else 2)
+
+
+async def test_disabled_pushover_completes_without_attempting_a_send(report, monkeypatch):
+    main, calls, reports = report
+    monkeypatch.setattr(main.pushover, "enabled", False)
+    await main.generate_daily_report(scheduled=True)
+    assert main._report_complete(reports, DAY) and calls.notify == []
+
+
+async def test_notification_exception_clears_previous_manual_success(report, monkeypatch):
+    main, calls, reports = report
+    await main.generate_daily_report(scheduled=True)
+
+    async def failed(*args):
+        raise OSError("offline")
+
+    monkeypatch.setattr(main.pushover, "send_alert", failed)
+    state = main._load_report_state(reports, DAY)
+    await main._finish_report(reports, DAY, state, always_notify=True)
+    assert not state["notified"] and not state["complete"]
 
 
 def test_a_report_from_before_stage_tracking_counts_as_complete(tmp_path):

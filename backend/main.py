@@ -17,6 +17,7 @@ from db import Database
 from feeds.unusual_whales import UnusualWhalesClient
 from feeds.alpaca_feed import AlpacaFeed
 from trading.alpaca_trader import AlpacaTrader
+from trading.performance import sync_trade_performance
 from signals.engine import SignalEngine
 from signals.patterns import PatternEngine
 from signals.auto_trade import AutoTradeEngine
@@ -804,40 +805,16 @@ async def alpaca_position_monitor():
 async def performance_sync_loop():
     """Sync Alpaca order history into trade_performance table every 15 min.
 
-    Pulls closed orders from Alpaca and upserts them into the DB so we have
-    a complete record of all fills for performance evaluation.
+    Syncs closed and active orders plus individual FILL activities, including
+    canceled partial executions, before recomputing FIFO performance.
     """
     await asyncio.sleep(60)  # let startup finish
 
     while True:
         try:
             await auto_trade.reconcile_submissions()
-            orders = await asyncio.to_thread(trader.get_order_history, days=90, limit=500)
-            for o in orders:
-                # Extract underlying ticker from OCC symbol or use symbol directly
-                sym = o["symbol"]
-                # OCC options symbols are long (e.g. AAPL260424C00150000)
-                ticker = sym[:6].rstrip("0123456789") if len(sym) > 10 else sym
-                is_option = len(sym) > 10
-
-                await db.upsert_trade_performance(
-                    alpaca_order_id=o["id"],
-                    symbol=sym,
-                    ticker=ticker,
-                    side=o["side"],
-                    qty=o["qty"],
-                    filled_qty=o["filled_qty"],
-                    filled_avg_price=o["filled_avg"] or 0,
-                    order_type=o["type"],
-                    order_status=o["status"],
-                    submitted_at=o["created_at"],
-                    filled_at=o.get("filled_at"),
-                    trade_type="option" if is_option else "equity",
-                )
-            if orders:
-                logger.debug(f"Performance sync: upserted {len(orders)} orders")
             # Book realized P&L for bracket/server-side exits that never hit record_exit.
-            reconciled = await db.reconcile_trades()
+            reconciled = await sync_trade_performance(db, trader)
             if reconciled:
                 logger.debug(f"Performance sync: reconciled {reconciled} closed trades")
         except Exception as e:
@@ -1993,10 +1970,15 @@ async def _finish_report(reports_dir, day: str, state: dict, always_notify: bool
     if always_notify or not state.get("notified"):
         try:
             if pushover.enabled:
-                await pushover.send_alert(state.get("title", "StonkMonitor daily check-in"),
-                                          state.get("summary", ""))
-            state["notified"] = True
+                state["notified"] = bool(await pushover.send_alert(
+                    state.get("title", "StonkMonitor daily check-in"),
+                    state.get("summary", "")))
+                if not state["notified"]:
+                    logger.warning("Daily report %s: notification failed — will retry", day)
+            else:
+                state["notified"] = True
         except Exception as e:
+            state["notified"] = False
             logger.warning(f"Report Pushover send failed: {e}")
     state["complete"] = bool(state.get("exported") and state.get("notified")
                              and (state.get("published") or not settings.report_git_push))

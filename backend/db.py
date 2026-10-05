@@ -12,6 +12,7 @@ Tables (one per feed + signals + pattern_hits):
 import json
 import asyncio
 import logging
+import math
 import aiosqlite
 from datetime import datetime, timezone, date, timedelta
 from market_time import et_today
@@ -246,6 +247,19 @@ CREATE INDEX IF NOT EXISTS idx_tp_symbol    ON trade_performance(symbol);
 CREATE INDEX IF NOT EXISTS idx_tp_ticker    ON trade_performance(ticker);
 CREATE INDEX IF NOT EXISTS idx_tp_status    ON trade_performance(order_status);
 CREATE INDEX IF NOT EXISTS idx_tp_created   ON trade_performance(created_at DESC);
+
+-- Individual broker executions, including canceled/active partial orders.
+CREATE TABLE IF NOT EXISTS trade_fills (
+    activity_id     TEXT PRIMARY KEY,
+    alpaca_order_id TEXT NOT NULL,
+    symbol          TEXT NOT NULL,
+    side            TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+    qty             REAL NOT NULL CHECK (qty > 0),
+    price           REAL NOT NULL CHECK (price > 0),
+    executed_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tf_order ON trade_fills(alpaca_order_id);
+CREATE INDEX IF NOT EXISTS idx_tf_symbol_time ON trade_fills(symbol, executed_at, activity_id);
 
 CREATE TABLE IF NOT EXISTS watchlist (
     ticker     TEXT PRIMARY KEY,               -- upper-cased symbol, scanned for IV + earnings
@@ -1700,7 +1714,81 @@ class Database:
         return int(result["n"])
 
     # ── Write/Read: Trade Performance ──────────────────────────────────────
-    async def upsert_trade_performance(self, **kwargs):
+    async def get_performance_orders(self) -> list[dict]:
+        """All persisted order snapshots; a bounded UI history is insufficient."""
+        return await self._query("SELECT * FROM trade_performance", strict=True)
+
+    async def get_trade_fill_sync_start(self) -> Optional[str]:
+        """First sync reads all history; later syncs overlap by at least a day.
+
+        Order/activity quantity gaps pull the start back to the affected order,
+        including partial fills arriving late. A watermark advances only after
+        a complete broker fetch has been persisted.
+        """
+        meta = await self._scalar(
+            "SELECT value FROM db_meta WHERE key='trade_fill_sync_at'", strict=True)
+        if not meta:
+            return None
+        start = datetime.fromisoformat(meta["value"]) - timedelta(days=1)
+        gaps = await self._query(
+            """SELECT t.submitted_at, t.filled_at FROM trade_performance t
+               LEFT JOIN (SELECT alpaca_order_id, SUM(qty) AS qty FROM trade_fills
+                          GROUP BY alpaca_order_id) f ON f.alpaca_order_id=t.alpaca_order_id
+               WHERE ABS(COALESCE(t.filled_qty,0) - COALESCE(f.qty,0)) > 0.00000001""", strict=True)
+        for row in gaps:
+            for field in ("submitted_at", "filled_at"):
+                if row.get(field):
+                    at = datetime.fromisoformat(row[field].replace("Z", "+00:00"))
+                    start = min(start, at.replace(tzinfo=at.tzinfo or timezone.utc))
+        # 'after' is exclusive; pad the earliest date rather than lose a fill
+        # exactly at an order's submitted_at (or exactly at midnight).
+        return (start.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                - timedelta(days=1)).isoformat()
+
+    async def mark_trade_fill_sync(self, started_at: str) -> None:
+        await self._exec(
+            """INSERT INTO db_meta (key, value) VALUES ('trade_fill_sync_at', ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (started_at,), strict=True)
+
+    async def record_trade_fills(self, activities: list[dict]) -> None:
+        """Persist a complete, validated activity batch atomically and by ID.
+
+        Alpaca's qty/price are for each execution, not the order's cumulative
+        filled quantity/average. Replayed pages and restarts cannot duplicate
+        fills. Broker corrections replace the same activity's previous values.
+        """
+        values = []
+        for a in activities:
+            qty, price = float(a["qty"]), float(a["price"])
+            at = datetime.fromisoformat(a["transaction_time"].replace("Z", "+00:00"))
+            at = at.replace(tzinfo=at.tzinfo or timezone.utc).astimezone(timezone.utc)
+            if (not all(isinstance(a.get(k), str) and a[k] for k in ("id", "order_id", "symbol"))
+                    or a.get("side") not in ("buy", "sell")
+                    or not math.isfinite(qty) or not math.isfinite(price) or qty <= 0 or price <= 0):
+                raise ValueError("Invalid broker fill activity")
+            values.append((a["id"], a["order_id"], a["symbol"], a["side"], qty, price, at.isoformat()))
+        if not values:
+            return
+        async with self._write_lock:
+            try:
+                async with self._conn.executemany(
+                    """INSERT INTO trade_fills
+                       (activity_id, alpaca_order_id, symbol, side, qty, price, executed_at)
+                       VALUES (?,?,?,?,?,?,?)
+                       ON CONFLICT(activity_id) DO UPDATE SET
+                         alpaca_order_id=excluded.alpaca_order_id, symbol=excluded.symbol,
+                         side=excluded.side, qty=excluded.qty, price=excluded.price,
+                         executed_at=excluded.executed_at""", values):
+                    pass
+                await self._conn.commit()
+            except BaseException:
+                try:
+                    await self._conn.rollback()
+                except Exception:
+                    await self._conn.close()
+                raise
+
+    async def upsert_trade_performance(self, *, strict: bool = False, **kwargs):
         """Insert or update a trade performance record by alpaca_order_id."""
         order_id = kwargs.get("alpaca_order_id")
         if not order_id:
@@ -1708,7 +1796,7 @@ class Database:
         now = datetime.utcnow().isoformat()
         # Check if exists
         existing = await self._query(
-            "SELECT id FROM trade_performance WHERE alpaca_order_id=?", (order_id,)
+            "SELECT id FROM trade_performance WHERE alpaca_order_id=?", (order_id,), strict=strict
         )
         if existing:
             # Update mutable fields
@@ -1723,7 +1811,7 @@ class Database:
                 params = list(cols.values()) + [order_id]
                 await self._exec(
                     f"UPDATE trade_performance SET {set_clause} WHERE alpaca_order_id=?",
-                    params
+                    params, strict=strict
                 )
         else:
             # Attribution: pull the strategy that queued this order (joined on the
@@ -1731,7 +1819,7 @@ class Database:
             strategy = ""
             pend = await self._query(
                 "SELECT strategy FROM pending_trades WHERE alpaca_order_id=? LIMIT 1",
-                (order_id,),
+                (order_id,), strict=strict,
             )
             if pend:
                 strategy = pend[0].get("strategy") or ""
@@ -1759,7 +1847,7 @@ class Database:
                     strategy,
                     _et_hour(kwargs.get("submitted_at", "")),
                     now, now,
-                ),
+                ), strict=strict,
             )
 
     async def record_exit(self, symbol: str, exit_price: float, exit_reason: str,
@@ -1784,98 +1872,123 @@ class Database:
                  hold_minutes, now, rows[0]["id"]),
             )
 
-    async def reconcile_trades(self) -> int:
-        """Book realized P&L for entries closed by *server-side* exits (bracket
-        TP/SL fills), which never call record_exit(). Writes the result onto the
-        buy (entry) row so it carries the strategy attribution. Options use a
-        ×100 multiplier.
+    async def reconcile_trades(self, *, require_fills: bool = False) -> int:
+        """Match executions FIFO and attribute realized long P&L to buy orders.
 
-        Fills are matched FIFO within a symbol: each sell closes the oldest
-        still-open buy lots, and a buy row carries only the P&L of the quantity
-        actually sold out of it. Pooling a symbol's whole history into one
-        average (the previous behaviour) wrote the same total onto every buy
-        row — two round trips of +$100 each reported +$400 — and a later open
-        buy rewrote an earlier closed trade's basis.
+        The broker sync requires the actual activity ledger. Legacy callers may
+        use completed order snapshots only when a symbol has no activities;
+        partial orders never use submission time as an execution timestamp.
+        Incomplete activity coverage defers the whole symbol, preserving its
+        last result until the broker catches up. Options use a ×100 multiplier.
 
-        A sell with no open lot ahead of it (a short opened first, or an entry
-        older than the sync window) stays unmatched rather than being paired
-        with a later buy. Idempotent: rows are written only when their values
-        change. Returns the number of entry rows written.
+        Unmatched sells establish short inventory. Later buys cover that first,
+        so only their excess can become long lots. Short P&L remains outside the
+        existing long-entry metrics. Returns the number of buy rows changed.
         """
-        rows = await self._query(
-            """SELECT id, symbol, side, filled_qty, filled_avg_price,
-                      COALESCE(filled_at, submitted_at) AS at,
-                      realized_pnl, realized_pnl_pct, exit_price, exit_reason
-               FROM trade_performance
-               WHERE filled_qty > 0 AND filled_avg_price > 0
-               ORDER BY symbol, COALESCE(filled_at, submitted_at), id""",
-        )
+        from collections import deque
+
+        rows = await self.get_performance_orders()
+        activities = await self._query("SELECT * FROM trade_fills", strict=True)
+        by_order: dict[str, list[dict]] = {}
+        for a in activities:
+            by_order.setdefault(a["alpaca_order_id"], []).append(a)
         by_symbol: dict[str, list[dict]] = {}
         for r in rows:
-            by_symbol.setdefault(r["symbol"], []).append(r)
+            if (r["filled_qty"] or 0) > 0 or r["alpaca_order_id"] in by_order:
+                by_symbol.setdefault(r["symbol"], []).append(r)
 
-        # Reasons this function owns. Anything else (tp1/sl/manual…) was set by
-        # an explicit exit and is never overwritten or cleared here.
         own_reasons = (None, "", "closed_win", "closed_loss")
         updated = 0
         now = datetime.utcnow().isoformat()
-        for symbol, fills in by_symbol.items():
-            mult = 100 if _is_occ(symbol) else 1
-            lots: list[dict] = []
-            for f in fills:
-                qty, price = float(f["filled_qty"]), float(f["filled_avg_price"])
-                if f["side"] == "buy":
-                    lots.append({"row": f, "price": price, "open": qty,
-                                 "sold": 0.0, "proceeds": 0.0, "exit_at": None})
-                    continue
-                if f["side"] != "sell":
-                    continue
-                for lot in lots:
-                    if qty <= 0:
+        for symbol, orders in by_symbol.items():
+            use_activities = require_fills or any(o["alpaca_order_id"] in by_order for o in orders)
+            fills = []
+            complete = True
+            for row in orders:
+                order_fills = by_order.get(row["alpaca_order_id"], [])
+                if use_activities:
+                    qty = sum(f["qty"] for f in order_fills)
+                    if (not order_fills or not math.isclose(qty, row["filled_qty"] or 0, abs_tol=1e-8, rel_tol=1e-8)
+                            or any(f["symbol"] != symbol or f["side"] != row["side"] for f in order_fills)):
+                        complete = False
                         break
-                    take = min(qty, lot["open"])
-                    if take <= 0:
-                        continue
-                    lot["open"] -= take
-                    lot["sold"] += take
-                    lot["proceeds"] += take * price
-                    lot["exit_at"] = f["at"]
-                    qty -= take
+                    fills.extend({**f, "row": row, "at": f["executed_at"]} for f in order_fills)
+                else:
+                    if (row["order_status"] != "filled" or not row["filled_at"]
+                            or not math.isfinite(row["filled_avg_price"] or 0) or (row["filled_avg_price"] or 0) <= 0):
+                        complete = False
+                        break
+                    try:
+                        at = datetime.fromisoformat(row["filled_at"].replace("Z", "+00:00"))
+                        at = at.replace(tzinfo=at.tzinfo or timezone.utc).astimezone(timezone.utc).isoformat()
+                    except (TypeError, ValueError):
+                        complete = False
+                        break
+                    fills.append({"row": row, "side": row["side"], "qty": row["filled_qty"],
+                                  "price": row["filled_avg_price"], "at": at,
+                                  "activity_id": f"{row['id']:020d}"})
+            if not complete:
+                logger.warning("Performance reconciliation deferred for %s: incomplete fill history", symbol)
+                continue
+            fills.sort(key=lambda f: (f["at"], f["activity_id"]))
+            lots = deque()
+            short_qty = 0.0
+            stats = {r["id"]: {"sold": 0.0, "cost": 0.0, "proceeds": 0.0, "hold": 0.0}
+                     for r in orders if r["side"] == "buy"}
+            for f in fills:
+                qty, price = f["qty"], f["price"]
+                if f["side"] == "buy":
+                    cover = min(qty, short_qty)
+                    short_qty -= cover
+                    qty -= cover
+                    if qty > 1e-8:
+                        lots.append({"id": f["row"]["id"], "price": price, "open": qty, "at": f["at"]})
+                elif f["side"] == "sell":
+                    while qty > 1e-8 and lots:
+                        lot = lots[0]
+                        take = min(qty, lot["open"])
+                        s = stats[lot["id"]]
+                        s["sold"] += take
+                        s["cost"] += take * lot["price"]
+                        s["proceeds"] += take * price
+                        s["hold"] += take * _minutes_between(lot["at"], f["at"])
+                        lot["open"] -= take
+                        qty -= take
+                        if lot["open"] <= 1e-8:
+                            lots.popleft()
+                    short_qty += max(qty, 0.0)
 
-            for lot in lots:
-                row = lot["row"]
-                if lot["sold"] <= 0:
-                    # Still fully open. Clear a P&L the pooled scheme booked here.
+            mult = 100 if _is_occ(symbol) else 1
+            for row in orders:
+                if row["side"] != "buy":
+                    continue
+                s = stats[row["id"]]
+                if s["sold"] <= 0:
+                    # Clear stale matcher P&L on open entries and short covers.
                     if row["realized_pnl"] is not None and row["exit_reason"] in ("closed_win", "closed_loss"):
                         await self._exec(
                             """UPDATE trade_performance
                                SET realized_pnl=NULL, realized_pnl_pct=NULL, exit_price=NULL,
                                    exit_reason=NULL, hold_minutes=NULL, updated_at=?
-                               WHERE id=?""", (now, row["id"]))
+                               WHERE id=?""", (now, row["id"]), strict=True)
                         updated += 1
                     continue
-                avg_exit = lot["proceeds"] / lot["sold"]
-                pnl = round((avg_exit - lot["price"]) * lot["sold"] * mult, 2)
-                pnl_pct = round((avg_exit / lot["price"] - 1) * 100, 2)
-                exit_price = round(avg_exit, 4)
-                if (row["realized_pnl"], row["realized_pnl_pct"], row["exit_price"]) == (pnl, pnl_pct, exit_price):
-                    continue
+                pnl = round((s["proceeds"] - s["cost"]) * mult, 2)
+                pnl_pct = round((s["proceeds"] / s["cost"] - 1) * 100, 2)
+                exit_price = round(s["proceeds"] / s["sold"], 4)
+                hold = round(s["hold"] / s["sold"], 1)
                 reason = "closed_win" if pnl >= 0 else "closed_loss"
-                hold = _minutes_between(row["at"], lot["exit_at"])
-                if row["exit_reason"] in own_reasons:
-                    await self._exec(
-                        """UPDATE trade_performance
-                           SET realized_pnl=?, realized_pnl_pct=?, exit_price=?,
-                               exit_reason=?, hold_minutes=?, updated_at=?
-                           WHERE id=?""",
-                        (pnl, pnl_pct, exit_price, reason, hold, now, row["id"]))
-                else:
-                    await self._exec(
-                        """UPDATE trade_performance
-                           SET realized_pnl=?, realized_pnl_pct=?, exit_price=?,
-                               hold_minutes=COALESCE(hold_minutes, ?), updated_at=?
-                           WHERE id=?""",
-                        (pnl, pnl_pct, exit_price, hold, now, row["id"]))
+                if row["exit_reason"] not in own_reasons:
+                    reason = row["exit_reason"]
+                    hold = row["hold_minutes"] if row["hold_minutes"] is not None else hold
+                if (row["realized_pnl"], row["realized_pnl_pct"], row["exit_price"],
+                        row["exit_reason"], row["hold_minutes"]) == (pnl, pnl_pct, exit_price, reason, hold):
+                    continue
+                await self._exec(
+                    """UPDATE trade_performance
+                       SET realized_pnl=?, realized_pnl_pct=?, exit_price=?,
+                           exit_reason=?, hold_minutes=?, updated_at=? WHERE id=?""",
+                    (pnl, pnl_pct, exit_price, reason, hold, now, row["id"]), strict=True)
                 updated += 1
         return updated
 

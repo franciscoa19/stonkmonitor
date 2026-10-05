@@ -84,10 +84,10 @@ class PushoverNotifier:
         except Exception as e:
             logger.error(f"Pushover send error: {e}")
 
-    async def send_alert(self, title: str, message: str, priority: int = 0):
-        """Send a manual/custom push notification."""
+    async def send_alert(self, title: str, message: str, priority: int = 0) -> bool:
+        """Return True only when Pushover confirms acceptance of the alert."""
         if not self.enabled:
-            return
+            return False
         payload = {
             "token":    self.api_token,
             "user":     self.user_key,
@@ -96,7 +96,17 @@ class PushoverNotifier:
             "priority": priority,
         }
         try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(PUSHOVER_API, data=payload)
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.post(PUSHOVER_API, data=payload) as resp:
+                    if resp.status != 200:
+                        logger.error("Pushover alert rejected: HTTP %s", resp.status)
+                        return False
+                    body = await resp.json()
+                    accepted = isinstance(body, dict) and body.get("status") == 1
+                    if not accepted:
+                        logger.error("Pushover alert was not accepted")
+                    return accepted
         except Exception as e:
-            logger.error(f"Pushover alert error: {e}")
+            # Avoid logging response bodies or request details containing keys.
+            logger.error("Pushover alert error: %s", type(e).__name__)
+            return False
