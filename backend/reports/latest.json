@@ -1,14 +1,14 @@
 {
-  "generated": "2026-10-03T01:14:15.893601+00:00",
+  "generated": "2026-10-05T12:04:35.922799+00:00",
   "account": {
-    "equity": 52157.59,
-    "cash": 52157.59,
-    "buying_power": 208630.36,
+    "equity": 52156.97,
+    "cash": 52156.97,
+    "buying_power": 208627.88,
     "start_equity": 49992.8,
-    "total_pnl": 2164.7899999999936,
-    "total_pnl_pct": 4.330203549311087,
+    "total_pnl": 2164.1699999999983,
+    "total_pnl_pct": 4.328963370725381,
     "open_positions": 0,
-    "days_running": 24,
+    "days_running": 27,
     "error": null
   },
   "metrics": {
@@ -126,6 +126,18 @@
     {
       "date": "2026-10-02",
       "equity": 52157.59
+    },
+    {
+      "date": "2026-10-03",
+      "equity": 52156.97
+    },
+    {
+      "date": "2026-10-04",
+      "equity": 52156.97
+    },
+    {
+      "date": "2026-10-05",
+      "equity": 52156.97
     }
   ],
   "iv_rv": {
@@ -188,11 +200,17 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 0,
-    "structures_attempted": 0,
+    "events": 1,
+    "structures_attempted": 5,
     "structures_priced": 0,
-    "priced_pct": null,
-    "dropped_variants": {}
+    "priced_pct": 0.0,
+    "dropped_variants": {
+      "condor_0.7sd": 1,
+      "condor_1.0sd": 1,
+      "condor_1.3sd": 1,
+      "fly": 1,
+      "straddle": 1
+    }
   },
   "implied_vs_realized": {
     "watchlist": {
@@ -245,8 +263,8 @@
     "closes_counted": 0
   },
   "heartbeat": {
-    "last_seen": "2026-10-03T01:13:50.931055",
-    "age_minutes": 0.4,
+    "last_seen": "2026-10-05T12:04:36.688637",
+    "age_minutes": 0.0,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -256,6 +274,7 @@
   "recent": [],
   "open_positions": [],
   "proposals": [
-    "No closed trades in 24 days. Note the flow/pattern engine is OFF (AUTO_TRADE_FLOW_ENABLED=false), so AUTO_TRADE_SCORE_THRESHOLD is not the constraint \u2014 lowering it would change nothing. The live path is the IV/earnings condor: widen the watchlist or relax the scanner gates to grow the sample."
+    "Watchlist review: no changes \u2014 all 78 names active; no strong un-watchlisted names.",
+    "No closed trades in 27 days. Note the flow/pattern engine is OFF (AUTO_TRADE_FLOW_ENABLED=false), so AUTO_TRADE_SCORE_THRESHOLD is not the constraint \u2014 lowering it would change nothing. The live path is the IV/earnings condor: widen the watchlist or relax the scanner gates to grow the sample."
   ]
 }
