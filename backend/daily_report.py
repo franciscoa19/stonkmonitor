@@ -17,6 +17,9 @@ import html as _html
 import asyncio
 
 from market_time import et_today
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def report_day(d: dict) -> str:
@@ -72,7 +75,7 @@ def _condor_rollups(condors: list, positions: list) -> list[dict]:
     return out
 
 
-async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
+async def build_report_data(db, trader, thresholds: dict | None = None, settings=None) -> dict:
     thresholds = thresholds or {}
     now = datetime.now(timezone.utc)
 
@@ -88,6 +91,17 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         positions = await asyncio.to_thread(trader.get_positions) or []
     except Exception:
         positions = []
+
+    # ── Account-wide limits: risk in use and free cash against their caps ──
+    # None when it cannot be read; the report never invents these.
+    account_risk = None
+    if settings is not None:
+        try:
+            from trading.account_risk import account_limits_snapshot
+            limits = await account_limits_snapshot(db, trader, settings)
+            account_risk = {key: round(float(value), 4) for key, value in limits.items()}
+        except Exception as e:
+            logger.info("Report: account limits unavailable (%s)", e)
 
     # ── Equity curve ─────────────────────────────────────────────────────
     curve = await db.get_daily_equity(90)
@@ -327,6 +341,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
                     "avg_win": avg_win, "avg_loss": avg_loss,
                     "realized_total": realized_total, "avg_hold_min": avg_hold_min,
                     "trades_7d": trades_7d, "trades_per_day": trades_per_day},
+        "account_risk": account_risk,
         "activity": {"tag": activity[0], "note": activity[1]},
         "equity_curve": [{"date": r["date"], "equity": float(r["equity"])} for r in curve],
         "iv_rv": iv_rv,
@@ -718,6 +733,19 @@ def render_html(d: dict) -> str:
                        "Percentage unavailable: net contributions are not positive")
     baseline_label = "net contributions" if a.get("baseline") == "net_deposits" else "start"
     mode_label = "Paper" if a.get("paper") is True else "Live" if a.get("paper") is False else "Broker"
+    ar = d.get("account_risk")
+    if ar:
+        risk_cls = "down" if ar["open_risk"] > ar["risk_cap"] else ""
+        cash_cls = "down" if ar["free_cash"] < ar["cash_reserve"] else ""
+        risk_kpis = (
+            f'<div class="kpi"><div class="k">Risk in use</div>'
+            f'<div class="v {risk_cls}">{ar["open_risk_pct"] * 100:.1f}%</div>'
+            f'<div class="n">${ar["open_risk"]:,.0f} · cap {ar["max_risk_pct"] * 100:.0f}%</div></div>'
+            f'<div class="kpi"><div class="k">Free cash</div>'
+            f'<div class="v {cash_cls}">{ar["free_cash_pct"] * 100:.0f}%</div>'
+            f'<div class="n">${ar["free_cash"]:,.0f} · reserve {ar["cash_reserve_pct"] * 100:.0f}%</div></div>')
+    else:
+        risk_kpis = ""
     pf = m["profit_factor"]
     pf_disp = "—" if m["closed_trades"] == 0 else (f"{pf:.2f}" if pf < 999 else "∞")
     act_cls = {"QUIET": "mut", "MEASURED": "good", "HEAVY": "warn"}.get(act["tag"], "mut")
@@ -795,6 +823,7 @@ def render_html(d: dict) -> str:
     <div class="kpi"><div class="k">Win rate</div><div class="v">{(str(round(m['win_rate']))+'%') if m['closed_trades'] else '—'}</div><div class="n">PF {pf_disp}</div></div>
     <div class="kpi"><div class="k">Entries / day</div><div class="v">{m['trades_per_day']:.1f}</div><div class="n">{m['trades_7d']} in 7d</div></div>
     <div class="kpi"><div class="k">Open positions</div><div class="v">{a['open_positions']}</div><div class="n">avg hold {_hold(m['avg_hold_min'])}</div></div>
+    {risk_kpis}
   </div>
 
   <div class="card"><h2>Activity read</h2><div style="font-size:14px">{e(act['note'])}</div></div>

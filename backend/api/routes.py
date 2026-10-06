@@ -428,7 +428,7 @@ async def get_daily_report(format: str = "json"):
     data = await build_report_data(db, trader, thresholds={
         "score": settings.auto_trade_score_threshold,
         "pattern": settings.auto_trade_pattern_threshold,
-    })
+    }, settings=settings)
     if format == "html":
         from fastapi.responses import HTMLResponse
         return HTMLResponse(render_html(data))
@@ -453,6 +453,18 @@ async def get_current_positions_with_pnl():
     """Get current Alpaca positions with real-time P&L."""
     from main import trader as t
     return await asyncio.to_thread(t.get_positions)
+
+
+@router.get("/risk/account")
+async def get_account_risk():
+    """Risk in use and free cash against the account-wide limits (read-only)."""
+    from main import db, trader, settings
+    from trading.account_risk import account_limits_snapshot
+    try:
+        limits = await account_limits_snapshot(db, trader, settings)
+    except Exception as e:
+        raise HTTPException(503, f"Account limits unavailable: {e}")
+    return {key: round(float(value), 4) for key, value in limits.items()}
 
 
 @router.get("/trade/filters")

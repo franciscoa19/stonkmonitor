@@ -21,7 +21,7 @@ def report(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "__file__", str(tmp_path / "backend" / "main.py"))
     calls = NS(build=0, export=0, push=[], notify=[], export_error=None, push_ok=True)
 
-    async def build(db, trader, thresholds=None):
+    async def build(db, trader, thresholds=None, settings=None):
         calls.build += 1
         return {"generated": f"{DAY}T12:00:05+00:00", "proposals": [],
                 "account": {"equity": 50000.0, "total_pnl_pct": 0.0, "open_positions": 0, "error": None},

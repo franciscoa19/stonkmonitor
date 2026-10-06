@@ -104,6 +104,33 @@ keeps its own history. Note that `backend/reports/` and `REPORT_GIT_PUSH` are
 not per-account: with a live account they would publish its balances and trades
 to this repository.
 
+## Account-wide limits
+
+Two settings in `backend/.env` bound the whole account, whatever the per-trade
+settings say. Both are fractions of **current** equity and are checked at every
+automated entry (condors and flow trades):
+
+    ACCOUNT_MAX_RISK_PCT=0.30       # most the account may have at risk at once
+    ACCOUNT_CASH_RESERVE_PCT=0.20   # free cash a new entry must leave (0 = off)
+
+"At risk" is the remaining max loss of every open or pending condor, the cost of
+queued flow entries, and the current value of any other holding — including
+positions bought by hand. "Free cash" is the lower of cash and the buying power
+that funds the entry. A new entry is made smaller to fit, or skipped; nothing is
+ever closed to get back under a limit. If a balance or a position cannot be
+read, the entry is skipped.
+
+The defaults match what `IV_EXEC_RISK_PCT` (10%) x `IV_EXEC_MAX_POSITIONS` (3)
+already allowed, so they only bite after a drawdown or withdrawal, or when
+something else is using the budget. Lower them for a tighter account-wide limit.
+Current use, without touching anything:
+
+    curl -s http://localhost:8000/api/risk/account
+
+The daily report shows the same two figures. Log lines to look for:
+`IV-exec skip …: account risk cap reached`, `cash reserve reached`, and
+`size reduced to xN by the account risk cap / cash reserve`.
+
 ## Flow-entry sizing (flow trading is off by default)
 
 Flow entries floor quantities to the percentage budget and revalidate them

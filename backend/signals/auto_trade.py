@@ -518,75 +518,41 @@ class AutoTradeEngine:
         return self._affordable_quantity(self._risk_budget(equity, risk_pct), price)
 
     async def _submission_size(self, suggestion, trade_id: int) -> tuple[int, float]:
-        """Size only an unsubmitted card; account funds already reserve listed
-        broker orders, while local entries missing from that list reserve here."""
+        """Size only an unsubmitted card, from fresh funds and the account-wide
+        limits (trading/account_risk.py): the per-trade percentage, what the
+        account may still put at risk, and the free cash above the reserve.
+        The quantity on the card is a ceiling; this only ever reduces it."""
+        from trading.account_risk import account_limits
+        # Orders, then positions, then the balance: an order the broker lists is
+        # already out of the buying power it reports, so the balance must be the
+        # newest of the three. Never the older one used to build the card.
         orders = await asyncio.to_thread(self._trader.get_open_orders_raw)
         if orders is None:
             raise DatabaseError("Open-order snapshot unavailable for sizing")
-        known_orders, known_clients = set(), set()
-        for order in orders:
-            if not isinstance(order, dict) or not order.get("id"):
-                raise DatabaseError("Malformed open-order sizing snapshot")
-            known_orders.add(order["id"])
-            if order.get("client_order_id"):
-                known_clients.add(order["client_order_id"])
-
         manual_unknown = await self._db._query(
             "SELECT 1 FROM manual_order_requests WHERE status IN ('submitting','pending') LIMIT 1",
             strict=True)
         if manual_unknown:
             raise DatabaseError("A manual order outcome is unresolved; new flow entries are deferred")
-        reserved = 0.0
-        ns = await self._db.order_namespace()
-        for row in await self._db.get_entry_reservations():
-            if row["id"] == trade_id:
-                continue
-            if (row.get("alpaca_order_id") in known_orders or any(
-                    f"sm-{ns}-trade-{row['id']}-{kind}" in known_clients for kind in ("bracket", "limit"))):
-                continue  # already reflected in the broker's available funds
-            if row.get("trade_type") not in ("option", "equity", "equity_long"):
-                raise DatabaseError("Unknown pending entry reservation type")
-            multiplier = 100 if row["trade_type"] == "option" else 1
-            try:
-                amount = float(row["qty"]) * float(row["limit_price"]) * multiplier
-            except (KeyError, TypeError, ValueError) as e:
-                raise DatabaseError("Unusable pending entry reservation") from e
-            if not isfinite(amount) or amount <= 0:
-                raise DatabaseError("Unusable pending entry reservation")
-            reserved += amount
-        for row in await self._db.get_active_condors():
-            if row["status"] != "pending_entry":
-                continue
-            if (row.get("entry_order_id") in known_orders
-                    or f"sm-{ns}-condor-{row['id']}-entry" in known_clients):
-                continue
-            try:
-                amount = float(row["qty"]) * float(row["max_loss"])
-            except (KeyError, TypeError, ValueError) as e:
-                raise DatabaseError("Unusable pending condor reservation") from e
-            if not isfinite(amount) or amount <= 0:
-                raise DatabaseError("Unusable pending condor reservation")
-            reserved += amount
-
-        # Read funds after the reservation snapshot: never size from the older
-        # balance used to build the card or from leveraged stock buying power.
+        if suggestion.trade_type not in ("option", "equity", "equity_long"):
+            raise DatabaseError("Unknown trade type for percentage sizing")
+        positions = await asyncio.to_thread(self._trader.get_positions_raw)
+        if positions is None:
+            raise DatabaseError("Position snapshot unavailable for sizing")
         account = await asyncio.to_thread(self._trader.get_account)
         equity = self._verified_equity(account)
         if equity <= 0 or account.get("trading_blocked") or account.get("account_blocked"):
             raise DatabaseError("Verified tradable account balance unavailable")
         self._cached_equity = equity
-        if suggestion.trade_type not in ("option", "equity", "equity_long"):
-            raise DatabaseError("Unknown trade type for percentage sizing")
-        field = "options_buying_power" if suggestion.trade_type == "option" else "non_marginable_buying_power"
-        try:
-            funds = [float(account[key]) for key in ("cash", field)]
-        except (KeyError, TypeError, ValueError) as e:
-            raise DatabaseError("Verified cash/buying power unavailable") from e
-        if any(not isfinite(value) or value < 0 for value in funds):
-            raise DatabaseError("Verified cash/buying power unavailable")
+        is_option = suggestion.trade_type == "option"
+        # Options are funded from options buying power and stock from
+        # non-marginable buying power — never leveraged stock buying power.
+        limits = await account_limits(
+            self._db, account, positions, orders, self.settings,
+            asset="option" if is_option else "stock", exclude_trade_id=trade_id)
         pct = self.settings.equity_long_risk_pct if suggestion.trade_type == "equity_long" else None
-        budget = min(self._risk_budget(equity, pct), max(0.0, min(funds) - reserved))
-        multiplier = 100 if suggestion.trade_type == "option" else 1
+        budget = min(self._risk_budget(equity, pct), limits["cash_available"], limits["risk_headroom"])
+        multiplier = 100 if is_option else 1
         affordable, _ = self._affordable_quantity(budget, suggestion.limit_price, multiplier)
         qty = min(suggestion.qty, affordable)  # never increase what the user confirmed
         return qty, round(float(Decimal(str(suggestion.limit_price)) * multiplier * qty), 2)
@@ -1229,15 +1195,20 @@ class AutoTradeEngine:
                 return {"error": reason, "ambiguous": False}
             if autonomous and (not self.settings.alpaca_paper or not self._trader.paper):
                 return {"error": "Autonomous execution requires paper settings and broker", "ambiguous": False}
-            qty, risk = await self._submission_size(s, trade_id)
-            if qty < 1:
-                return {"error": "No quantity fits the current percentage budget and available funds", "ambiguous": False}
-            if self._circuit_breaker_active():
-                return {"error": f"Circuit breaker: daily P&L ${self._daily_pnl:+,.0f}", "ambiguous": False}
-            if self._ticker_in_cooldown(s.ticker):
-                return {"error": f"Cooldown: {s.ticker} had a recent losing exit", "ambiguous": False}
-            await self._db.update_pending_trade(trade_id, status="submitting", entry_order_status="unknown",
-                                               qty=qty, risk_amount=risk)
+            # Sized and claimed under the account entry lock: once the row is
+            # 'submitting' its cost counts against the limits for everyone else.
+            from trading.account_risk import entry_lock
+            async with entry_lock:
+                qty, risk = await self._submission_size(s, trade_id)
+                if qty < 1:
+                    return {"error": "No quantity fits the percentage budget, account limits and available funds",
+                            "ambiguous": False}
+                if self._circuit_breaker_active():
+                    return {"error": f"Circuit breaker: daily P&L ${self._daily_pnl:+,.0f}", "ambiguous": False}
+                if self._ticker_in_cooldown(s.ticker):
+                    return {"error": f"Cooldown: {s.ticker} had a recent losing exit", "ambiguous": False}
+                await self._db.update_pending_trade(trade_id, status="submitting", entry_order_status="unknown",
+                                                   qty=qty, risk_amount=risk)
             s.qty, s.risk_amount = qty, risk
             self._uncertain_submissions.add(trade_id)
             try:

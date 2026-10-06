@@ -977,7 +977,7 @@ async def maybe_execute_condor(setup):
     """
     from datetime import date as _date
     from market_time import et_now, et_today
-    from signals.iv_executor import build_iron_condor, is_pre_earnings_entry_window
+    from signals.iv_executor import is_pre_earnings_entry_window
     s = settings
     if not s.iv_exec_enabled:
         return
@@ -1035,22 +1035,59 @@ async def maybe_execute_condor(setup):
         logger.info("IV-exec skip: daily condor cap reached")
         return
 
+    # The account-wide limits are read and spent under one lock, so a condor and
+    # a flow entry cannot both use the same headroom.
+    from trading.account_risk import entry_lock
+    async with entry_lock:
+        await _open_condor(setup, s, ticker)
+
+
+async def _open_condor(setup, s, ticker: str):
+    """Size, persist and submit one condor (the caller holds the entry lock)."""
     from math import isfinite
-    acct = await asyncio.to_thread(trader.get_account)
-    try:
-        equity = float(acct["equity"]) if not acct.get("error") else 0
-    except (KeyError, TypeError, ValueError):
-        equity = 0
-    if not isfinite(equity) or equity <= 0:
+    from signals.iv_executor import build_iron_condor
+    from trading.account_risk import account_limits, describe
+    from trading.ownership import option_ownership
+
+    def verified_equity(account) -> float:
+        try:
+            value = float(account["equity"]) if not account.get("error") else 0.0
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return 0.0
+        return value if isfinite(value) and value > 0 else 0.0
+
+    # Cheapest gate first: with no readable balance there is nothing to size.
+    if verified_equity(await asyncio.to_thread(trader.get_account)) <= 0:
         logger.warning("IV-exec skip: verified broker equity unavailable")
         return
     if not await bind_broker_account():
         logger.warning("IV-exec skip: broker account not yet verified against this database")
         return
-    from trading.ownership import option_ownership
     ownership = await option_ownership(db, trader)
     if ownership["entry_block_reason"]:
         logger.warning("IV-exec skip: %s", ownership["entry_block_reason"])
+        return
+    # The balance used for sizing and the limits is read AFTER the order
+    # snapshot above: an order the broker lists is already out of the buying
+    # power it reports, so the balance must be the newer of the two.
+    acct = await asyncio.to_thread(trader.get_account)
+    equity = verified_equity(acct)
+    if equity <= 0:
+        logger.warning("IV-exec skip: verified broker equity unavailable")
+        return
+    # Account-wide limits: everything already at risk, and the cash reserve.
+    # Unreadable inputs block the entry; they are never treated as zero.
+    try:
+        limits = await account_limits(db, acct, ownership["positions"], ownership["orders"], s,
+                                      asset="option")
+    except DatabaseError as e:
+        logger.warning("IV-exec skip: account limits unavailable (%s)", e)
+        return
+    if limits["risk_headroom"] <= 0:
+        logger.info(f"IV-exec skip {ticker}: account risk cap reached — {describe(limits)}")
+        return
+    if limits["cash_available"] <= 0:
+        logger.info(f"IV-exec skip {ticker}: cash reserve reached — {describe(limits)}")
         return
 
     # Risk throttle: size down after losses, back up after wins, and refuse
@@ -1071,10 +1108,21 @@ async def maybe_execute_condor(setup):
                         f"after {rs['loss_streak']} consecutive loss(es)")
 
     loop = asyncio.get_event_loop()
-    plan = await loop.run_in_executor(
-        None, build_iron_condor, trader, setup, equity, s, mult)
+    plan = await loop.run_in_executor(None, lambda: build_iron_condor(
+        trader, setup, equity, s, mult,
+        risk_headroom=limits["risk_headroom"], cash_available=limits["cash_available"]))
     if not plan.get("ok"):
         logger.info(f"IV-exec {ticker}: no condor ({plan.get('reason')})")
+        return
+    # The sizer applies the limits; this is the check that it did. A plan that
+    # would breach either one is never persisted or sent.
+    plan_risk = float(plan["qty"]) * float(plan["max_loss"])
+    plan_collateral = float(plan.get("collateral_usd", plan_risk))
+    if (not isfinite(plan_risk) or plan_risk <= 0 or plan_risk > limits["risk_headroom"] + 0.005
+            or not isfinite(plan_collateral) or plan_collateral > limits["cash_available"] + 0.005):
+        logger.error(
+            f"IV-exec {ticker}: plan refused — max loss ${plan_risk:,.0f} / collateral "
+            f"${plan_collateral:,.0f} exceed the account limits ({describe(limits)})")
         return
     # Resolve the order namespace before a row exists: if it fails, nothing is
     # persisted or submitted.
@@ -1101,12 +1149,20 @@ async def maybe_execute_condor(setup):
             f"IV-exec {ticker}: IV_EXEC_MAX_RISK_USD (${s.iv_exec_max_risk_usd:,.0f}) set this size, "
             f"not IV_EXEC_RISK_PCT ({s.iv_exec_risk_pct:.0%} of ${equity:,.0f} = "
             f"${equity * s.iv_exec_risk_pct:,.0f}). Unset it to size by percentage.")
+    if plan.get("limited_by"):
+        limit_name = {"account_risk_cap": f"account risk cap (ACCOUNT_MAX_RISK_PCT {limits['max_risk_pct']:.0%})",
+                      "cash_reserve": f"cash reserve (ACCOUNT_CASH_RESERVE_PCT {limits['cash_reserve_pct']:.0%})"
+                      }.get(plan["limited_by"], plan["limited_by"])
+        logger.warning(f"IV-exec {ticker}: size reduced to x{plan['qty']} by the {limit_name} — "
+                       f"before this entry: {describe(limits)}")
     st = plan["strikes"]
     logger.info(
         f"IV-exec ✅ {ticker} iron condor #{cid}: "
         f"{st['long_put']}/{st['short_put']}--{st['short_call']}/{st['long_call']} "
         f"x{plan['qty']} credit ${plan['credit']:.2f} maxloss ${plan['max_loss']:.0f} "
-        f"risk ${plan['risk_usd']:.0f} exp {plan['expiry']} order={res.get('id')}")
+        f"risk ${plan['risk_usd']:.0f} exp {plan['expiry']} order={res.get('id')} | "
+        f"account risk now ${limits['open_risk'] + plan_risk:,.0f} "
+        f"({(limits['open_risk'] + plan_risk) / equity:.1%} of equity, cap {limits['max_risk_pct']:.0%})")
 
 
 def is_rth_now() -> bool:
@@ -2093,7 +2149,7 @@ async def generate_daily_report(is_weekly: bool = False, scheduled: bool = False
     data = await build_report_data(db, trader, thresholds={
         "score": settings.auto_trade_score_threshold,
         "pattern": settings.auto_trade_pattern_threshold,
-    })
+    }, settings=settings)
 
     # Guard: a transient Alpaca get_account() failure returns equity 0, which
     # would produce a bogus "$0 / -100%" report — and push/email it. Bail out

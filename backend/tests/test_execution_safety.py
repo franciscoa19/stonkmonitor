@@ -157,8 +157,11 @@ async def test_ambiguous_stop_survives_restart_without_second_order(database):
 
 
 async def engine_with_trade(db, trader):
+    # Account-wide limits are switched off here so these tests isolate the
+    # per-trade rules; tests/test_account_limits.py covers them on this path.
     engine = AutoTradeEngine(Settings(_env_file=None, alpaca_api_key="unused",
-        alpaca_secret_key="unused", auto_trade_auto_execute=False))
+        alpaca_secret_key="unused", auto_trade_auto_execute=False,
+        account_max_risk_pct=1, account_cash_reserve_pct=0))
     trader.get_positions_raw = lambda: []
     trader.get_open_orders_raw = lambda: []
     trader.get_account = lambda: {"equity": 100000, "cash": 100000,
@@ -375,11 +378,11 @@ async def test_condor_entry_waits_for_regular_hours(database, session, monkeypat
     monkeypatch.setattr(session, "settings", Settings(
         _env_file=None, alpaca_api_key="unused", alpaca_secret_key="unused",
         iv_exec_enabled=True, auto_trade_auto_execute=False))
-    monkeypatch.setattr(session, "trader", NS(get_account=lambda: {"equity": 100000},
+    monkeypatch.setattr(session, "trader", NS(get_account=lambda: {"equity": 100000, "cash": 100000, "options_buying_power": 100000},
         get_positions_raw=lambda: [], get_open_orders_raw=lambda: [],
         multileg_order=lambda *a, **kw: calls.append(kw) or {"id": "entry", "status": "accepted"}))
     monkeypatch.setattr(iv_executor, "is_pre_earnings_entry_window", lambda *a, **kw: True)
-    monkeypatch.setattr(iv_executor, "build_iron_condor", lambda *a: planned.append(a) or plan)
+    monkeypatch.setattr(iv_executor, "build_iron_condor", lambda *a, **kw: planned.append(a) or plan)
     setup = NS(ticker="TEST", recommendation="SELL_PREMIUM",
                next_earnings_date="2026-11-25", earnings_report_time="AMC")
 

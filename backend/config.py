@@ -179,6 +179,21 @@ class Settings(BaseSettings):
     # page over a dead backend.
     heartbeat_stale_minutes: int = Field(180)
 
+    # --- Account-wide limits on NEW risk (every strategy) ---
+    # Per-trade sizing and a position count do not bound the account: three
+    # condors opened at 10% each are more than 30% of what is left after a loss
+    # or a withdrawal. These two are measured against current equity at every
+    # entry. They never close anything; they stop new risk being added.
+    #
+    # Most the account may have at risk at once, as a fraction of equity: the
+    # remaining max loss of every open or pending condor, the cost of queued
+    # flow entries, and the value of any other holding. 0.30 is what
+    # IV_EXEC_RISK_PCT (10%) x IV_EXEC_MAX_POSITIONS (3) already implied.
+    account_max_risk_pct: float = Field(0.30, gt=0, le=1, allow_inf_nan=False)
+    # Free cash (cash and the buying power that funds the entry, whichever is
+    # lower) a new entry must leave untouched, as a fraction of equity. 0 = off.
+    account_cash_reserve_pct: float = Field(0.20, ge=0, lt=1, allow_inf_nan=False)
+
     # --- Risk throttle (anti-martingale + circuit breaker) ---
     # Percent-of-equity sizing already shrinks the next bet after a loss, but
     # only between sequential trades, only in integer qty steps, and not at all

@@ -80,8 +80,16 @@ def _nearest(strikes: list[float], target: float) -> Optional[float]:
 
 
 def build_iron_condor(trader, setup, equity: float, settings,
-                      risk_multiplier: float = 1.0) -> dict:
-    """Return an executable iron-condor plan for `setup`, or {ok:False, reason}."""
+                      risk_multiplier: float = 1.0, *,
+                      risk_headroom: Optional[float] = None,
+                      cash_available: Optional[float] = None) -> dict:
+    """Return an executable iron-condor plan for `setup`, or {ok:False, reason}.
+
+    `risk_headroom` and `cash_available` are the account-wide limits in dollars
+    (trading/account_risk.py): what the account may still put at risk, and the
+    free cash left above the reserve. They only ever reduce the quantity — the
+    strikes and wing stay those the per-condor budget chose. None = not applied.
+    """
     ticker = setup.ticker
     spot = float(setup.price or 0)
     em = _implied_move_frac(setup)
@@ -198,6 +206,23 @@ def build_iron_condor(trader, setup, equity: float, settings,
     qty_cap = condor_qty_cap(equity, settings)
     qty = min(qty, qty_cap)
 
+    # Account-wide limits. Collateral is the wider side's full width: the broker
+    # holds that against the spread, and the credit is not counted as offsetting
+    # it. A condor that does not fit even one spread is not opened.
+    collateral_per = width * CONTRACT_MULTIPLIER
+    limited_by = None
+    for name, limit, unit in (("account_risk_cap", risk_headroom, max_loss_per),
+                              ("cash_reserve", cash_available, collateral_per)):
+        if limit is None:
+            continue
+        fits = int(limit // unit) if isfinite(limit) and limit > 0 else 0
+        if fits < 1:
+            what = ("account risk cap" if name == "account_risk_cap" else "cash reserve")
+            return {"ok": False, "reason": f"{what}: one spread needs ${unit:,.0f}, "
+                                           f"${max(limit, 0):,.0f} available"}
+        if fits < qty:
+            qty, limited_by = fits, name
+
     # Entry limit: give up a little credit for fill probability into the print.
     limit_price = -accepted_credit
 
@@ -212,4 +237,5 @@ def build_iron_condor(trader, setup, equity: float, settings,
         "risk_usd": round(max_loss_per * qty, 2),
         "risk_budget": round(risk_budget, 2), "qty_cap": qty_cap,
         "ceiling_binding": ceiling_binding,
+        "collateral_usd": round(collateral_per * qty, 2), "limited_by": limited_by,
     }

@@ -149,11 +149,11 @@ async def test_unverified_account_blocks_new_condors_until_the_broker_answers(da
     monkeypatch.setattr(session, "_account_bound", False)
     monkeypatch.setattr(session, "settings", settings(iv_exec_enabled=True))
     monkeypatch.setattr(session, "trader", NS(
-        get_account=lambda: {"equity": 100000}, account_fingerprint=lambda: fingerprint[0],
+        get_account=lambda: {"equity": 100000, "cash": 100000, "options_buying_power": 100000}, account_fingerprint=lambda: fingerprint[0],
         get_positions_raw=lambda: [], get_open_orders_raw=lambda: [],
         multileg_order=lambda *a, **kw: calls.append(kw) or {"id": "entry", "status": "accepted"}))
     monkeypatch.setattr(iv_executor, "is_pre_earnings_entry_window", lambda *a, **kw: True)
-    monkeypatch.setattr(iv_executor, "build_iron_condor", lambda *a: plan)
+    monkeypatch.setattr(iv_executor, "build_iron_condor", lambda *a, **kw: plan)
     setup = NS(ticker="TEST", recommendation="SELL_PREMIUM",
                next_earnings_date="2026-11-25", earnings_report_time="AMC")
 

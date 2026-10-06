@@ -74,5 +74,5 @@ async def option_ownership(db, trader, positions=None) -> dict:
         reasons.append("untracked option holdings: " + ", ".join(sorted(unknown)))
     if unknown_orders:
         reasons.append("untracked working option orders: " + ", ".join(unknown_orders))
-    return {"positions": positions, "protected_symbols": protected,
+    return {"positions": positions, "orders": orders, "protected_symbols": protected,
             "entry_block_reason": "; ".join(reasons)}
