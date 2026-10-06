@@ -9,8 +9,17 @@
     <key>WorkingDirectory</key>
     <string>/Users/francisco/code/stonkmonitor/backend</string>
 
+    <!-- caffeinate -i holds an idle-sleep assertion for as long as the backend
+         runs. Without it this Mac (pmset sleep=1) idle-sleeps after a minute,
+         on battery AND on AC: on 2026-10-05 it was asleep for 208 of the 390
+         market-hours minutes, and nothing runs while it sleeps — no scans, no
+         entries, no condor exits, no expiry-day forced close. It does NOT
+         override a closed lid: keep the lid open (or use an external display)
+         and stay on AC power. The display may still sleep. -->
     <key>ProgramArguments</key>
     <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
         <string>/Users/francisco/code/stonkmonitor/backend/venv/bin/uvicorn</string>
         <string>main:app</string>
         <string>--host</string>

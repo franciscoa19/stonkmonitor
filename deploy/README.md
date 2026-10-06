@@ -24,6 +24,22 @@ Check / restart / remove:
     launchctl kickstart -k gui/$(id -u)/com.stonkmonitor.backend
     launchctl bootout   gui/$(id -u)/com.stonkmonitor.backend
 
+**Sleep.** The agent runs uvicorn under `/usr/bin/caffeinate -i`, which holds a
+`PreventUserIdleSystemSleep` assertion while the backend is alive. This Mac's
+power settings idle-sleep it after one minute (`pmset -g custom` → `sleep 1`,
+on battery and on AC), and a sleeping Mac runs nothing: on 2026-10-05 it slept
+through 208 of 390 market-hours minutes, and on 10-06 the PEP condor was only
+entered because the lid happened to be opened at 09:51. Check with:
+
+    pmset -g assertions | grep -A1 caffeinate     # the assertion is held
+    pmset -g log | grep -E " (Sleep|Wake) " | tail # no idle sleeps since
+
+`caffeinate -i` does **not** override a closed lid ("Clamshell Sleep"), and on
+battery it drains until the machine shuts down. Keep the lid open (or use an
+external display) and stay on AC. For a lid-closed, headless setup the system
+setting has to change instead (System Settings → Battery → Options → "Prevent
+automatic sleeping on power adapter when the display is off").
+
 **Limit:** a LaunchAgent starts at *login*, not at boot. If the Mac reboots and
 nobody logs in, the backend stays down. Covering that needs a LaunchDaemon in
 /Library/LaunchDaemons, which requires sudo — do that by hand if the machine is
