@@ -136,8 +136,8 @@ async def test_a_local_entry_the_broker_does_not_list_is_held_back_from_free_cas
     await database._exec("UPDATE iv_condors SET status='pending_entry',entry_order_id='working'", strict=True)
     orders = [{"id": "working", "order_class": "mleg"}] if listed else []
     got = await limits(database, balance(cash=50_000, options=50_000), orders=orders)
-    assert got["unlisted_reserved"] == (0 if listed else 800)
-    assert got["cash_available"] == pytest.approx(50_000 - 20_000 - (0 if listed else 800))
+    assert got["unlisted_reserved"] == (0 if listed else 1000)
+    assert got["cash_available"] == pytest.approx(50_000 - 20_000 - (0 if listed else 1000))
 
 
 # ── Unreadable inputs block; they are never read as zero ────────────────────

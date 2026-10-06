@@ -295,6 +295,7 @@ CREATE TABLE IF NOT EXISTS manual_order_requests (
     client_order_id TEXT UNIQUE NOT NULL,
     status TEXT NOT NULL DEFAULT 'new',
     alpaca_order_id TEXT,
+    broker_order_status TEXT,
     error TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -521,6 +522,7 @@ _MIGRATIONS = {
                    "close_client_order_id": "TEXT",
                    "settlement_note": "TEXT"},
     "pending_trades":    {"strategy": "TEXT", "entry_order_status": "TEXT"},
+    "manual_order_requests": {"broker_order_status": "TEXT"},
     "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL"},
     "daily_equity":      {"open_equity": "REAL", "updated_at": "TEXT"},
     "iv_rv_evals":       {"earnings_date": "TEXT"},
@@ -1083,6 +1085,20 @@ class Database:
     async def get_manual_order_request(self, request_id: str) -> Optional[dict]:
         rows = await self._query("SELECT * FROM manual_order_requests WHERE request_id=?", (request_id,), strict=True)
         return rows[0] if rows else None
+
+    async def get_manual_entry_reservations(self) -> list[dict]:
+        return await self._query(
+            """SELECT * FROM manual_order_requests
+               WHERE status IN ('submitting','pending') OR
+               (status='confirmed' AND COALESCE(broker_order_status,'unknown')
+                NOT IN ('filled','canceled','expired','rejected','replaced'))""", strict=True)
+
+    async def resolve_manual_order_status(self, request_id: str, broker_status: str):
+        await self._exec(
+            "UPDATE manual_order_requests SET broker_order_status=?,updated_at=? "
+            "WHERE request_id=? AND status='confirmed'",
+            (broker_status, datetime.now(timezone.utc).isoformat(), request_id),
+            strict=True, expected_rows=1)
 
     async def update_manual_order_request(self, request_id: str, status: str, order_id=None, error=None,
                                           *, claim: bool = False):
@@ -1861,7 +1877,7 @@ class Database:
             """SELECT * FROM pending_trades
                WHERE status IN ('submitting','submission_unknown')
                   OR (status='confirmed' AND COALESCE(entry_order_status,'unknown')
-                      NOT IN ('filled','canceled','expired','rejected'))""",
+                      NOT IN ('filled','canceled','expired','rejected','replaced'))""",
             strict=True)
 
     async def expire_stale_pending_trades(self) -> int:

@@ -6,7 +6,7 @@ import json
 from db import DatabaseError, _is_occ
 
 
-async def option_ownership(db, trader, positions=None) -> dict:
+async def option_ownership(db, trader, positions=None, orders=None) -> dict:
     condors = await db.get_active_condors()
     spread_legs = await db.get_active_condor_leg_symbols()
     trades = await db._query(
@@ -15,7 +15,8 @@ async def option_ownership(db, trader, positions=None) -> dict:
     long_options = {t["symbol"] for t in trades if t["status"] == "confirmed" and _is_occ(t["symbol"])}
     if positions is None:
         positions = await asyncio.to_thread(trader.get_positions_raw)
-    orders = await asyncio.to_thread(trader.get_open_orders_raw)
+    if orders is None:
+        orders = await asyncio.to_thread(trader.get_open_orders_raw)
     if positions is None or orders is None:
         raise DatabaseError("Broker ownership snapshot unavailable; automated trading deferred")
     known_ids = {c.get(k) for c in condors for k in ("entry_order_id", "close_order_id")}

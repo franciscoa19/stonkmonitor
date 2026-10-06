@@ -288,9 +288,9 @@ async def test_unlisted_condor_reserves_cash_before_flow_entry(database):
     engine,tid,broker,calls = await card(database)
     await condor(database,qty=2)
     await database._exec("UPDATE iv_condors SET status='pending_entry',entry_order_id=NULL",strict=True)
-    broker.get_account = lambda: balance(cash=1000,stocks=1000)
+    broker.get_account = lambda: balance(cash=1200,stocks=1200)
     assert (await engine.confirm_trade(tid,0))["id"] == "entry"
-    assert calls[0]["qty"] == 2  # $1,000 less 2 x $400 reserved condor max loss
+    assert calls[0]["qty"] == 2  # $1,200 less 2 x $500 full-width collateral
 
 
 @pytest.mark.parametrize("invalid", [0, "bad", "NaN"])

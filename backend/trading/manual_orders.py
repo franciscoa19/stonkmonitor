@@ -30,7 +30,8 @@ async def manual_order_request(db, trader, request_id, payload=None):
     """Payload provided means POST; absent means reconcile-only GET."""
     request_id = str(UUID(str(request_id)))
     client_id = f"sm-manual-{UUID(request_id).hex}"  # 42 chars, unique beyond a local DB lifecycle
-    async with _lock:
+    from trading.account_risk import entry_lock
+    async with _lock, entry_lock:
         if payload is not None:
             row = await db.ensure_manual_order_request(
                 request_id, json.dumps(payload, sort_keys=True, separators=(",", ":")), client_id)

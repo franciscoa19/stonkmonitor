@@ -94,14 +94,17 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
 
     # ── Account-wide limits: risk in use and free cash against their caps ──
     # None when it cannot be read; the report never invents these.
-    account_risk = None
+    # While they cannot be read, automated entries are skipped — so the reason
+    # is reported rather than the tiles silently disappearing.
+    account_risk, account_risk_error = None, None
     if settings is not None:
         try:
             from trading.account_risk import account_limits_snapshot
             limits = await account_limits_snapshot(db, trader, settings)
             account_risk = {key: round(float(value), 4) for key, value in limits.items()}
         except Exception as e:
-            logger.info("Report: account limits unavailable (%s)", e)
+            account_risk_error = (str(e) or type(e).__name__)[:200]
+            logger.warning("Report: account limits unavailable (%s)", account_risk_error)
 
     # ── Equity curve ─────────────────────────────────────────────────────
     curve = await db.get_daily_equity(90)
@@ -342,6 +345,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
                     "realized_total": realized_total, "avg_hold_min": avg_hold_min,
                     "trades_7d": trades_7d, "trades_per_day": trades_per_day},
         "account_risk": account_risk,
+        "account_risk_error": account_risk_error,
         "activity": {"tag": activity[0], "note": activity[1]},
         "equity_curve": [{"date": r["date"], "equity": float(r["equity"])} for r in curve],
         "iv_rv": iv_rv,
@@ -744,6 +748,11 @@ def render_html(d: dict) -> str:
             f'<div class="kpi"><div class="k">Free cash</div>'
             f'<div class="v {cash_cls}">{ar["free_cash_pct"] * 100:.0f}%</div>'
             f'<div class="n">${ar["free_cash"]:,.0f} · reserve {ar["cash_reserve_pct"] * 100:.0f}%</div></div>')
+    elif d.get("account_risk_error"):
+        risk_kpis = (
+            f'<div class="kpi"><div class="k">Risk limits</div><div class="v down">unreadable</div>'
+            f'<div class="n down">new entries are skipped while this lasts: '
+            f'{e(d["account_risk_error"])}</div></div>')
     else:
         risk_kpis = ""
     pf = m["profit_factor"]

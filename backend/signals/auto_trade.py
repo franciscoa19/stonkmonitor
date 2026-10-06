@@ -292,8 +292,12 @@ class AutoTradeEngine:
             return False, "Daily trade capacity unavailable; no new order submitted"
         return True, ""
 
-    async def _max_positions_check(self) -> tuple[bool, str]:
+    async def _max_positions_check(self, *, entry_locked=False) -> tuple[bool, str]:
         """Count held symbols and outstanding entries without double-counting a fill."""
+        if not entry_locked:
+            from trading.account_risk import entry_lock
+            async with entry_lock:
+                return await self._max_positions_check(entry_locked=True)
         try:
             limit = self.settings.auto_trade_max_open_positions
             reserved = set()
@@ -353,7 +357,7 @@ class AutoTradeEngine:
         return True, ""
 
     async def _execution_limits(self, ticker: str) -> tuple[bool, str]:
-        """Recheck mutable safety limits under the confirmation lock before POST."""
+        """Recheck mutable limits with confirmation and account entry locks held."""
         # A loss observed during another task must stop this call immediately;
         # durable hydration below also restores limits after a restart.
         if self._circuit_breaker_active():
@@ -381,7 +385,7 @@ class AutoTradeEngine:
         ok, reason = await self._max_trades_today_check()
         if not ok:
             return ok, reason
-        ok, reason = await self._max_positions_check()
+        ok, reason = await self._max_positions_check(entry_locked=True)
         if not ok:
             return ok, reason
         # A monitor can book a loss while broker snapshots are being fetched.
@@ -522,24 +526,14 @@ class AutoTradeEngine:
         limits (trading/account_risk.py): the per-trade percentage, what the
         account may still put at risk, and the free cash above the reserve.
         The quantity on the card is a ceiling; this only ever reduces it."""
-        from trading.account_risk import account_limits
+        from trading.account_risk import account_limits, read_risk_snapshot
         # Orders, then positions, then the balance: an order the broker lists is
         # already out of the buying power it reports, so the balance must be the
         # newest of the three. Never the older one used to build the card.
-        orders = await asyncio.to_thread(self._trader.get_open_orders_raw)
-        if orders is None:
-            raise DatabaseError("Open-order snapshot unavailable for sizing")
-        manual_unknown = await self._db._query(
-            "SELECT 1 FROM manual_order_requests WHERE status IN ('submitting','pending') LIMIT 1",
-            strict=True)
-        if manual_unknown:
-            raise DatabaseError("A manual order outcome is unresolved; new flow entries are deferred")
+        snapshot = await read_risk_snapshot(self._db, self._trader)
         if suggestion.trade_type not in ("option", "equity", "equity_long"):
             raise DatabaseError("Unknown trade type for percentage sizing")
-        positions = await asyncio.to_thread(self._trader.get_positions_raw)
-        if positions is None:
-            raise DatabaseError("Position snapshot unavailable for sizing")
-        account = await asyncio.to_thread(self._trader.get_account)
+        account = snapshot["account"]
         equity = self._verified_equity(account)
         if equity <= 0 or account.get("trading_blocked") or account.get("account_blocked"):
             raise DatabaseError("Verified tradable account balance unavailable")
@@ -548,7 +542,7 @@ class AutoTradeEngine:
         # Options are funded from options buying power and stock from
         # non-marginable buying power — never leveraged stock buying power.
         limits = await account_limits(
-            self._db, account, positions, orders, self.settings,
+            self._db, **snapshot, settings=self.settings,
             asset="option" if is_option else "stock", exclude_trade_id=trade_id)
         pct = self.settings.equity_long_risk_pct if suggestion.trade_type == "equity_long" else None
         budget = min(self._risk_budget(equity, pct), limits["cash_available"], limits["risk_headroom"])
@@ -1190,15 +1184,15 @@ class AutoTradeEngine:
                 await self._db.update_pending_trade(trade_id, status="expired")
                 self._pending.pop(trade_id, None)
                 return {"error": "expired"}
-            ok, reason = await self._execution_limits(s.ticker)
-            if not ok:
-                return {"error": reason, "ambiguous": False}
-            if autonomous and (not self.settings.alpaca_paper or not self._trader.paper):
-                return {"error": "Autonomous execution requires paper settings and broker", "ambiguous": False}
             # Sized and claimed under the account entry lock: once the row is
             # 'submitting' its cost counts against the limits for everyone else.
             from trading.account_risk import entry_lock
             async with entry_lock:
+                ok, reason = await self._execution_limits(s.ticker)
+                if not ok:
+                    return {"error": reason, "ambiguous": False}
+                if autonomous and (not self.settings.alpaca_paper or not self._trader.paper):
+                    return {"error": "Autonomous execution requires paper settings and broker", "ambiguous": False}
                 qty, risk = await self._submission_size(s, trade_id)
                 if qty < 1:
                     return {"error": "No quantity fits the percentage budget, account limits and available funds",
@@ -1303,20 +1297,48 @@ class AutoTradeEngine:
         """Recover accepted orders after a crash/timeout without submitting again."""
         await self._require_account()
         async with self._confirm_lock:
-            ns = await self._db.order_namespace()
-            for status in ("submitting", "submission_unknown"):
-                for row in await self._db.get_pending_trades(status=status):
-                    for kind in ("bracket", "limit"):
-                        order = await asyncio.to_thread(
-                            self._trader.get_order_by_client_id, f"sm-{ns}-trade-{row['id']}-{kind}")
-                        if order.get("id"):
-                            await self._db.update_pending_trade(
-                                row["id"], status="confirmed", alpaca_order_id=order["id"],
-                                executed_at=order.get("created_at") or datetime.utcnow().isoformat(),
-                                entry_order_status=order.get("status") or "unknown")
-                            self._uncertain_submissions.discard(row["id"])
-                            self._pending.pop(row["id"], None)
-                            break
+            from trading.account_risk import entry_lock
+            async with entry_lock:
+                ns = await self._db.order_namespace()
+                for status in ("submitting", "submission_unknown"):
+                    for row in await self._db.get_pending_trades(status=status):
+                        for kind in ("bracket", "limit"):
+                            order = await asyncio.to_thread(
+                                self._trader.get_order_by_client_id, f"sm-{ns}-trade-{row['id']}-{kind}")
+                            if order.get("id"):
+                                await self._db.update_pending_trade(
+                                    row["id"], status="confirmed", alpaca_order_id=order["id"],
+                                    executed_at=order.get("created_at") or datetime.utcnow().isoformat(),
+                                    entry_order_status=order.get("status") or "unknown")
+                                self._uncertain_submissions.discard(row["id"])
+                                self._pending.pop(row["id"], None)
+                                break
+
+            # A dashboard order whose outcome was never confirmed defers every
+            # automated entry (account_risk.read_risk_snapshot). The browser
+            # normally resolves it by polling; resolve it here too, so a closed
+            # tab cannot leave the bot unable to open anything. Read-only at the
+            # broker: the same by-client-ID lookup the dashboard performs.
+            from trading.manual_orders import manual_order_request
+            for row in await self._db.get_manual_entry_reservations():
+                if row["status"] == "confirmed":
+                    continue
+                try:
+                    await manual_order_request(self._db, self._trader, row["request_id"])
+                except Exception as e:
+                    logger.warning("Manual order request %s could not be reconciled: %s",
+                                   str(row["request_id"])[:8], e)
+
+            # Retiring finished reservations validates the whole account snapshot
+            # first, and that can fail for reasons that have nothing to do with
+            # this engine (an unpriceable manual order, an unreadable balance).
+            # It must not stop the caller's fill and P&L sync: the reservations
+            # simply stay held and this is tried again next cycle.
+            from trading.account_risk import reconcile_entry_statuses
+            try:
+                await reconcile_entry_statuses(self._db, self._trader, self.settings)
+            except DatabaseError as e:
+                logger.warning("Entry reservations not reconciled, still held: %s", e)
 
     async def get_pending(self) -> list[dict]:
         return await self._db.get_pending_trades(status="pending")

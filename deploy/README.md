@@ -113,12 +113,44 @@ automated entry (condors and flow trades):
     ACCOUNT_MAX_RISK_PCT=0.30       # most the account may have at risk at once
     ACCOUNT_CASH_RESERVE_PCT=0.20   # free cash a new entry must leave (0 = off)
 
-"At risk" is the remaining max loss of every open or pending condor, the cost of
-queued flow entries, and the current value of any other holding — including
-positions bought by hand. "Free cash" is the lower of cash and the buying power
+"At risk" is the remaining max loss of every open or pending condor, the unfilled
+commitment of flow, dashboard, and externally placed opening orders, and the
+current value of any other holding. Filled quantities count in holdings once;
+contingent bracket/OCO exits add no opening risk. "Free cash" is the lower of cash and the buying power
 that funds the entry. A new entry is made smaller to fit, or skipped; nothing is
 ever closed to get back under a limit. If a balance or a position cannot be
 read, the entry is skipped.
+
+Unlisted pending condors reserve their full wider-wing collateral, separately
+from max loss. Accepted dashboard orders missing from the open-order list are
+looked up by their saved broker ID and reserve unfilled commitments locally.
+Unresolved manual submissions, unpriceable opening market/stop orders, opening
+short orders, and unavailable entry-order evidence defer automated entries.
+Manual requests share the entry lock but remain user-directed orders.
+
+Entry-order status is read before positions and balance on both entry paths and
+in risk views. Reports and `GET /api/risk/account` do not retire reservations;
+periodic reconciliation persists terminal statuses after all snapshots validate.
+Deployment adds nullable `manual_order_requests.broker_order_status` automatically
+on database connection. Back up the ledger first; existing request identities
+and broker order IDs remain intact.
+
+**When the limits cannot be read, entries are skipped.** `GET /api/risk/account`
+then answers 503 with the reason, the daily report shows a red "Risk limits:
+unreadable" tile, and the log says `IV-exec skip: account limits unavailable (…)`.
+Most causes clear by themselves: a manual market order waiting for the open is
+counted once it fills, and a dashboard order still being confirmed is re-checked
+by the backend every 15 minutes whether or not the dashboard is open.
+
+One does not clear by itself: a dashboard order whose submission timed out and
+that the broker never received stays `pending`, because a missing order is not
+proof it was never accepted. Look for it in the broker's own order list (the
+request's client ID is `sm-manual-…`). Only if it is not there, mark it:
+
+    sqlite3 backend/stonkmonitor.db "UPDATE manual_order_requests SET status='rejected', error='never reached the broker (checked by hand)' WHERE status IN ('submitting','pending');"
+
+If the order does exist at the broker, do nothing: the next 15-minute pass will
+pick it up.
 
 The defaults match what `IV_EXEC_RISK_PCT` (10%) x `IV_EXEC_MAX_POSITIONS` (3)
 already allowed, so they only bite after a drawdown or withdrawal, or when

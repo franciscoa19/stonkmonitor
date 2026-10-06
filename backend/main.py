@@ -1046,7 +1046,7 @@ async def _open_condor(setup, s, ticker: str):
     """Size, persist and submit one condor (the caller holds the entry lock)."""
     from math import isfinite
     from signals.iv_executor import build_iron_condor
-    from trading.account_risk import account_limits, describe
+    from trading.account_risk import account_limits, describe, read_risk_snapshot
     from trading.ownership import option_ownership
 
     def verified_equity(account) -> float:
@@ -1063,14 +1063,19 @@ async def _open_condor(setup, s, ticker: str):
     if not await bind_broker_account():
         logger.warning("IV-exec skip: broker account not yet verified against this database")
         return
-    ownership = await option_ownership(db, trader)
+    try:
+        snapshot = await read_risk_snapshot(db, trader)
+    except DatabaseError as e:
+        logger.warning("IV-exec skip: account limits unavailable (%s)", e)
+        return
+    ownership = await option_ownership(db, trader, positions=snapshot["positions"], orders=snapshot["orders"])
     if ownership["entry_block_reason"]:
         logger.warning("IV-exec skip: %s", ownership["entry_block_reason"])
         return
     # The balance used for sizing and the limits is read AFTER the order
     # snapshot above: an order the broker lists is already out of the buying
     # power it reports, so the balance must be the newer of the two.
-    acct = await asyncio.to_thread(trader.get_account)
+    acct = snapshot["account"]
     equity = verified_equity(acct)
     if equity <= 0:
         logger.warning("IV-exec skip: verified broker equity unavailable")
@@ -1078,8 +1083,7 @@ async def _open_condor(setup, s, ticker: str):
     # Account-wide limits: everything already at risk, and the cash reserve.
     # Unreadable inputs block the entry; they are never treated as zero.
     try:
-        limits = await account_limits(db, acct, ownership["positions"], ownership["orders"], s,
-                                      asset="option")
+        limits = await account_limits(db, **snapshot, settings=s, asset="option")
     except DatabaseError as e:
         logger.warning("IV-exec skip: account limits unavailable (%s)", e)
         return
