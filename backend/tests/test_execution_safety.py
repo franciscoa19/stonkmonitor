@@ -158,6 +158,11 @@ async def engine_with_trade(db, trader):
         alpaca_secret_key="unused", auto_trade_auto_execute=False))
     trader.get_positions_raw = lambda: []
     trader.get_open_orders_raw = lambda: []
+    trader.get_account = lambda: {"equity": 100000}
+    for name, value in (("get_order_history", []), ("get_orders", []),
+                        ("get_fill_activities", []), ("get_mleg_leg_order_ids", set())):
+        if not hasattr(trader, name):
+            setattr(trader, name, lambda *a, _value=value, **kw: _value)
     engine.set_dependencies(None, db, trader)
     tid = await db.save_pending_trade(datetime.now(timezone.utc) + timedelta(minutes=5),
                                       ticker="AAPL", symbol="AAPL", qty=1, limit_price=100)
@@ -222,7 +227,8 @@ def test_condor_risk_uses_minimum_accepted_credit():
     broker = NS(get_option_contracts=lambda tk, start, end, kind: [
         {"symbol": f"{kind}-{strike}", "strike": strike, "expiry": expiry}
         for strike in ([110, 115] if kind == "call" else [85, 90])],
-        get_option_quotes=lambda syms: {s: {"mid": 1.5 if s in ("call-110", "put-90") else 1} for s in syms})
+        get_option_quotes=lambda syms: {s: {"bid": 1.5 if s in ("call-110", "put-90") else 1,
+                                          "ask": 1.5 if s in ("call-110", "put-90") else 1} for s in syms})
     settings = NS(iv_exec_min_dte=1, iv_exec_max_dte=7, iv_exec_short_move_mult=1,
         iv_exec_wing_width_pct=.05, iv_exec_risk_pct=.016,
         iv_exec_max_risk_usd=800, iv_exec_min_credit=.25)
@@ -362,6 +368,7 @@ async def test_condor_entry_waits_for_regular_hours(database, session, monkeypat
         _env_file=None, alpaca_api_key="unused", alpaca_secret_key="unused",
         iv_exec_enabled=True, auto_trade_auto_execute=False))
     monkeypatch.setattr(session, "trader", NS(get_account=lambda: {"equity": 100000},
+        get_positions_raw=lambda: [], get_open_orders_raw=lambda: [],
         multileg_order=lambda *a, **kw: calls.append(kw) or {"id": "entry", "status": "accepted"}))
     monkeypatch.setattr(iv_executor, "is_pre_earnings_entry_window", lambda *a, **kw: True)
     monkeypatch.setattr(iv_executor, "build_iron_condor", lambda *a: planned.append(a) or plan)

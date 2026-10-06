@@ -261,6 +261,28 @@ CREATE TABLE IF NOT EXISTS trade_fills (
 CREATE INDEX IF NOT EXISTS idx_tf_order ON trade_fills(alpaca_order_id);
 CREATE INDEX IF NOT EXISTS idx_tf_symbol_time ON trade_fills(symbol, executed_at, activity_id);
 
+-- Realized FIFO matches keyed by execution, not the entry's aggregate P&L.
+CREATE TABLE IF NOT EXISTS realized_trade_exits (
+    activity_id TEXT NOT NULL,
+    entry_order_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    realized_pnl REAL NOT NULL,
+    executed_at TEXT NOT NULL,
+    PRIMARY KEY (activity_id, entry_order_id)
+);
+
+CREATE TABLE IF NOT EXISTS manual_order_requests (
+    request_id TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL,
+    client_order_id TEXT UNIQUE NOT NULL,
+    status TEXT NOT NULL DEFAULT 'new',
+    alpaca_order_id TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS watchlist (
     ticker     TEXT PRIMARY KEY,               -- upper-cased symbol, scanned for IV + earnings
     added_at   TEXT NOT NULL
@@ -369,6 +391,18 @@ CREATE TABLE IF NOT EXISTS position_monitor_state (
     symbol TEXT PRIMARY KEY,
     state_json TEXT NOT NULL
 );
+
+-- Append-only measurement inputs: repricing never erases the original book.
+CREATE TABLE IF NOT EXISTS iv_variant_captures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    earnings_date TEXT NOT NULL,
+    source TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_variant_capture_event
+    ON iv_variant_captures(ticker, earnings_date, source, captured_at);
 CREATE TABLE IF NOT EXISTS db_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -881,8 +915,7 @@ class Database:
 
         The generic single-leg TP/SL monitor must never manage one of these
         symbols independently; condors are opened and closed as a four-leg unit.
-        Invalid legacy JSON is deliberately ignored rather than blocking the
-        monitor for all other positions.
+        Unreadable ownership fails closed: ignoring it could sell a wing.
         """
         rows = await self._query(
             "SELECT legs_json FROM iv_condors WHERE status IN ('pending_entry','open','closing','awaiting_settlement')",
@@ -891,13 +924,88 @@ class Database:
         symbols: set[str] = set()
         for row in rows:
             try:
-                for leg in json.loads(row.get("legs_json") or "[]"):
-                    symbol = str(leg.get("symbol") or "").strip().upper()
-                    if symbol:
-                        symbols.add(symbol)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                logger.warning("Skipping malformed iv_condors.legs_json while protecting condor legs")
+                legs = json.loads(row["legs_json"])
+                names = [leg["symbol"].strip().upper() for leg in legs]
+                if (len(legs) != 4 or len(set(names)) != 4 or not all(names)
+                        or sorted(leg["side"] for leg in legs) != ["buy", "buy", "sell", "sell"]):
+                    raise ValueError("invalid condor legs")
+                symbols.update(names)
+            except (KeyError, AttributeError, TypeError, ValueError) as e:
+                raise DatabaseError("Active condor ownership is malformed; automated trading deferred") from e
         return symbols
+
+    async def get_flow_risk_state(self, now=None) -> dict:
+        """Actual closing executions, with ET-day P&L and durable loss times."""
+        from market_time import et_now
+        now = et_now(now)
+        try:
+            async with self._write_lock:
+                async with self._conn.execute("SELECT value FROM db_meta WHERE key='flow_risk_ready'") as cur:
+                    ready = await cur.fetchone()
+                if ready and ready["value"] != "1":
+                    raise DatabaseError("Broker fill synchronization has not completed")
+                async with self._conn.execute("""SELECT t.id FROM trade_performance t
+               LEFT JOIN (SELECT alpaca_order_id, SUM(qty) qty, MIN(symbol) symbol_min,
+                                 MAX(symbol) symbol_max, MIN(side) side_min, MAX(side) side_max FROM trade_fills
+                          GROUP BY alpaca_order_id) f USING (alpaca_order_id)
+               WHERE ABS(COALESCE(t.filled_qty,0)-COALESCE(f.qty,0)) > 0.00000001
+                  OR f.symbol_min <> t.symbol OR f.symbol_max <> t.symbol
+                  OR f.side_min <> t.side OR f.side_max <> t.side
+               LIMIT 1""") as cur:
+                    if await cur.fetchone():
+                        raise DatabaseError("Incomplete broker fill history; flow risk controls unavailable")
+                async with self._conn.execute(
+                    "SELECT activity_id,ticker,executed_at,SUM(realized_pnl) realized_pnl "
+                    "FROM realized_trade_exits GROUP BY activity_id,ticker,executed_at") as cur:
+                    rows = await cur.fetchall()
+        except Exception as e:
+            raise DatabaseError("Flow risk controls unavailable") from e
+        pnl, losses = 0.0, {}
+        for row in rows:
+            at = datetime.fromisoformat(row["executed_at"].replace("Z", "+00:00"))
+            at = at.replace(tzinfo=at.tzinfo or timezone.utc).astimezone(_ET)
+            if at > now:
+                continue
+            value = float(row["realized_pnl"])
+            if not math.isfinite(value):
+                raise DatabaseError("Nonfinite realized P&L; flow risk controls unavailable")
+            if at.date() == now.date():
+                pnl += value
+            if value < 0:
+                ticker = row["ticker"].upper()
+                losses[ticker] = max(losses.get(ticker, 0), at.timestamp())
+        return {"date": now.date().isoformat(), "daily_pnl": round(pnl, 2), "loss_times": losses}
+
+    async def record_variant_capture(self, ticker, earnings_date, source, snapshot):
+        if source not in VARIANT_SOURCES:
+            raise ValueError(f"unknown variant source: {source}")
+        await self._exec(
+            "INSERT INTO iv_variant_captures (ticker,earnings_date,source,captured_at,snapshot_json) VALUES (?,?,?,?,?)",
+            (ticker, earnings_date, source, snapshot["captured_at"],
+             json.dumps(snapshot, default=str, allow_nan=False)), strict=True, expected_rows=1)
+
+    async def ensure_manual_order_request(self, request_id: str, payload_json: str, client_id: str) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        await self._exec(
+            """INSERT OR IGNORE INTO manual_order_requests
+               (request_id,payload_json,client_order_id,created_at,updated_at) VALUES (?,?,?,?,?)""",
+            (request_id, payload_json, client_id, now, now), strict=True)
+        row = await self.get_manual_order_request(request_id)
+        if row["payload_json"] != payload_json or row["client_order_id"] != client_id:
+            raise ValueError("Request ID already belongs to a different order")
+        return row
+
+    async def get_manual_order_request(self, request_id: str) -> Optional[dict]:
+        rows = await self._query("SELECT * FROM manual_order_requests WHERE request_id=?", (request_id,), strict=True)
+        return rows[0] if rows else None
+
+    async def update_manual_order_request(self, request_id: str, status: str, order_id=None, error=None,
+                                          *, claim: bool = False):
+        await self._exec(
+            """UPDATE manual_order_requests SET status=?,alpaca_order_id=?,error=?,updated_at=?
+               WHERE request_id=?""" + (" AND status='new'" if claim else ""),
+            (status, order_id, error, datetime.now(timezone.utc).isoformat(), request_id),
+            strict=True, expected_rows=1)
 
     async def update_condor_entry_status(self, condor_id: int, entry_status: str) -> None:
         await self._exec(
@@ -1343,8 +1451,8 @@ class Database:
         """Full metric set per variant over resolved events, best expectancy first.
 
         `gate_passed=True` scores only setups that cleared the three scanner
-        gates; False scores the indiscriminate "sell everything" baseline; None
-        scores everything. Comparing True vs False is the experiment that decides
+        gates; False scores only failed gates; None scores the indiscriminate
+        "sell everything" baseline. Comparing True vs None decides
         whether the gates earn their keep (VALIDATION_SPEC §4).
 
         `distinct_only` drops rows whose strikes collapsed onto an earlier
@@ -1406,24 +1514,27 @@ class Database:
         return out
 
     async def get_gate_comparison(self, source: Optional[str] = None) -> dict:
-        """Baseline 2: pooled metrics for gated vs ungated near-earnings events.
+        """Baseline 2: gated vs all events; failed gates are a separate diagnostic.
         If selling everything matches the filtered set, the gates are noise."""
         from backtest.metrics import compute_metrics
         if source is not None and source not in VARIANT_SOURCES:
             raise ValueError(f"unknown variant source: {source}")
         out = {}
-        for label, flag in (("gated", 1), ("ungated", 0)):
+        for label, flag in (("gated", 1), ("ungated", None), ("failed_gates", 0)):
             source_where = ""
-            params: tuple = (VALIDATED_VARIANT_PRICING_MODEL, flag, "condor_1.0sd")
+            params: tuple = (VALIDATED_VARIANT_PRICING_MODEL, "condor_1.0sd")
+            gate_where = ""
+            if flag is not None:
+                gate_where = " AND COALESCE(gate_passed,1)=?"
+                params += (flag,)
             if source is not None:
                 source_where = " AND source=?"
                 params += (source,)
             rows = await self._query(
                 # Keep the gated/ungated drawdown paths chronological too.
                 """SELECT realized_pnl FROM iv_variant_evals
-                   WHERE resolved=1 AND pricing_model=?
-                     AND COALESCE(gate_passed,1)=? AND variant=?
-                   """ + source_where +
+                   WHERE resolved=1 AND pricing_model=? AND variant=?
+                   """ + gate_where + source_where +
                 " ORDER BY COALESCE(expiry, resolved_at, signal_date), id",
                 params)
             out[label] = compute_metrics([float(r["realized_pnl"] or 0) for r in rows])
@@ -1932,6 +2043,8 @@ class Database:
                 continue
             fills.sort(key=lambda f: (f["at"], f["activity_id"]))
             lots = deque()
+            exits = {}
+            order_ids = {r["id"]: r["alpaca_order_id"] for r in orders}
             short_qty = 0.0
             stats = {r["id"]: {"sold": 0.0, "cost": 0.0, "proceeds": 0.0, "hold": 0.0}
                      for r in orders if r["side"] == "buy"}
@@ -1952,11 +2065,30 @@ class Database:
                         s["cost"] += take * lot["price"]
                         s["proceeds"] += take * price
                         s["hold"] += take * _minutes_between(lot["at"], f["at"])
+                        key = (f["activity_id"], order_ids[lot["id"]])
+                        event = exits.setdefault(key, {"pnl": 0.0, "at": f["at"]})
+                        event["pnl"] += (price - lot["price"]) * take * (100 if _is_occ(symbol) else 1)
                         lot["open"] -= take
                         qty -= take
                         if lot["open"] <= 1e-8:
                             lots.popleft()
                     short_qty += max(qty, 0.0)
+
+            # Rebuild each complete symbol atomically. Corrections and replayed
+            # activities replace matches rather than incrementing a counter.
+            if use_activities:
+                async with self._write_lock:
+                    try:
+                        await self._conn.execute("DELETE FROM realized_trade_exits WHERE symbol=?", (symbol,))
+                        await self._conn.executemany(
+                            "INSERT INTO realized_trade_exits VALUES (?,?,?,?,?,?)",
+                            [(aid, oid, symbol, symbol[:-15] if _is_occ(symbol) else symbol,
+                              round(event["pnl"], 2), event["at"])
+                             for (aid, oid), event in exits.items()])
+                        await self._conn.commit()
+                    except BaseException:
+                        await self._conn.rollback()
+                        raise
 
             mult = 100 if _is_occ(symbol) else 1
             for row in orders:

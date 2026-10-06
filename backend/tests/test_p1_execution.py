@@ -141,6 +141,7 @@ async def test_failed_condor_entry_save_does_not_submit(database, session, monke
     monkeypatch.setattr(session, "db", database)
     monkeypatch.setattr(session, "settings", settings)
     monkeypatch.setattr(session, "trader", NS(get_account=lambda: {"equity": 100000},
+        get_positions_raw=lambda: [], get_open_orders_raw=lambda: [],
         multileg_order=lambda *a, **kw: calls.append(kw) or {"id": "entry"}))
     monkeypatch.setattr(iv_executor, "is_pre_earnings_entry_window", lambda *a, **kw: True)
     monkeypatch.setattr(iv_executor, "build_iron_condor", lambda *a: plan)

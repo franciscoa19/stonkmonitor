@@ -1,6 +1,7 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Account, isAccount } from '@/lib/account'
+import { ManualOrderClient, ManualOrderResult } from '@/lib/manualOrder'
 
 const API = process.env.NEXT_PUBLIC_API_URL
 
@@ -33,33 +34,66 @@ export function TradePanel({
   const [limit, setLimit]   = useState('')
   const [loading, setLoading] = useState(false)
   const [msg, setMsg]       = useState('')
+  const [pending, setPending] = useState(false)
+  const client = useRef<ManualOrderClient | null>(null)
+  const refresh = useRef(onRefresh)
+  refresh.current = onRefresh
+
+  function showResult(result: ManualOrderResult) {
+    setPending(client.current!.pending)
+    if (result.status === 'confirmed') {
+      setMsg(`✅ Order placed: ${result.id}`)
+      setTicker(''); setQty(''); setLimit('')
+      refresh.current()
+    } else {
+      setMsg(`${result.status === 'pending' ? '⏳' : '❌'} ${result.error}`)
+    }
+  }
+
+  useEffect(() => {
+    try {
+      client.current = new ManualOrderClient(API!, localStorage)
+      setPending(client.current.pending)
+      function storageChanged() {
+        try {
+          setPending(client.current!.pending)
+        } catch {
+          setPending(true)
+          setMsg('Saved order unavailable; reconcile before trading')
+        }
+      }
+      window.addEventListener('storage', storageChanged)
+      return () => window.removeEventListener('storage', storageChanged)
+    } catch (e) {
+      setPending(true)
+      setMsg(e instanceof Error ? e.message : 'Saved order unavailable; reconcile before trading')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!pending || !client.current) return
+    let disposed = false
+    async function check() {
+      const result = await client.current!.reconcile()
+      if (!disposed) showResult(result)
+    }
+    check()
+    const timer = setInterval(check, 5000)
+    return () => { disposed = true; clearInterval(timer) }
+  }, [pending])
 
   async function submitOrder() {
     if (!ticker || !qty) return
     setLoading(true)
     setMsg('')
     try {
-      const res = await fetch(`${API}/api/order`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ticker: ticker.toUpperCase(),
-          qty: parseFloat(qty),
-          side,
-          order_type: type,
-          limit_price: type === 'limit' ? parseFloat(limit) : undefined,
-        }),
-      })
-      const data = await res.json()
-      if (res.ok) {
-        setMsg(`✅ Order placed: ${data.id}`)
-        setTicker(''); setQty(''); setLimit('')
-        onRefresh()
-      } else {
-        setMsg(`❌ ${data.detail}`)
-      }
+      if (!client.current) throw new Error('Order recovery is unavailable')
+      showResult(await client.current.submit({
+        ticker: ticker.toUpperCase(), qty: parseFloat(qty), side, order_type: type,
+        limit_price: type === 'limit' ? parseFloat(limit) : undefined,
+      }))
     } catch (e) {
-      setMsg('❌ Request failed')
+      setMsg(`❌ ${e instanceof Error ? e.message : 'Request failed'}`)
     }
     setLoading(false)
   }
@@ -104,6 +138,7 @@ export function TradePanel({
             className="flex-1 bg-surface border border-border rounded px-2 py-1.5 text-sm text-text placeholder-muted"
             placeholder="TICKER"
             value={ticker}
+            disabled={loading || pending}
             onChange={e => setTicker(e.target.value.toUpperCase())}
           />
           <input
@@ -111,12 +146,14 @@ export function TradePanel({
             placeholder="Qty"
             type="number"
             value={qty}
+            disabled={loading || pending}
             onChange={e => setQty(e.target.value)}
           />
         </div>
         <div className="flex gap-2 mb-2">
           <button
             onClick={() => setSide('buy')}
+            disabled={loading || pending}
             className={`flex-1 py-1.5 rounded text-sm font-bold transition-colors ${
               side === 'buy' ? 'bg-bull text-bg' : 'bg-surface text-muted border border-border'
             }`}
@@ -125,6 +162,7 @@ export function TradePanel({
           </button>
           <button
             onClick={() => setSide('sell')}
+            disabled={loading || pending}
             className={`flex-1 py-1.5 rounded text-sm font-bold transition-colors ${
               side === 'sell' ? 'bg-bear text-white' : 'bg-surface text-muted border border-border'
             }`}
@@ -136,6 +174,7 @@ export function TradePanel({
           <select
             className="flex-1 bg-surface border border-border rounded px-2 py-1.5 text-sm text-text"
             value={type}
+            disabled={loading || pending}
             onChange={e => setType(e.target.value as 'market' | 'limit')}
           >
             <option value="market">Market</option>
@@ -147,16 +186,17 @@ export function TradePanel({
               placeholder="Limit $"
               type="number"
               value={limit}
+              disabled={loading || pending}
               onChange={e => setLimit(e.target.value)}
             />
           )}
         </div>
         <button
           onClick={submitOrder}
-          disabled={loading}
+          disabled={loading || pending}
           className="w-full bg-accent text-bg py-2 rounded font-bold text-sm hover:bg-accent/90 disabled:opacity-50 transition-colors"
         >
-          {loading ? 'Placing...' : '⚡ SEND ORDER'}
+          {loading ? 'Placing...' : pending ? 'Checking existing order...' : '⚡ SEND ORDER'}
         </button>
         {msg && <div className="mt-2 text-xs text-center">{msg}</div>}
       </div>

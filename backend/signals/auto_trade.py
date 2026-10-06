@@ -111,7 +111,7 @@ class AutoTradeEngine:
 
         # Cached account equity — updated every evaluate_signal() call
         # Used for % based circuit breaker and position sizing
-        self._cached_equity: float = 100_000.0
+        self._cached_equity: float = 0.0
 
         # ── Alert rate controls ────────────────────────────────────────────
         # Timestamps of every Telegram trade alert sent (pruned to rolling window)
@@ -133,8 +133,18 @@ class AutoTradeEngine:
 
     # ── Quality filters ─────────────────────────────────────────────────────
 
+    async def refresh_risk_controls(self, *, sync: bool = False):
+        """Hydrate loss limits from closing executions, including bracket exits."""
+        if sync:
+            from trading.performance import sync_trade_performance
+            await sync_trade_performance(self._db, self._trader)
+        state = await self._db.get_flow_risk_state()
+        self._daily_pnl_date = state["date"]
+        self._daily_pnl = state["daily_pnl"]
+        self._ticker_loss_ts = state["loss_times"]
+
     def record_loss(self, ticker: str, pnl: float):
-        """Called by position monitor when a losing exit fires. Updates cooldown + circuit breaker."""
+        """Apply an immediate in-memory loss guard; broker fills remain authoritative."""
         if pnl < 0:
             self._ticker_loss_ts[ticker.upper()] = time.time()
             self._refresh_daily_pnl_date()
@@ -146,7 +156,7 @@ class AutoTradeEngine:
             )
 
     def record_win(self, ticker: str, pnl: float):
-        """Called by position monitor when a winning exit fires. Updates circuit breaker only."""
+        """Apply an immediate in-memory P&L update, replaced by the next fill sync."""
         if pnl > 0:
             self._refresh_daily_pnl_date()
             self._daily_pnl += pnl
@@ -340,6 +350,26 @@ class AutoTradeEngine:
 
     async def _execution_limits(self, ticker: str) -> tuple[bool, str]:
         """Recheck mutable safety limits under the confirmation lock before POST."""
+        # A loss observed during another task must stop this call immediately;
+        # durable hydration below also restores limits after a restart.
+        if self._circuit_breaker_active():
+            return False, f"Circuit breaker: daily P&L ${self._daily_pnl:+,.0f}"
+        if self._ticker_in_cooldown(ticker):
+            return False, f"Cooldown: {ticker} had a recent losing exit"
+        try:
+            account = await asyncio.to_thread(self._trader.get_account)
+            equity = float(account["equity"])
+            if account.get("error") or not isfinite(equity) or equity <= 0:
+                raise ValueError("verified equity unavailable")
+            self._cached_equity = equity
+            await self.refresh_risk_controls(sync=True)
+            from trading.ownership import option_ownership
+            ownership = await option_ownership(self._db, self._trader)
+            if ownership["entry_block_reason"]:
+                return False, ownership["entry_block_reason"]
+        except Exception as e:
+            logger.warning("Execution risk state unavailable: %s", e)
+            return False, "Execution risk state unavailable; no new order submitted"
         if self._circuit_breaker_active():
             return False, f"Circuit breaker: daily P&L ${self._daily_pnl:+,.0f}"
         if self._ticker_in_cooldown(ticker):

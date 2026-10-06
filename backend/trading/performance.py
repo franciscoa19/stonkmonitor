@@ -7,6 +7,7 @@ from trading.alpaca_trader import AlpacaTrader
 
 
 _FILL_SIDES = {"sell_short": "sell"}
+_sync_lock = asyncio.Lock()
 
 
 async def _save_order(db, order: dict) -> None:
@@ -22,6 +23,16 @@ async def _save_order(db, order: dict) -> None:
 
 
 async def sync_trade_performance(db, trader) -> int:
+    # Confirmation and the periodic sync share one complete reconciliation.
+    async with _sync_lock:
+        await db._exec("INSERT INTO db_meta(key,value) VALUES ('flow_risk_ready','0') "
+                       "ON CONFLICT(key) DO UPDATE SET value='0'", strict=True)
+        result = await _sync_trade_performance(db, trader)
+        await db._exec("UPDATE db_meta SET value='1' WHERE key='flow_risk_ready'", strict=True, expected_rows=1)
+        return result
+
+
+async def _sync_trade_performance(db, trader) -> int:
     """Backfill actual fills before reconciling; never substitute placement time.
 
     Include working orders, whose partial fills are absent from closed history.

@@ -56,6 +56,7 @@ trader      = AlpacaTrader(
     settings.alpaca_api_key,
     settings.alpaca_secret_key,
     paper=settings.alpaca_paper,
+    options_feed=settings.alpaca_options_feed,
 )
 engine          = SignalEngine(settings)
 pattern_engine  = PatternEngine(notify_threshold=8.0)
@@ -751,13 +752,10 @@ _alpaca_pos_state: dict[str, dict] = {}
 async def alpaca_position_monitor():
     """Reconcile pending exits and manage long positions without blocking I/O."""
     from signals.position_exits import manage_position_exit
+    from trading.ownership import option_ownership
     from feeds.uw_budget import current_session
     await asyncio.sleep(45)
     restored = False
-    def record_fill(symbol, pnl):
-        import re
-        ticker = re.sub(r"[0-9]{6}[CP][0-9]{8}$", "", symbol)
-        (auto_trade.record_win if pnl >= 0 else auto_trade.record_loss)(ticker, pnl)
     while True:
         try:
             if not restored:
@@ -774,7 +772,10 @@ async def alpaca_position_monitor():
                                    "pnl_pct": float(p.get("unrealized_plpc") or 0) * 100,
                                    "avg_price": float(p.get("avg_entry_price") or 0)}
                                   for p in positions if float(p.get("qty") or 0) > 0]
-                    condor_legs = await db.get_active_condor_leg_symbols()
+                    ownership = await option_ownership(db, trader, positions)
+                    condor_legs = ownership["protected_symbols"]
+                    if ownership["entry_block_reason"]:
+                        logger.warning("Options quarantined: %s", ownership["entry_block_reason"])
                     unsettled = {c["ticker"] for c in await db.get_active_condors()
                                  if c["status"] == "awaiting_settlement"}
                     for pos in normalized:
@@ -782,7 +783,7 @@ async def alpaca_position_monitor():
                         if symbol in condor_legs or symbol in unsettled:
                             continue
                         state = _alpaca_pos_state.setdefault(symbol, {})
-                        message = await manage_position_exit(db, trader, pos, settings, state, record_fill)
+                        message = await manage_position_exit(db, trader, pos, settings, state)
                         if message:
                             logger.info(message)
                             if telegram.enabled:
@@ -793,7 +794,7 @@ async def alpaca_position_monitor():
                         if symbol not in held:
                             if state.get("pending"):
                                 await manage_position_exit(db, trader,
-                                    {"symbol": symbol, "qty": 0, "pnl_pct": 0}, settings, state, record_fill)
+                                    {"symbol": symbol, "qty": 0, "pnl_pct": 0}, settings, state)
                             if not state.get("pending"):
                                 await db.delete_position_monitor_state(symbol)
                                 _alpaca_pos_state.pop(symbol, None)
@@ -815,6 +816,7 @@ async def performance_sync_loop():
             await auto_trade.reconcile_submissions()
             # Book realized P&L for bracket/server-side exits that never hit record_exit.
             reconciled = await sync_trade_performance(db, trader)
+            await auto_trade.refresh_risk_controls()
             if reconciled:
                 logger.debug(f"Performance sync: reconciled {reconciled} closed trades")
         except Exception as e:
@@ -980,10 +982,19 @@ async def maybe_execute_condor(setup):
         logger.info("IV-exec skip: daily condor cap reached")
         return
 
+    from math import isfinite
     acct = await asyncio.to_thread(trader.get_account)
-    equity = float(acct.get("equity") or getattr(auto_trade, "_cached_equity", 0) or 0)
-    if equity <= 0:
-        logger.warning("IV-exec skip: no equity")
+    try:
+        equity = float(acct["equity"]) if not acct.get("error") else 0
+    except (KeyError, TypeError, ValueError):
+        equity = 0
+    if not isfinite(equity) or equity <= 0:
+        logger.warning("IV-exec skip: verified broker equity unavailable")
+        return
+    from trading.ownership import option_ownership
+    ownership = await option_ownership(db, trader)
+    if ownership["entry_block_reason"]:
+        logger.warning("IV-exec skip: %s", ownership["entry_block_reason"])
         return
 
     # Risk throttle: size down after losses, back up after wins, and refuse
@@ -1129,6 +1140,9 @@ async def log_variant_evals(setup, gate_passed: bool = True,
     diagnostics: dict = {}
     variants = await loop.run_in_executor(
         None, build_variants, trader, setup, settings, diagnostics)
+    from signals.measurement_capture import measurement_snapshot
+    await db.record_variant_capture(setup.ticker, edate, source, measurement_snapshot(
+        setup, settings, variants, diagnostics, action=_action, lead_days=_days_to, gate_passed=gate_passed))
     await db.record_variant_attempt(
         setup.ticker, edate, diagnostics.get("attempted", 0),
         diagnostics.get("priced", 0), diagnostics.get("dropped", {}), source=source)
@@ -1693,13 +1707,13 @@ async def iv_condor_monitor_loop():
     await asyncio.sleep(45)
     while True:
         try:
-            if settings.iv_exec_enabled:
-                for c in await db.get_active_condors():
-                    try:
-                        await _manage_condor(c)
-                    except Exception as e:
-                        logger.warning(f"Condor #{c.get('id')} manage error: {e}")
-                    await asyncio.sleep(1)
+            # Entry arming never disables exits or settlement of existing risk.
+            for c in await db.get_active_condors():
+                try:
+                    await _manage_condor(c)
+                except Exception as e:
+                    logger.warning(f"Condor #{c.get('id')} manage error: {e}")
+                await asyncio.sleep(1)
         except Exception as e:
             logger.warning(f"Condor monitor error: {e}")
         await asyncio.sleep(300)  # every 5 min

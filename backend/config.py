@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     alpaca_paper: bool = Field(True)
     alpaca_base_url: str = Field("https://paper-api.alpaca.markets")
     alpaca_data_url: str = Field("https://data.alpaca.markets")
+    alpaca_options_feed: str = Field("auto", pattern=r"^(auto|indicative|opra)$")
 
     # --- SEC-API ---
     sec_api_key: str = Field("")

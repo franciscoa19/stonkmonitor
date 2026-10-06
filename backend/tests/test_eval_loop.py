@@ -286,7 +286,7 @@ async def test_daily_report_surfaces_empty_variant_sample_rail(db):
     report = render_html(await build_report_data(db, FakeTrader()))
     assert "Forward-test sample rail." in report
     assert "Gated: 0 resolved / 100 more needed" in report
-    assert "ungated: 0 resolved / 100 more needed" in report
+    assert "all events: 0 resolved / 100 more needed" in report
 
 
 # ── Weekly watchlist review ─────────────────────────────────────────────
@@ -937,7 +937,8 @@ async def test_gate_comparison_scores_gated_vs_ungated(db):
 
     cmp = await db.get_gate_comparison()
     assert cmp["gated"]["n_events"] == 2 and cmp["gated"]["expectancy"] == 110.0
-    assert cmp["ungated"]["n_events"] == 2 and cmp["ungated"]["expectancy"] == -100.0
+    assert cmp["ungated"]["n_events"] == 4 and cmp["ungated"]["expectancy"] == 5.0
+    assert cmp["failed_gates"]["n_events"] == 2 and cmp["failed_gates"]["expectancy"] == -100.0
     # Summary respects the gate filter too.
     gated_only = await db.get_variant_summary(gate_passed=True)
     assert gated_only[0]["n_events"] == 2
@@ -978,9 +979,14 @@ async def test_variant_provenance_filters_and_quote_coverage(db):
         "events": 1, "structures_attempted": 5, "structures_priced": 4,
         "priced_pct": 80.0, "dropped_variants": {"fly": 1},
     }
-    report = render_html(await build_report_data(db, FakeTrader()))
+    data = await build_report_data(db, FakeTrader())
+    assert data["iv_gate_comparison_by_source"]["watchlist"]["ungated"]["n_events"] == 1
+    assert data["iv_gate_comparison_by_source"]["measurement"]["ungated"]["expectancy"] == -100.0
+    report = render_html(data)
     assert "4/5 structures priceable (80.0%)" in report
     assert "Dropped in at least one event: fly (1)." in report
+    assert "all events (sell everything)" in report and "failed gates" in report
+    assert "hold-to-expiry hypothetical" in report
 
 
 async def test_variant_source_migrates_an_existing_database(tmp_path):
@@ -1634,6 +1640,13 @@ async def test_reprice_never_drops_a_capture_it_cannot_replace(db, monkeypatch):
     assert {r["variant"] for r in now} == {"condor_1.0sd", "straddle"}
     assert {r["lead_days"] for r in now} == {1}
     assert {r["source"] for r in now} == {"measurement"}
+    captures = await db._query("SELECT snapshot_json FROM iv_variant_captures ORDER BY id")
+    assert len(captures) == 3
+    snapshots = [json.loads(r["snapshot_json"]) for r in captures]
+    assert [s["diagnostics"]["priced"] for s in snapshots] == [0, 1, 2]
+    assert snapshots[0]["variants"] == []  # not overwritten by the final successful reprice
+    assert snapshots[-1]["variants"][0]["credit"] == 2.10
+    assert len(snapshots[-1]["strategy_revision"]) == 64
 
 
 async def test_reprice_never_deletes_the_other_source_cohort(db):

@@ -18,9 +18,16 @@ from alpaca.trading.enums import OrderSide, TimeInForce, AssetClass, OrderClass
 logger = logging.getLogger(__name__)
 
 
+def _client_id_conflict(message) -> bool:
+    message = str(message).lower()
+    return (("client_order_id" in message or "client order id" in message)
+            and any(word in message for word in ("unique", "duplicate", "already")))
+
+
 class AlpacaTrader:
-    def __init__(self, api_key: str, secret_key: str, paper: bool = True):
+    def __init__(self, api_key: str, secret_key: str, paper: bool = True, options_feed: str = "auto"):
         self.paper = paper
+        self.options_feed = options_feed
         self.client = TradingClient(api_key, secret_key, paper=paper)
         # Raw-REST essentials for multi-leg (mleg) orders — alpaca-py 0.29 has no
         # OptionLegRequest/MLEG, but the REST API supports it (verified on paper).
@@ -237,6 +244,9 @@ class AlpacaTrader:
         from alpaca.common.exceptions import APIError
         code = error.status_code if isinstance(error, APIError) else None
         ambiguous = not isinstance(error, ValueError) and not (code and 400 <= code < 500)
+        if client_order_id and _client_id_conflict(error):
+            # This proves a reused identity, not that the original order failed.
+            ambiguous = True
         if client_order_id:
             found = self.get_order_by_client_id(client_order_id)
             if found.get("id"):
@@ -459,23 +469,72 @@ class AlpacaTrader:
             logger.error(f"get_option_contracts error: {e}")
             return []
 
+    @staticmethod
+    def _now():
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _quote_is_current(at, now) -> bool:
+        """Whether a quote last changed at `at` is still the standing market.
+
+        A latest-quote timestamp says when the NBBO last CHANGED, not when it
+        was last valid. Cheap options sit unchanged for long stretches: on the
+        paper feed at 11:40 ET on 2026-10-06, 62% of contracts asking <= $0.05
+        (and 65% of zero-bid books) had not moved in over two minutes, median
+        30 minutes. Those are a winning condor's wings after the print, so an
+        age cutoff would have blocked its profit target and post-earnings close.
+
+        What must be refused is a mark carried over from an earlier session —
+        the overnight book that mispriced exits on 2026-10-01 — or one stamped
+        in the future. Before today's 09:30 ET open nothing is current.
+        """
+        from market_time import ET
+        if (now - at).total_seconds() < -5:
+            return False
+        session_open = now.astimezone(ET).replace(hour=9, minute=30, second=0, microsecond=0)
+        return at.astimezone(ET) >= session_open
+
     def get_option_quotes(self, symbols: list[str]) -> dict:
-        """Latest bid/ask per OCC symbol. Returns {symbol: {bid, ask, mid}}."""
+        """Finite, uncrossed, current-session quotes with timestamp/feed provenance.
+
+        A real zero bid is retained for close/measurement consumers, but never
+        turned into an invented one-sided mid. Invalid books, and marks from an
+        earlier session, are absent. `age_seconds` records how long ago the
+        book last changed.
+        """
         if not symbols:
             return {}
         import urllib.parse
+        import math
+        from datetime import datetime, timezone
+        now = self._now()
+        quote_feed = getattr(self, "options_feed", "auto")
         out: dict = {}
         # batch to keep URLs sane
         for i in range(0, len(symbols), 100):
             chunk = symbols[i:i + 100]
-            q = urllib.parse.urlencode({"symbols": ",".join(chunk)})
+            params = {"symbols": ",".join(chunk)}
+            if quote_feed != "auto":
+                params["feed"] = quote_feed
+            q = urllib.parse.urlencode(params)
             url = f"{self._data_base}/v1beta1/options/quotes/latest?{q}"
             code, body = self._rest("GET", url)
             if code == 200:
                 for sym, qt in (body.get("quotes") or {}).items():
-                    bid, ask = float(qt.get("bp") or 0), float(qt.get("ap") or 0)
-                    mid = (bid + ask) / 2 if (bid and ask) else (bid or ask)
-                    out[sym] = {"bid": bid, "ask": ask, "mid": mid}
+                    try:
+                        bid, ask = float(qt["bp"]), float(qt["ap"])
+                        at = datetime.fromisoformat(qt["t"].replace("Z", "+00:00"))
+                        if (at.tzinfo is None or not all(math.isfinite(v) for v in (bid, ask))
+                                or bid < 0 or ask < 0 or bid > ask
+                                or not self._quote_is_current(at, now)):
+                            continue
+                    except (KeyError, AttributeError, TypeError, ValueError):
+                        continue
+                    out[sym] = {"bid": bid, "ask": ask, "mid": bid / 2 + ask / 2 if bid > 0 else 0,
+                                "timestamp": at.astimezone(timezone.utc).isoformat(), "feed": quote_feed,
+                                "age_seconds": round((now - at).total_seconds(), 1),
+                                "bid_size": qt.get("bs"), "ask_size": qt.get("as")}
             else:
                 logger.debug(f"get_option_quotes {code}: {body.get('error')}")
         return out
@@ -517,7 +576,8 @@ class AlpacaTrader:
             if found.get("id"):
                 return {"id": found["id"], "status": found.get("status"), "protection": found.get("order_class")}
         return {"error": body.get("error", f"HTTP {code}"),
-                "ambiguous": not (400 <= code < 500)}
+                "ambiguous": not (400 <= code < 500) or bool(
+                    client_order_id and _client_id_conflict(body.get("error")))}
 
     def close_multileg(self, legs: list[dict], qty: int, limit_price: float,
                        tif: str = "day", client_order_id: Optional[str] = None) -> dict:

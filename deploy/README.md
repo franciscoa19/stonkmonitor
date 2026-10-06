@@ -61,3 +61,26 @@ After a frontend change: `npm run build`, then
 `ProgramArguments` calls node by absolute path (`~/.local/node/bin/node`) because
 launchd's PATH doesn't include it. Update that path if node is reinstalled
 elsewhere (e.g. Homebrew).
+
+## SQLite backup and recovery
+
+The execution database contains ownership, pending order IDs, fill history and
+risk state. Reports alone cannot restore those records. From `backend/`, use a
+fresh destination name for each snapshot:
+
+    venv/bin/python backup_db.py stonkmonitor.db backups/stonkmonitor-20261006.db
+
+This uses SQLite's online backup API while the source stays open, includes
+committed WAL data, and reopens the snapshot to verify integrity and required
+execution tables before publishing it. It refuses to overwrite any destination
+and sets file permissions to 0600. Copy verified snapshots off the trading
+machine; `backend/backups/` is ignored by Git.
+
+Before restoring, stop the backend and preserve the current database and its
+WAL/SHM files together. Restore into a separate location and check strategy
+ownership, namespace, pending requests and fills before replacing the live DB.
+Do not combine a restored database with WAL/SHM files from a different snapshot.
+Reconcile the restored ledger with the broker before arming entries. Unknown
+option holdings are quarantined from automatic single-leg exits and block new
+automated entries until their ownership is resolved. The regression suite tests
+a live WAL backup/restore plus the missing-ledger protective-wing case.

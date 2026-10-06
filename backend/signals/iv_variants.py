@@ -16,11 +16,12 @@ Variants (all priced on the front expiry after the print):
   condor_1.3sd — iron condor at 1.3× (safer, thinner credit)
   fly          — iron fly, ATM shorts with wings 1× the move out (fat credit, needs a bigger move to lose)
 
-P&L is the expiry-intrinsic payoff at the realized underlying price, per 1 spread
-(×100). Our real condors are 1 DTE after the print, so intrinsic-at-resolution is
-a faithful proxy for the actual buy-to-close.
+P&L is the hold-to-expiry intrinsic payoff, per 1 spread (×100). This is a
+different experiment from the bot's profit-target and post-earnings exits;
+residual time value and the price path prevent treating it as live-exit P&L.
 """
 import logging
+from math import isfinite
 from datetime import date, timedelta
 from typing import Optional
 
@@ -154,7 +155,7 @@ def build_variants(trader, setup, settings, diagnostics: Optional[dict] = None) 
 
     spot = float(getattr(setup, "price", 0) or 0)
     em = _im_frac(setup)
-    if spot <= 0 or em <= 0:
+    if not isfinite(spot) or not isfinite(em) or spot <= 0 or em <= 0:
         for name in VARIANTS:
             drop(name, "invalid_input")
         return []
@@ -222,6 +223,10 @@ def build_variants(trader, setup, settings, diagnostics: Optional[dict] = None) 
         if s.get("long_call") in cbs: syms.add(cbs[s["long_call"]]["symbol"])
         if s.get("long_put") in pbs:  syms.add(pbs[s["long_put"]]["symbol"])
     quotes = trader.get_option_quotes(list(syms))
+    if diagnostics is not None:
+        diagnostics["market"] = {"expiry": exp_str,
+                                 "contracts": list(cbs.values()) + list(pbs.values()),
+                                 "quotes": quotes}
 
     # Fill assumption (VALIDATION_SPEC §3): never price the book at mid. We sell
     # into the bid and buy at the ask, so the logged credit is one a real order
@@ -243,12 +248,17 @@ def build_variants(trader, setup, settings, diagnostics: Optional[dict] = None) 
         except (TypeError, ValueError):
             mid_px = 0.0
         if not conservative:
-            return (mid_px, mid_px) if mid_px > 0 else (None, None)
+            return (mid_px, mid_px) if isfinite(mid_px) and mid_px > 0 else (None, None)
         try:
             px = float(rec.get("bid") if side == "sell" else rec.get("ask"))
         except (TypeError, ValueError):
             px = 0.0
-        return (px, mid_px) if px > 0 else (None, mid_px)
+        try:
+            bid, ask = float(rec["bid"]), float(rec["ask"])
+            valid = all(isfinite(p) for p in (bid, ask, px)) and 0 <= bid <= ask and ask > 0 and px > 0
+        except (KeyError, TypeError, ValueError):
+            valid = False
+        return (px, mid_px) if valid else (None, mid_px)
 
     # Median gap between listed strikes — "one strike increment" for pin risk.
     def _step(ks):

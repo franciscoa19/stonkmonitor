@@ -2,7 +2,10 @@
 REST API routes for the frontend.
 """
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator, model_validator
+from fastapi.responses import JSONResponse
+from uuid import UUID
+from db import DatabaseError
 from typing import Optional, Literal
 import logging
 import asyncio
@@ -16,12 +19,26 @@ router = APIRouter()
 #  Request Models                                                      #
 # ------------------------------------------------------------------ #
 class OrderRequest(BaseModel):
-    ticker: str
-    qty: float
+    request_id: UUID
+    ticker: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9.]+$")
+    qty: float = Field(gt=0, allow_inf_nan=False)
     side: Literal["buy", "sell"]
     order_type: Literal["market", "limit"] = "market"
-    limit_price: Optional[float] = None
-    tif: str = "day"
+    limit_price: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    tif: Literal["day", "gtc", "opg", "cls", "ioc", "fok"] = "day"
+
+    @field_validator("ticker")
+    @classmethod
+    def normalize_ticker(cls, value):
+        return value.upper()
+
+    @model_validator(mode="after")
+    def validate_limit(self):
+        if self.order_type == "limit" and self.limit_price is None:
+            raise ValueError("limit_price required for limit orders")
+        if self.order_type == "market":
+            self.limit_price = None
+        return self
 
 
 class WatchlistRequest(BaseModel):
@@ -60,19 +77,31 @@ async def get_orders(status: str = "open"):
 # ------------------------------------------------------------------ #
 @router.post("/order")
 async def place_order(req: OrderRequest):
-    from main import trader as t
-    if req.order_type == "market":
-        result = await asyncio.to_thread(t.market_order, req.ticker, req.qty, req.side, req.tif)
-    elif req.order_type == "limit":
-        if not req.limit_price:
-            raise HTTPException(400, "limit_price required for limit orders")
-        result = await asyncio.to_thread(t.limit_order, req.ticker, req.qty, req.side, req.limit_price, req.tif)
-    else:
-        raise HTTPException(400, "Unsupported order type")
+    from main import trader as t, db
+    from trading.manual_orders import manual_order_request
+    try:
+        result = await manual_order_request(db, t, req.request_id, req.model_dump(exclude={"request_id"}))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    except DatabaseError:
+        raise HTTPException(503, "Order state unavailable; reconcile this request before retrying")
+    return JSONResponse(result, status_code=202 if result["status"] == "pending" else
+                        400 if result["status"] == "rejected" else 200)
 
-    if "error" in result:
-        raise HTTPException(400, result["error"])
-    return result
+
+@router.get("/order-requests/{request_id}")
+async def reconcile_manual_order(request_id: UUID):
+    from main import trader as t, db
+    from trading.manual_orders import manual_order_request
+    try:
+        result = await manual_order_request(db, t, request_id)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    except DatabaseError:
+        raise HTTPException(503, "Order state unavailable; keep the same request identity")
+    if result is None:
+        raise HTTPException(404, "Request not recorded")
+    return JSONResponse(result, status_code=202 if result["status"] == "pending" else 200)
 
 
 @router.delete("/order/{order_id}")
@@ -419,6 +448,10 @@ async def get_filter_status():
     """Current state of all 8 auto-trade quality filters."""
     import time as _time
     from main import auto_trade as at, settings as s
+    try:
+        await at.refresh_risk_controls()
+    except Exception:
+        raise HTTPException(503, "Execution risk state unavailable")
     at._refresh_daily_pnl_date()
     spy_day, spy_trend = at._regime_cache[0], at._regime_cache[1]
     equity = at._cached_equity

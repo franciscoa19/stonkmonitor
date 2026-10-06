@@ -154,8 +154,11 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         iv_variants = []
     try:
         iv_gate_cmp = await db.get_gate_comparison()
+        iv_gate_by_source = {source: await db.get_gate_comparison(source=source)
+                             for source in ("watchlist", "measurement")}
     except Exception:
         iv_gate_cmp = {}
+        iv_gate_by_source = {}
     try:
         from config import get_settings as _gs
         heartbeat = await db.get_heartbeat(_gs().heartbeat_stale_minutes)
@@ -319,6 +322,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         "iv_condors": iv_condors,
         "iv_variants": iv_variants,
         "iv_gate_comparison": iv_gate_cmp,
+        "iv_gate_comparison_by_source": iv_gate_by_source,
         "iv_quote_coverage": iv_quote_coverage,
         "implied_vs_realized": implied_vs_realized,
         "risk_state": risk_state,
@@ -580,7 +584,7 @@ def render_html(d: dict) -> str:
             "<div style=\"margin-top:10px;padding:8px 10px;border-left:3px solid #c88;"
             "font-size:12px\"><b>Forward-test sample rail.</b> "
             f"Gated: {gated.get('n_events', 0)} resolved / {g_need} more needed; "
-            f"ungated: {ungated.get('n_events', 0)} resolved / {u_need} more needed. "
+            f"all events: {ungated.get('n_events', 0)} resolved / {u_need} more needed. "
             "Both arms need 100 events; no completion date is projected until a real "
             "collection rate exists.</div>")
 
@@ -645,20 +649,35 @@ def render_html(d: dict) -> str:
                 f"<td style='text-align:right'>{_money(g.get('expectancy') or 0)}</td>"
                 f"<td style='text-align:right'>{_f(g.get('profit_factor'))}</td>"
                 f"<td style='text-align:right'>{_f(g.get('tail_ratio'))}</td></tr>"
-                f"<tr><td>ungated (sell everything)</td><td style='text-align:right'>{u.get('n_events',0)}</td>"
+                f"<tr><td>all events (sell everything)</td><td style='text-align:right'>{u.get('n_events',0)}</td>"
                 f"<td style='text-align:right'>{_money(u.get('expectancy') or 0)}</td>"
                 f"<td style='text-align:right'>{_f(u.get('profit_factor'))}</td>"
                 f"<td style='text-align:right'>{_f(u.get('tail_ratio'))}</td></tr></table>"
                 "<div class=\"mut\" style=\"font-size:12px;margin-top:6px\">If selling "
                 "indiscriminately matches the filtered set, the three gates are noise.</div>"
                 f"{_sample_rail()}</div>")
+            source_rows = "".join(
+                f"<tr><td>{_html.escape(source)}</td><td>{label}</td>"
+                f"<td>{metrics.get('n_events', 0)}</td>"
+                f"<td>{_money(metrics.get('expectancy') or 0)}</td></tr>"
+                for source, comparison in (d.get("iv_gate_comparison_by_source") or {}).items()
+                for label, key in (("passed gates", "gated"), ("all events", "ungated"),
+                                   ("failed gates", "failed_gates"))
+                for metrics in [comparison.get(key, {})])
+            if source_rows:
+                _cmp_html += (
+                    "<div class=\"mut\" style=\"margin-top:12px\">Selection differs by source; "
+                    "check each population before using pooled results.</div>"
+                    "<table style=\"width:100%;font-size:12px\"><tr><th>Source</th>"
+                    "<th>Population</th><th>N</th><th>Expectancy</th></tr>"
+                    f"{source_rows}</table>")
         else:
             # A transient comparison-query failure must not hide the evidence
             # requirement from the morning report.
             _cmp_html = _sample_rail()
         _variant_card = (
             "<div class=\"card\"><h2>Strategy-variant comparison "
-            "<span class=\"pill mut\" style=\"font-size:11px\">hypothetical · no execution</span></h2>"
+            "<span class=\"pill mut\" style=\"font-size:11px\">hold-to-expiry hypothetical</span></h2>"
             "<table style=\"width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px\">"
             "<tr class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase;text-align:right\">"
             "<th style=\"text-align:left\">Variant</th><th>N</th><th>Win%</th>"
@@ -667,6 +686,7 @@ def render_html(d: dict) -> str:
             "<div class=\"mut\" style=\"font-size:12px;margin-top:10px\">Same events, "
             "different structures, priced at a conservative fill (short=bid, long=ask) net "
             "of commission and settled on the underlying's close at expiry. Per 1 spread. "
+            "These outcomes do not replay the bot's earlier profit-target/post-earnings exits. "
             "<b>Tail</b> = worst 5% vs the rest — how many good events one bad one erases; "
             "it is the number that catches a 70%-win-rate strategy that still loses money. "
             f"Effective tail: {_tail_basis}."
@@ -674,7 +694,7 @@ def render_html(d: dict) -> str:
     else:
         _variant_card = (
             "<div class=\"card\"><h2>Strategy-variant comparison "
-            "<span class=\"pill mut\" style=\"font-size:11px\">hypothetical · no execution</span></h2>"
+            "<span class=\"pill mut\" style=\"font-size:11px\">hold-to-expiry hypothetical</span></h2>"
             "<div class=\"mut\" style=\"font-size:12px\">No resolved evaluations under the "
             "current conservative pricing model yet. Earlier methodology is retained for audit "
             "but is not evidence.</div>"

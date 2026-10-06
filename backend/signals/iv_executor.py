@@ -13,6 +13,7 @@ reason it declined. main.py's iv_scanner_loop submits the plan when armed.
 """
 import json
 import logging
+from math import isfinite
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -69,7 +70,7 @@ def build_iron_condor(trader, setup, equity: float, settings,
     ticker = setup.ticker
     spot = float(setup.price or 0)
     em = _implied_move_frac(setup)
-    if spot <= 0 or em <= 0:
+    if not isfinite(spot) or not isfinite(em) or spot <= 0 or em <= 0:
         return {"ok": False, "reason": "no spot/implied move"}
 
     today = et_today()
@@ -142,15 +143,30 @@ def build_iron_condor(trader, setup, equity: float, settings,
     ]
 
     quotes = trader.get_option_quotes([l["symbol"] for l in legs])
-    mids = {l["symbol"]: quotes.get(l["symbol"], {}).get("mid", 0) for l in legs}
-    if not all(mids.values()):
-        return {"ok": False, "reason": "missing option quotes"}
+    # A leg we SELL needs a bid; a wing we BUY needs only an ask. A zero bid on
+    # a cheap wing is a real market (about a quarter of listed contracts on
+    # 2026-10-06), and iv_variants already prices it that way. Such a wing is
+    # budgeted at its full ask, the price actually paid, never an invented mid.
+    mids = {}
+    for leg in legs:
+        try:
+            quote = quotes[leg["symbol"]]
+            bid, ask = float(quote["bid"]), float(quote["ask"])
+            if not (isfinite(bid) and isfinite(ask)) or bid < 0 or ask <= 0 or bid > ask:
+                raise ValueError("invalid book")
+            if leg["side"] == "sell" and bid <= 0:
+                raise ValueError("no bid for a leg we sell")
+            mids[leg["symbol"]] = bid / 2 + ask / 2 if bid > 0 else ask
+        except (KeyError, TypeError, ValueError):
+            return {"ok": False, "reason": "missing or invalid option quotes"}
 
     credit = (mids[legs[0]["symbol"]] + mids[legs[2]["symbol"]]) \
         - (mids[legs[1]["symbol"]] + mids[legs[3]["symbol"]])
     call_width = long_call - short_call
     put_width = short_put - long_put
     width = max(call_width, put_width)
+    if not isfinite(credit) or not isfinite(width):
+        return {"ok": False, "reason": "nonfinite credit/width"}
     if credit < settings.iv_exec_min_credit:
         return {"ok": False, "reason": f"credit ${credit:.2f} < min"}
     if width <= 0 or credit / width < MIN_CREDIT_WIDTH_RATIO:

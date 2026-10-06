@@ -29,6 +29,11 @@ from signals.iv_executor import is_pre_earnings_entry_window
 
 logger = logging.getLogger(__name__)
 
+# Shared with the immutable measurement capture; values are unchanged.
+MIN_AVG_VOLUME = 1_500_000
+MIN_IV_RV_RATIO = 1.25
+MAX_TS_SLOPE = -0.00406
+
 # yfinance logs routine "no earnings dates / no fundamentals" conditions at
 # ERROR (e.g. for ETFs like SPY/QQQ, which legitimately have no earnings). Our
 # code handles those by returning None, so silence yfinance's own logger to
@@ -415,9 +420,9 @@ def _compute_sync(ticker: str) -> Optional[EarningsSetup]:
         iv30_rv30    = iv30_rv30,
         ts_slope     = ts_slope,
         expected_move= expected_move,
-        vol_ok       = avg_vol   >= 1_500_000,
-        iv_expensive = iv30_rv30 >= 1.25,
-        ts_inverted  = ts_slope  <= -0.00406,
+        vol_ok       = avg_vol   >= MIN_AVG_VOLUME,
+        iv_expensive = iv30_rv30 >= MIN_IV_RV_RATIO,
+        ts_inverted  = ts_slope  <= MAX_TS_SLOPE,
         next_earnings_date = earnings_date,
         earnings_report_time = earnings_report_time,
     )
