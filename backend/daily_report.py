@@ -91,12 +91,21 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
 
     # ── Equity curve ─────────────────────────────────────────────────────
     curve = await db.get_daily_equity(90)
-    # Start = the earliest day's IMMUTABLE open (open_equity), not its latest
-    # equity (which the hourly upsert moves), so day-1 P&L isn't zeroed out.
-    if curve:
-        start_equity = float(curve[0].get("open_equity") or curve[0]["equity"])
+    # Profit is measured against the cash actually put into the account: equity
+    # minus net transfers. Measured from the first recorded day instead, a later
+    # deposit would be reported as a gain (and a withdrawal as a loss).
+    try:
+        contributed = await db.get_contributed_capital()
+    except Exception:
+        contributed = None
+    if contributed is not None and contributed > 0:
+        start_equity, baseline = contributed, "net_deposits"
+    elif curve:
+        # No transfer history yet. Fall back to the earliest day's IMMUTABLE
+        # open (open_equity), not its latest equity, which the hourly upsert moves.
+        start_equity, baseline = float(curve[0].get("open_equity") or curve[0]["equity"]), "first_snapshot"
     else:
-        start_equity = equity or 50000.0
+        start_equity, baseline = equity or 50000.0, "current_equity"
     total_pnl = equity - start_equity
     total_pnl_pct = (total_pnl / start_equity * 100.0) if start_equity else 0.0
     days_running = len(curve)
@@ -306,7 +315,8 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
     return {
         "generated": now.isoformat(),
         "account": {"equity": equity, "cash": cash, "buying_power": buying_power,
-                    "start_equity": start_equity, "total_pnl": total_pnl,
+                    "start_equity": start_equity, "baseline": baseline,
+                    "net_deposits": contributed, "total_pnl": total_pnl,
                     "total_pnl_pct": total_pnl_pct, "open_positions": len(positions),
                     "days_running": days_running, "error": acct.get("error")},
         "metrics": {"closed_trades": n, "closed_condors": condors_closed,

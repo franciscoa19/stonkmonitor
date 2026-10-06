@@ -43,6 +43,8 @@ def session(monkeypatch):
     monkeypatch.setattr(market_time, "et_now", lambda *a: now)
     monkeypatch.setattr(main, "is_rth_now", lambda: True)
     monkeypatch.setattr(main, "feed", NS(get_latest_quote=lambda _: {"bid": 91, "ask": 91}))
+    # These tests use fake brokers; the account guard has its own tests.
+    monkeypatch.setattr(main, "_account_bound", True)
     return main
 
 

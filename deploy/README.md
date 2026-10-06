@@ -62,6 +62,21 @@ After a frontend change: `npm run build`, then
 launchd's PATH doesn't include it. Update that path if node is reinstalled
 elsewhere (e.g. Homebrew).
 
+## One database per broker account
+
+`DB_PATH` (in `backend/.env`) selects the SQLite file; blank means
+`backend/stonkmonitor.db`, and a relative name is taken from `backend/`. On its
+first run a database records a hash of the broker account ID. Every later start
+checks it, and the backend aborts with `REFUSING TO START` if the keys in `.env`
+belong to a different account. Until the broker has confirmed the account, new
+condors are not opened.
+
+To run a different account (for example a live one), give it its own file
+(`DB_PATH=live.db`) rather than reusing the paper ledger. The paper database
+keeps its own history. Note that `backend/reports/` and `REPORT_GIT_PUSH` are
+not per-account: with a live account they would publish its balances and trades
+to this repository.
+
 ## SQLite backup and recovery
 
 The execution database contains ownership, pending order IDs, fill history and

@@ -3,11 +3,12 @@
 exists because a losing streak means the regime moved, and resuming should be a
 decision someone makes, not something the bot does for itself."""
 import asyncio, sys
-from db import Database
+from db import Database, resolve_db_path
 from config import get_settings
 
 async def main():
-    d = Database(); await d.connect(); s = get_settings()
+    s = get_settings()
+    d = Database(resolve_db_path(s.db_path)); await d.connect()
     st = await d.get_risk_state(s.iv_risk_loss_factor, s.iv_risk_win_factor,
                                 s.iv_risk_floor, s.iv_risk_halt_streak)
     if not st["halted"]:

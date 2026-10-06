@@ -172,19 +172,15 @@ class AutoTradeEngine:
     def _circuit_breaker_active(self) -> bool:
         """True if today's realized losses exceed the daily limit.
 
-        Uses % of equity when equity is cached (preferred), falls back
-        to the absolute dollar limit as a safety net.
+        A percentage of equity whenever equity is known, so the limit scales
+        with the account. The absolute dollar limit applies only while equity
+        is unknown. It used to apply as well, always: at -$2,000 it was the
+        tighter limit on any account above $40k, so the 5% setting did nothing.
         """
         self._refresh_daily_pnl_date()
-        # % based: -5% of account equity by default
         if self._cached_equity > 0:
-            loss_pct = self._daily_pnl / self._cached_equity  # e.g. -0.04
-            pct_limit = self.settings.auto_trade_daily_loss_pct  # e.g. -0.05
-            if loss_pct <= pct_limit:
-                return True
-        # Absolute dollar fallback
-        dollar_limit = self.settings.auto_trade_daily_loss_limit  # e.g. -2000
-        return self._daily_pnl <= dollar_limit
+            return self._daily_pnl / self._cached_equity <= self.settings.auto_trade_daily_loss_pct
+        return self._daily_pnl <= self.settings.auto_trade_daily_loss_limit
 
     def _ticker_in_cooldown(self, ticker: str) -> bool:
         """True if ticker had a confirmed loss within the cooldown window."""

@@ -322,6 +322,57 @@ class AlpacaTrader:
             token = next_token
         return None
 
+    def account_fingerprint(self) -> Optional[str]:
+        """Stable identifier of the broker account behind these keys, or None
+        when it cannot be read. A hash: the account ID itself is never stored
+        or logged. Paper and live accounts can never share a fingerprint."""
+        import hashlib
+        code, body = self._rest("GET", f"{self._trade_base}/v2/account")
+        account_id = body.get("id") if code == 200 and isinstance(body, dict) else None
+        if not isinstance(account_id, str) or not account_id:
+            return None
+        return ("paper:" if self.paper else "live:") + hashlib.sha256(account_id.encode()).hexdigest()[:16]
+
+    # Cash moving in or out of the account: deposits, withdrawals, journals and
+    # ACAT cash. (The paper account's opening balance is a JNLC.)
+    CASH_TRANSFER_TYPES = ("CSD", "CSW", "JNLC", "ACATC", "TRANS")
+
+    def get_cash_transfers(self) -> Optional[list[dict]]:
+        """Every cash transfer on the account, or None on failure/incomplete
+        paging. Canceled entries are left out. Used to measure P&L against the
+        cash actually contributed, so a deposit is not mistaken for profit."""
+        import math
+        import urllib.parse
+        out, token, seen = [], None, set()
+        for _ in range(100):
+            params = {"activity_types": ",".join(self.CASH_TRANSFER_TYPES),
+                      "direction": "asc", "page_size": 100}
+            if token:
+                params["page_token"] = token
+            code, body = self._rest(
+                "GET", f"{self._trade_base}/v2/account/activities?{urllib.parse.urlencode(params)}")
+            if code != 200 or not isinstance(body, list):
+                return None
+            for row in body:
+                try:
+                    kind, amount = row["activity_type"], float(row["net_amount"])
+                    if (kind not in self.CASH_TRANSFER_TYPES or not math.isfinite(amount)
+                            or not isinstance(row["id"], str) or not row["id"]):
+                        return None
+                    if str(row.get("status") or "").lower() != "canceled":
+                        out.append({"id": row["id"], "activity_type": kind, "amount": amount,
+                                    "date": str(row.get("date") or "")[:10]})
+                except (KeyError, TypeError, ValueError):
+                    return None
+            if len(body) < 100:
+                return out
+            next_token = body[-1].get("id")
+            if not isinstance(next_token, str) or not next_token or next_token in seen:
+                return None
+            seen.add(next_token)
+            token = next_token
+        return None
+
     def get_mleg_leg_order_ids(self) -> Optional[set[str]]:
         """Order IDs of every multi-leg order's legs, or None if the listing is
         unavailable or incomplete.

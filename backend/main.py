@@ -13,7 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
-from db import Database
+from db import AccountMismatch, Database, resolve_db_path
 from feeds.unusual_whales import UnusualWhalesClient
 from feeds.alpaca_feed import AlpacaFeed
 from trading.alpaca_trader import AlpacaTrader
@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 #  Global singletons (used by routes via import)                      #
 # ------------------------------------------------------------------ #
 settings    = get_settings()
-db          = Database()
+db          = Database(resolve_db_path(settings.db_path))
 uw_client   = UnusualWhalesClient(settings.unusual_whales_api_key)
 feed        = AlpacaFeed(settings.alpaca_api_key, settings.alpaca_secret_key)
 trader      = AlpacaTrader(
@@ -852,6 +852,15 @@ async def daily_equity_loop():
         except Exception as e:
             logger.warning(f"Daily equity snapshot error: {e}")
 
+        # Mirror cash transfers so the report measures P&L against the money
+        # actually contributed. A failed fetch keeps the previous list.
+        try:
+            transfers = await asyncio.to_thread(trader.get_cash_transfers)
+            if transfers is not None:
+                await db.replace_cash_transfers(transfers)
+        except Exception as e:
+            logger.warning(f"Cash transfer sync error: {e}")
+
         # Resolve any IV/RV evals whose window has elapsed: measure the realized
         # move vs the implied move logged at signal time (hypothetical straddle).
         try:
@@ -913,6 +922,24 @@ async def daily_equity_loop():
             logger.warning(f"Variant eval resolve error: {e}")
 
         await asyncio.sleep(3600)  # hourly
+
+
+_account_bound = False
+
+
+async def bind_broker_account() -> bool:
+    """True once this database is confirmed to belong to the connected broker
+    account. False while the broker cannot be reached (new entries stay blocked
+    until it can). Raises AccountMismatch when it is definitely another account."""
+    global _account_bound
+    if _account_bound:
+        return True
+    fingerprint = await asyncio.to_thread(trader.account_fingerprint)
+    if not fingerprint:
+        return False
+    await db.bind_account(fingerprint)
+    _account_bound = True
+    return True
 
 
 async def maybe_execute_condor(setup):
@@ -991,6 +1018,9 @@ async def maybe_execute_condor(setup):
     if not isfinite(equity) or equity <= 0:
         logger.warning("IV-exec skip: verified broker equity unavailable")
         return
+    if not await bind_broker_account():
+        logger.warning("IV-exec skip: broker account not yet verified against this database")
+        return
     from trading.ownership import option_ownership
     ownership = await option_ownership(db, trader)
     if ownership["entry_block_reason"]:
@@ -1040,6 +1070,11 @@ async def maybe_execute_condor(setup):
         return
     await db._exec("UPDATE iv_condors SET entry_order_id=?, entry_status=? WHERE id=?",
                    (res.get("id"), res.get("status"), cid), strict=True, expected_rows=1)
+    if plan.get("ceiling_binding"):
+        logger.warning(
+            f"IV-exec {ticker}: IV_EXEC_MAX_RISK_USD (${s.iv_exec_max_risk_usd:,.0f}) set this size, "
+            f"not IV_EXEC_RISK_PCT ({s.iv_exec_risk_pct:.0%} of ${equity:,.0f} = "
+            f"${equity * s.iv_exec_risk_pct:,.0f}). Unset it to size by percentage.")
     st = plan["strikes"]
     logger.info(
         f"IV-exec ✅ {ticker} iron condor #{cid}: "
@@ -2103,6 +2138,16 @@ async def report_scheduler_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.connect()
+
+    # One database, one broker account. Starting against a different account
+    # would have the bot managing positions that account does not hold.
+    try:
+        if not await bind_broker_account():
+            logger.warning("Broker account could not be verified at startup — "
+                           "new entries stay blocked until it is")
+    except AccountMismatch as e:
+        logger.critical(f"REFUSING TO START: {e}")
+        raise
 
     # Sweep stale pending trades whose 5-min window elapsed while the process
     # was down. The per-trade expiry is an in-memory task lost on restart, so

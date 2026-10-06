@@ -1,13 +1,20 @@
 """
 Central config — reads from .env, validates, and exposes typed settings.
 """
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from functools import lru_cache
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+
+    @field_validator("iv_exec_max_risk_usd", mode="before")
+    @classmethod
+    def blank_means_no_ceiling(cls, value):
+        return None if isinstance(value, str) and not value.strip() else value
 
     @model_validator(mode="after")
     def require_paper_for_auto_execute(self):
@@ -93,9 +100,17 @@ class Settings(BaseSettings):
     # 10% x 5 concurrent = 50% of the account at risk at once, and earnings
     # condors are NOT independent (a macro gap can hit several together).
     iv_exec_risk_pct: float = Field(0.10)
-    # Absolute ceiling. Must stay above equity*risk_pct or it silently binds and
-    # the configured percentage quietly does nothing.
-    iv_exec_max_risk_usd: float = Field(6000.0)
+    # Optional absolute ceiling in dollars. Unset (the default) means the
+    # percentage alone governs, so sizing follows the account as it grows or
+    # shrinks. It was a fixed $6,000, which silently replaced the percentage
+    # above $60k of equity: 6% per condor on a $100k account, not the 10% set.
+    # If one is set and binds, the entry logs a warning saying so.
+    iv_exec_max_risk_usd: Optional[float] = Field(None, gt=0)
+    # Most spreads one condor may hold, per $10,000 of equity. A liquidity and
+    # fat-finger guard for cheap, narrow spreads, where the risk budget alone
+    # would buy a very large quantity. 4 per $10k is the old fixed cap of 20
+    # at the ~$50k account it was written for; it now scales with the account.
+    iv_exec_max_qty_per_10k_equity: float = Field(4.0, gt=0)
     iv_exec_wing_width_pct: float = Field(0.03)    # protective wing = 3% of underlying beyond short
     iv_exec_short_move_mult: float = Field(1.0)   # short strikes at 1.0× the implied move
     # 3, not 5: at 10% risk per condor this caps simultaneous exposure at 30% of
@@ -241,6 +256,13 @@ class Settings(BaseSettings):
     pos_trim_pct: float = Field(-35.0)    # trim at -35%
     pos_trim_sell_pct: float = Field(0.5)  # sell 50% at trim
     pos_sl_pct: float = Field(-40.0)        # stop loss at -40%
+
+    # --- Database ---
+    # SQLite file for THIS broker account (DB_PATH). Blank = backend/stonkmonitor.db;
+    # a relative path is taken from backend/. The database records which broker
+    # account it belongs to and the app refuses to start against another one, so
+    # a live account needs its own file rather than the paper account's ledger.
+    db_path: str = Field("")
 
     # --- Backend ---
     backend_host: str = Field("127.0.0.1")

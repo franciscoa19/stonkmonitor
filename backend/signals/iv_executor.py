@@ -25,7 +25,22 @@ logger = logging.getLogger(__name__)
 # wing width isn't worth the tail risk (e.g. $0.20 credit on a $10 wing).
 MIN_CREDIT_WIDTH_RATIO = 0.10
 CONTRACT_MULTIPLIER = 100          # 1 option contract = 100 shares
-QTY_HARD_CAP = 20                  # never size beyond this many spreads
+
+
+def condor_risk_budget(equity: float, settings, risk_multiplier: float = 1.0) -> tuple[float, bool]:
+    """Dollars one condor may lose, and whether a dollar ceiling replaced the
+    percentage. The percentage of CURRENT equity governs; iv_exec_max_risk_usd
+    is an optional ceiling that is unset by default."""
+    budget = equity * settings.iv_exec_risk_pct
+    ceiling = getattr(settings, "iv_exec_max_risk_usd", None)
+    binding = ceiling is not None and ceiling < budget
+    return (ceiling if binding else budget) * max(0.0, risk_multiplier), binding
+
+
+def condor_qty_cap(equity: float, settings) -> int:
+    """Most spreads one condor may hold, scaled with equity (never below 1)."""
+    per_10k = float(getattr(settings, "iv_exec_max_qty_per_10k_equity", 4.0))
+    return max(1, int(equity / 10_000 * per_10k))
 
 
 def is_pre_earnings_entry_window(earnings_date: Optional[str],
@@ -120,8 +135,7 @@ def build_iron_condor(trader, setup, equity: float, settings,
     # risk_multiplier is the throttle: < 1.0 after losses, back to 1.0 on wins.
     # Applied to the budget so it shrinks the WING too, not just the quantity —
     # otherwise integer qty steps would leave sizing flat between thresholds.
-    risk_budget = min(equity * settings.iv_exec_risk_pct,
-                      settings.iv_exec_max_risk_usd) * max(0.0, risk_multiplier)
+    risk_budget, ceiling_binding = condor_risk_budget(equity, settings, risk_multiplier)
     affordable_wing = risk_budget / CONTRACT_MULTIPLIER
     wing = min(spot * settings.iv_exec_wing_width_pct, affordable_wing)
     short_call = _nearest([k for k in call_strikes if k >= spot + move], spot + move) \
@@ -181,7 +195,8 @@ def build_iron_condor(trader, setup, equity: float, settings,
     qty = int(risk_budget // max_loss_per)
     if qty < 1:
         return {"ok": False, "reason": f"one spread (${max_loss_per:.0f}) exceeds risk budget ${risk_budget:.0f}"}
-    qty = min(qty, QTY_HARD_CAP)
+    qty_cap = condor_qty_cap(equity, settings)
+    qty = min(qty, qty_cap)
 
     # Entry limit: give up a little credit for fill probability into the print.
     limit_price = -accepted_credit
@@ -195,4 +210,6 @@ def build_iron_condor(trader, setup, equity: float, settings,
         "max_loss": round(max_loss_per, 2),
         "qty": qty, "limit_price": limit_price,
         "risk_usd": round(max_loss_per * qty, 2),
+        "risk_budget": round(risk_budget, 2), "qty_cap": qty_cap,
+        "ceiling_binding": ceiling_binding,
     }

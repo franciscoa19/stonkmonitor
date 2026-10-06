@@ -27,6 +27,10 @@ class DatabaseError(RuntimeError):
     """A required execution-state read or write could not be completed."""
 
 
+class AccountMismatch(RuntimeError):
+    """This database belongs to a different broker account than the one connected."""
+
+
 def _et_hour(iso: Optional[str]):
     """Hour-of-day (0-23) in US/Eastern for an ISO timestamp; None if unparseable."""
     if not iso:
@@ -65,6 +69,15 @@ def _minutes_between(start_iso: Optional[str], end_iso: Optional[str]):
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent / "stonkmonitor.db"
+
+
+def resolve_db_path(configured: str = "") -> Path:
+    """The database file for this deployment: DB_PATH when unset, and a relative
+    setting is taken from backend/ rather than the process's working directory."""
+    if not configured or not configured.strip():
+        return DB_PATH
+    path = Path(configured.strip()).expanduser()
+    return path if path.is_absolute() else Path(__file__).parent / path
 
 # The first validation implementation priced some unavailable bid/ask sides at
 # mid and did not consistently charge fees. Its rows are retained for audit but
@@ -407,6 +420,13 @@ CREATE TABLE IF NOT EXISTS db_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+-- The broker's complete list of cash transfers in and out of the account.
+CREATE TABLE IF NOT EXISTS cash_transfers (
+    activity_id   TEXT PRIMARY KEY,
+    activity_type TEXT NOT NULL,
+    amount        REAL NOT NULL,
+    date          TEXT NOT NULL
+);
 
 -- ── IV/RV strategy-variant logger (measurement only, NO execution) ──
 -- For each earnings event we log several hypothetical structures side by side
@@ -537,6 +557,51 @@ class Database:
             raise RuntimeError("order namespace unavailable; refusing to build client order IDs")
         self._order_ns = row["value"]
         return self._order_ns
+
+    async def bind_account(self, fingerprint: str) -> None:
+        """Tie this database to one broker account, once, and verify it after.
+
+        The ledger here — open condors, order IDs, fills, risk state — describes
+        one account. Run against another (paper keys swapped for live ones, or a
+        copied database), the bot would try to manage positions that account
+        does not hold. The first run records the account; every later run must
+        match it. Raises AccountMismatch otherwise.
+        """
+        if not fingerprint:
+            raise ValueError("account fingerprint required")
+        await self._exec("INSERT OR IGNORE INTO db_meta (key, value) VALUES ('broker_account', ?)",
+                         (fingerprint,), strict=True)
+        row = await self._scalar("SELECT value FROM db_meta WHERE key='broker_account'", strict=True)
+        if row.get("value") != fingerprint:
+            raise AccountMismatch(
+                "This database was created for a different broker account. "
+                "Set DB_PATH to a separate file for this account.")
+
+    async def replace_cash_transfers(self, transfers: list[dict]) -> None:
+        """Mirror the broker's complete transfer list, atomically. The list is
+        fetched whole each time, so corrections and cancellations carry over."""
+        values = []
+        for t in transfers:
+            amount = float(t["amount"])
+            if (not isinstance(t.get("id"), str) or not t["id"] or not t.get("activity_type")
+                    or not math.isfinite(amount)):
+                raise ValueError("Invalid cash transfer")
+            values.append((t["id"], t["activity_type"], amount, str(t.get("date") or "")))
+        async with self._write_lock:
+            try:
+                await self._conn.execute("DELETE FROM cash_transfers")
+                await self._conn.executemany("INSERT INTO cash_transfers VALUES (?,?,?,?)", values)
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
+    async def get_contributed_capital(self) -> Optional[float]:
+        """Net cash put into the account (deposits minus withdrawals), or None
+        when no transfer has been recorded yet."""
+        row = await self._scalar(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total FROM cash_transfers")
+        return float(row["total"]) if row.get("n") else None
 
     async def connect(self):
         self._conn = await aiosqlite.connect(self.path)
