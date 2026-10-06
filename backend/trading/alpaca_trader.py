@@ -71,6 +71,14 @@ class AlpacaTrader:
                 "equity":         float(acct.equity or 0),
                 "cash":           float(acct.cash or 0),
                 "buying_power":   float(acct.buying_power or 0),
+                # These are deliberately distinct from leveraged stock buying
+                # power. Missing fields remain unknown, never invented cash.
+                "options_buying_power": (float(acct.options_buying_power)
+                                         if acct.options_buying_power is not None else None),
+                "non_marginable_buying_power": (float(acct.non_marginable_buying_power)
+                                                if acct.non_marginable_buying_power is not None else None),
+                "trading_blocked": bool(acct.trading_blocked),
+                "account_blocked": bool(acct.account_blocked),
                 "day_trade_count":int(acct.daytrade_count or 0),
                 "pdt_flag":       bool(acct.pattern_day_trader),
                 "status":         acct.status.value if acct.status else "unknown",

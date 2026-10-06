@@ -98,7 +98,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
         contributed = await db.get_contributed_capital()
     except Exception:
         contributed = None
-    if contributed is not None and contributed > 0:
+    if contributed is not None:
         start_equity, baseline = contributed, "net_deposits"
     elif curve:
         # No transfer history yet. Fall back to the earliest day's IMMUTABLE
@@ -107,7 +107,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
     else:
         start_equity, baseline = equity or 50000.0, "current_equity"
     total_pnl = equity - start_equity
-    total_pnl_pct = (total_pnl / start_equity * 100.0) if start_equity else 0.0
+    total_pnl_pct = (total_pnl / start_equity * 100.0) if start_equity > 0 else None
     days_running = len(curve)
 
     # ── Closed trades (realized) ─────────────────────────────────────────
@@ -290,7 +290,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
                 proposals.append(
                     f"Strategy '{s['strategy']}' looks strong: {wr:.0f}% WR over {s['n']} "
                     f"(P&L ${s['pnl']:.0f}). Consider a modest size increase.")
-    if equity and start_equity and equity < start_equity * 0.95:
+    if equity and start_equity > 0 and equity < start_equity * 0.95:
         proposals.append(
             f"Drawdown: equity ${equity:,.0f} is {(equity/start_equity-1)*100:.1f}% below "
             f"the ${start_equity:,.0f} start. Review risk sizing before adding strategies.")
@@ -315,6 +315,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None) -> dict:
     return {
         "generated": now.isoformat(),
         "account": {"equity": equity, "cash": cash, "buying_power": buying_power,
+                    "paper": getattr(trader, "paper", None),
                     "start_equity": start_equity, "baseline": baseline,
                     "net_deposits": contributed, "total_pnl": total_pnl,
                     "total_pnl_pct": total_pnl_pct, "open_positions": len(positions),
@@ -712,6 +713,11 @@ def render_html(d: dict) -> str:
     e = _html.escape
     pnl_cls = "up" if a["total_pnl"] >= 0 else "down"
     pnl_sign = "+" if a["total_pnl"] >= 0 else ""
+    pnl_pct_display = (f"{pnl_sign}{a['total_pnl_pct']:.2f}%"
+                       if a.get("total_pnl_pct") is not None else
+                       "Percentage unavailable: net contributions are not positive")
+    baseline_label = "net contributions" if a.get("baseline") == "net_deposits" else "start"
+    mode_label = "Paper" if a.get("paper") is True else "Live" if a.get("paper") is False else "Broker"
     pf = m["profit_factor"]
     pf_disp = "—" if m["closed_trades"] == 0 else (f"{pf:.2f}" if pf < 999 else "∞")
     act_cls = {"QUIET": "mut", "MEASURED": "good", "HEAVY": "warn"}.get(act["tag"], "mut")
@@ -736,7 +742,7 @@ def render_html(d: dict) -> str:
     proposals = "".join(f"<li>{e(p)}</li>" for p in d["proposals"])
     curve_json = _json_points(d["equity_curve"], a["start_equity"])
 
-    return f"""<title>Paper Trading — Daily Check-in</title>
+    return f"""<title>{mode_label} Trading — Daily Check-in</title>
 <style>
   :root{{--bg:#0b0e14;--panel:#141a24;--panel2:#1b2431;--border:#26303f;--text:#d7deea;
     --muted:#7d8a9c;--accent:#38bdf8;--up:#3fb950;--down:#f0663f;--warn:#f0a336;--good:#3fb950;--gold:#e3b341;
@@ -777,14 +783,14 @@ def render_html(d: dict) -> str:
   {_hb_banner}
   {_risk_banner}
   <header>
-    <div><div class="eyebrow">StonkMonitor · Paper Eval Loop</div><h1>Daily Check-in — {e(date_label)}</h1></div>
+    <div><div class="eyebrow">StonkMonitor · {mode_label} Eval Loop</div><h1>Daily Check-in — {e(date_label)}</h1></div>
     <div style="text-align:right"><span class="pill {act_cls}">{e(act['tag'])}</span>
-      <div class="mut" style="font-family:var(--mono);font-size:11px;margin-top:6px">day {a['days_running']} · paper $50k acct</div></div>
+      <div class="mut" style="font-family:var(--mono);font-size:11px;margin-top:6px">day {a['days_running']} · {mode_label.lower()} account</div></div>
   </header>
 
   <div class="kpis">
-    <div class="kpi"><div class="k">Equity</div><div class="v">${a['equity']:,.0f}</div><div class="n">start ${a['start_equity']:,.0f}</div></div>
-    <div class="kpi"><div class="k">Total P&L</div><div class="v {pnl_cls}">{pnl_sign}${a['total_pnl']:,.0f}</div><div class="n {pnl_cls}">{pnl_sign}{a['total_pnl_pct']:.2f}%</div></div>
+    <div class="kpi"><div class="k">Equity</div><div class="v">${a['equity']:,.0f}</div><div class="n">{baseline_label} ${a['start_equity']:,.0f}</div></div>
+    <div class="kpi"><div class="k">Total P&L</div><div class="v {pnl_cls}">{pnl_sign}${a['total_pnl']:,.0f}</div><div class="n {pnl_cls}">{pnl_pct_display}</div></div>
     <div class="kpi"><div class="k">Closed trades</div><div class="v">{m['closed_trades']}</div><div class="n">{m['wins']}W / {m['losses']}L</div></div>
     <div class="kpi"><div class="k">Win rate</div><div class="v">{(str(round(m['win_rate']))+'%') if m['closed_trades'] else '—'}</div><div class="n">PF {pf_disp}</div></div>
     <div class="kpi"><div class="k">Entries / day</div><div class="v">{m['trades_per_day']:.1f}</div><div class="n">{m['trades_7d']} in 7d</div></div>

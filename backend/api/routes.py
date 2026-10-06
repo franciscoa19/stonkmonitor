@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field, field_validator, model_validator
 from fastapi.responses import JSONResponse
 from uuid import UUID
-from db import DatabaseError
+from db import AccountMismatch, DatabaseError
 from typing import Optional, Literal
 import logging
 import asyncio
@@ -75,8 +75,17 @@ async def get_orders(status: str = "open"):
 # ------------------------------------------------------------------ #
 #  Order Execution                                                     #
 # ------------------------------------------------------------------ #
+async def _require_trading_account():
+    from main import require_broker_account
+    try:
+        await require_broker_account()
+    except (AccountMismatch, DatabaseError) as e:
+        raise HTTPException(503, str(e)) from e
+
+
 @router.post("/order")
 async def place_order(req: OrderRequest):
+    await _require_trading_account()
     from main import trader as t, db
     from trading.manual_orders import manual_order_request
     try:
@@ -91,6 +100,7 @@ async def place_order(req: OrderRequest):
 
 @router.get("/order-requests/{request_id}")
 async def reconcile_manual_order(request_id: UUID):
+    await _require_trading_account()
     from main import trader as t, db
     from trading.manual_orders import manual_order_request
     try:
@@ -106,6 +116,7 @@ async def reconcile_manual_order(request_id: UUID):
 
 @router.delete("/order/{order_id}")
 async def cancel_order(order_id: str):
+    await _require_trading_account()
     from main import trader as t
     ok = await asyncio.to_thread(t.cancel_order, order_id)
     if not ok:
@@ -115,6 +126,7 @@ async def cancel_order(order_id: str):
 
 @router.delete("/positions/{ticker}")
 async def close_position(ticker: str):
+    await _require_trading_account()
     from main import trader as t
     result = await asyncio.to_thread(t.close_position, ticker)
     if "error" in result:

@@ -45,6 +45,7 @@ def session(monkeypatch):
     monkeypatch.setattr(main, "feed", NS(get_latest_quote=lambda _: {"bid": 91, "ask": 91}))
     # These tests use fake brokers; the account guard has its own tests.
     monkeypatch.setattr(main, "_account_bound", True)
+    monkeypatch.setattr(main, "_account_bind_lock", asyncio.Lock())
     return main
 
 
@@ -160,14 +161,18 @@ async def engine_with_trade(db, trader):
         alpaca_secret_key="unused", auto_trade_auto_execute=False))
     trader.get_positions_raw = lambda: []
     trader.get_open_orders_raw = lambda: []
-    trader.get_account = lambda: {"equity": 100000}
+    trader.get_account = lambda: {"equity": 100000, "cash": 100000,
+        "options_buying_power": 100000, "non_marginable_buying_power": 100000}
     for name, value in (("get_order_history", []), ("get_orders", []),
                         ("get_fill_activities", []), ("get_mleg_leg_order_ids", set())):
         if not hasattr(trader, name):
             setattr(trader, name, lambda *a, _value=value, **kw: _value)
-    engine.set_dependencies(None, db, trader)
+    async def verified_account():
+        return
+    engine.set_dependencies(None, db, trader, account_check=verified_account)
     tid = await db.save_pending_trade(datetime.now(timezone.utc) + timedelta(minutes=5),
-                                      ticker="AAPL", symbol="AAPL", qty=1, limit_price=100)
+                                      ticker="AAPL", symbol="AAPL", trade_type="equity",
+                                      qty=1, limit_price=100, risk_amount=100)
     engine._pending[tid] = NS(symbol="AAPL", qty=1, limit_price=100, target_pct=15,
         stop_pct=5, expires_at=datetime.utcnow() + timedelta(minutes=5),
         ticker="AAPL", trade_type="equity", option_type=None)
@@ -328,6 +333,7 @@ async def test_recreated_db_never_adopts_an_old_condor_entry(tmp_path, monkeypat
     """2026-10-02 reset: row ids restarted at 1. A broker order placed by the old
     DB's condor #1 must not be recovered as the new DB's condor #1 entry."""
     import main
+    monkeypatch.setattr(main, "_account_bound", True)  # fake brokers, identity tested separately
     legs = json.dumps([{"symbol": "SC", "side": "sell", "ratio_qty": 1}])
     strikes = {"short_put": 90, "long_put": 85, "short_call": 110, "long_call": 115}
     broker_orders = {}                            # client_order_id -> broker order

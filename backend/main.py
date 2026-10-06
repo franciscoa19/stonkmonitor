@@ -13,7 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
-from db import AccountMismatch, Database, resolve_db_path
+from db import AccountMismatch, Database, DatabaseError, resolve_db_path
 from feeds.unusual_whales import UnusualWhalesClient
 from feeds.alpaca_feed import AlpacaFeed
 from trading.alpaca_trader import AlpacaTrader
@@ -758,6 +758,7 @@ async def alpaca_position_monitor():
     restored = False
     while True:
         try:
+            await require_broker_account()
             if not restored:
                 saved = await db.get_position_monitor_states()
                 _alpaca_pos_state.clear()
@@ -813,6 +814,7 @@ async def performance_sync_loop():
 
     while True:
         try:
+            await require_broker_account()
             await auto_trade.reconcile_submissions()
             # Book realized P&L for bracket/server-side exits that never hit record_exit.
             reconciled = await sync_trade_performance(db, trader)
@@ -834,6 +836,12 @@ async def daily_equity_loop():
     from market_time import et_now
     await asyncio.sleep(20)  # let startup settle
     while True:
+        try:
+            await require_broker_account()
+        except (AccountMismatch, DatabaseError) as e:
+            logger.warning("Account ledger sync blocked: %s", e)
+            await asyncio.sleep(10)
+            continue
         try:
             acct = await asyncio.to_thread(trader.get_account)
             equity = float(acct.get("equity", 0) or 0)
@@ -925,21 +933,39 @@ async def daily_equity_loop():
 
 
 _account_bound = False
+_account_bind_lock = asyncio.Lock()
 
 
 async def bind_broker_account() -> bool:
     """True once this database is confirmed to belong to the connected broker
-    account. False while the broker cannot be reached (new entries stay blocked
+    account. False while the broker cannot be reached (all ledger activity stays blocked
     until it can). Raises AccountMismatch when it is definitely another account."""
     global _account_bound
-    if _account_bound:
+    async with _account_bind_lock:
+        if _account_bound:
+            return True
+        try:
+            fingerprint = await asyncio.to_thread(trader.account_fingerprint)
+        except Exception as e:
+            logger.warning("Broker identity unavailable: %s", e)
+            return False
+        if not fingerprint:
+            return False
+        await db.bind_account(fingerprint)
+        _account_bound = True
         return True
-    fingerprint = await asyncio.to_thread(trader.account_fingerprint)
-    if not fingerprint:
-        return False
-    await db.bind_account(fingerprint)
-    _account_bound = True
-    return True
+
+
+async def require_broker_account() -> None:
+    if not await bind_broker_account():
+        raise DatabaseError("Broker account is not verified; trading and ledger reconciliation are blocked")
+
+
+async def wait_for_broker_account() -> None:
+    """Retry identity before startup exposes routes or launches trading tasks."""
+    while not await bind_broker_account():
+        logger.warning("Waiting for verified broker identity — startup and trading remain blocked")
+        await asyncio.sleep(10)
 
 
 async def maybe_execute_condor(setup):
@@ -1536,6 +1562,7 @@ async def _reconcile_condor_expiry(c: dict, legs: list, remaining: int):
 
 async def _manage_condor(c: dict):
     """Confirm entry fill, then close on profit target / after the print."""
+    await require_broker_account()
     import json as _json
     from datetime import date as _date
     from signals.iv_variants import settlement_ready
@@ -2083,7 +2110,9 @@ async def generate_daily_report(is_weekly: bool = False, scheduled: bool = False
 
     day = report_day(data)
     a, m = data["account"], data["metrics"]
-    summary = (f"Equity ${a['equity']:,.0f} ({a['total_pnl_pct']:+.2f}%) | "
+    return_display = (f"{a['total_pnl_pct']:+.2f}%" if a["total_pnl_pct"] is not None
+                      else f"P&L ${a['total_pnl']:+,.0f}; return percentage unavailable")
+    summary = (f"Equity ${a['equity']:,.0f} ({return_display}) | "
                f"{m['closed_trades']} closed {m['win_rate']:.0f}%WR | "
                f"{a['open_positions']} open | {len(data['proposals'])} proposal(s)")
     # Record the run as incomplete BEFORE writing the HTML, so a failure below
@@ -2137,16 +2166,20 @@ async def report_scheduler_loop():
 # ------------------------------------------------------------------ #
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _account_bound
+    _account_bound = False  # Never reuse verification across a new lifespan.
     await db.connect()
 
     # One database, one broker account. Starting against a different account
     # would have the bot managing positions that account does not hold.
     try:
-        if not await bind_broker_account():
-            logger.warning("Broker account could not be verified at startup — "
-                           "new entries stay blocked until it is")
+        await wait_for_broker_account()
     except AccountMismatch as e:
         logger.critical(f"REFUSING TO START: {e}")
+        await db.close()
+        raise
+    except BaseException:
+        await db.close()
         raise
 
     # Sweep stale pending trades whose 5-min window elapsed while the process
@@ -2244,7 +2277,7 @@ async def lifespan(app: FastAPI):
     pattern_engine.set_notifiers(discord, pushover)
 
     # Wire auto-trade dependencies
-    auto_trade.set_dependencies(telegram, db, trader)
+    auto_trade.set_dependencies(telegram, db, trader, account_check=require_broker_account)
 
     # Seed cached equity immediately so circuit breaker % is correct from the start
     try:
@@ -2285,6 +2318,7 @@ async def lifespan(app: FastAPI):
     await telegram.close()
     await auto_trade.close()
     await db.close()
+    _account_bound = False
     logger.info("StonkMonitor shutting down")
 
 

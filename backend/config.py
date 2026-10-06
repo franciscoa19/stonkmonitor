@@ -11,7 +11,7 @@ from functools import lru_cache
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
-    @field_validator("iv_exec_max_risk_usd", mode="before")
+    @field_validator("iv_exec_max_risk_usd", "auto_trade_max_risk_usd", mode="before")
     @classmethod
     def blank_means_no_ceiling(cls, value):
         return None if isinstance(value, str) and not value.strip() else value
@@ -200,8 +200,8 @@ class Settings(BaseSettings):
     # Commit + push the daily history exports to GitHub (durable backup + the
     # bridge a cloud delivery routine reads from). Off by default.
     report_git_push: bool = Field(False)
-    auto_trade_max_risk_pct: float = Field(0.02)      # 2% of equity per options trade
-    auto_trade_max_risk_usd: float = Field(50000.0)   # very high — % is the real cap
+    auto_trade_max_risk_pct: float = Field(0.02, gt=0, le=1, allow_inf_nan=False)
+    auto_trade_max_risk_usd: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     auto_trade_score_threshold: float = Field(9.0)    # raised from 8.5
     auto_trade_pattern_threshold: float = Field(9.5) # raised from 9.0
     auto_trade_min_dte: int = Field(3)    # was 2 — data shows 3-7d is sweet spot
@@ -221,7 +221,7 @@ class Settings(BaseSettings):
     intraday_vol_bump: float = Field(1.5)            # need score ≥ threshold + 1.5 during vol
 
     # --- Long-Term Equity Trades (insider cluster / congress + sweep patterns) ---
-    equity_long_risk_pct: float = Field(0.05)   # 5% of equity for conviction stock holds
+    equity_long_risk_pct: float = Field(0.05, gt=0, le=1, allow_inf_nan=False)
     equity_long_target_pct: float = Field(30.0)  # TP at +30%
     equity_long_stop_pct: float = Field(10.0)      # SL at -10%
 

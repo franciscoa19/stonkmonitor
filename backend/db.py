@@ -31,6 +31,10 @@ class AccountMismatch(RuntimeError):
     """This database belongs to a different broker account than the one connected."""
 
 
+class AccountBindingRequired(AccountMismatch):
+    """A populated legacy ledger needs an explicit, verified account migration."""
+
+
 def _et_hour(iso: Optional[str]):
     """Hour-of-day (0-23) in US/Eastern for an ISO timestamp; None if unparseable."""
     if not iso:
@@ -558,20 +562,36 @@ class Database:
         self._order_ns = row["value"]
         return self._order_ns
 
-    async def bind_account(self, fingerprint: str) -> None:
+    async def bind_account(self, fingerprint: str, *, legacy_fingerprint: Optional[str] = None) -> None:
         """Tie this database to one broker account, once, and verify it after.
 
         The ledger here — open condors, order IDs, fills, risk state — describes
         one account. Run against another (paper keys swapped for live ones, or a
         copied database), the bot would try to manage positions that account
         does not hold. The first run records the account; every later run must
-        match it. Raises AccountMismatch otherwise.
+        match it. A populated unbound ledger requires the operator to supply
+        its independently verified fingerprint through the migration tool.
         """
         if not fingerprint:
             raise ValueError("account fingerprint required")
-        await self._exec("INSERT OR IGNORE INTO db_meta (key, value) VALUES ('broker_account', ?)",
-                         (fingerprint,), strict=True)
+        if legacy_fingerprint is not None and legacy_fingerprint != fingerprint:
+            raise AccountMismatch("The expected legacy account does not match the connected broker account")
+        # The emptiness test is part of the INSERT, not a preceding read: a
+        # concurrent ledger write must not slip between checking and binding.
+        tables = ("iv_condors", "pending_trades", "manual_order_requests",
+                  "position_monitor_state", "trade_performance", "trade_fills",
+                  "realized_trade_exits", "daily_equity", "cash_transfers")
+        ledger_rows = " UNION ALL ".join(f"SELECT 1 FROM {table}" for table in tables)
+        await self._exec(
+            "INSERT OR IGNORE INTO db_meta (key, value) SELECT 'broker_account', ? "
+            f"WHERE ? OR NOT EXISTS ({ledger_rows})",
+            (fingerprint, legacy_fingerprint == fingerprint), strict=True)
         row = await self._scalar("SELECT value FROM db_meta WHERE key='broker_account'", strict=True)
+        if not row:
+            raise AccountBindingRequired(
+                "This populated database has no verified broker account. "
+                "Use bind_account.py with its independently verified --expected-fingerprint, "
+                "or set DB_PATH to a new file for a different account.")
         if row.get("value") != fingerprint:
             raise AccountMismatch(
                 "This database was created for a different broker account. "
@@ -1815,14 +1835,18 @@ class Database:
         if not kwargs:
             return
         allowed = {
-            "status", "telegram_msg_id", "alpaca_order_id", "executed_at", "entry_order_status"
+            "status", "telegram_msg_id", "alpaca_order_id", "executed_at", "entry_order_status",
+            "qty", "risk_amount",
         }
         cols = {k: v for k, v in kwargs.items() if k in allowed}
         if not cols:
             return
         set_clause = ", ".join(f"{k}=?" for k in cols)
         params = list(cols.values()) + [trade_id]
-        await self._exec(f"UPDATE pending_trades SET {set_clause} WHERE id=?", params,
+        # Claim and resized economics commit together before the broker POST.
+        # An accepted/uncertain row can never be claimed as a fresh submission.
+        condition = " AND status='pending'" if cols.get("status") == "submitting" else ""
+        await self._exec(f"UPDATE pending_trades SET {set_clause} WHERE id=?{condition}", params,
                          strict=True, expected_rows=1)
 
     async def get_pending_trades(self, status: str = "pending") -> list[dict]:

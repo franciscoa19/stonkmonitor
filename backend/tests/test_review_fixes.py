@@ -233,6 +233,7 @@ async def test_manual_api_preserves_pending_outcome_and_request_identity(databas
     broker, rid = ManualBroker(), str(uuid4())
     monkeypatch.setattr(main, "db", database)
     monkeypatch.setattr(main, "trader", broker)
+    monkeypatch.setattr(main, "_account_bound", True)  # account guard tested separately
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as http:
         payload = {**PAYLOAD, "request_id": rid, "ticker": "aapl"}
         reply = await http.post("/api/order", json=payload)

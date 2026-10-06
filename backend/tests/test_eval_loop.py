@@ -1837,6 +1837,7 @@ async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeyp
     unclosed short leg through expiry is assignment, which beats a poor fill."""
     import main
     monkeypatch.setattr(main, "db", db)
+    monkeypatch.setattr(main, "_account_bound", True)  # fake broker; identity tested separately
 
     legs = [{"symbol": "SC", "side": "sell", "ratio_qty": 1},
             {"symbol": "LC", "side": "buy", "ratio_qty": 1},
@@ -1965,6 +1966,7 @@ async def test_expiry_settlement_does_not_require_an_option_chain(db, monkeypatc
     """Expired options disappear from the live chain; confirmed broker expiry
     must settle without first requiring a quote that cannot exist."""
     import main
+    monkeypatch.setattr(main, "_account_bound", True)
     from datetime import timedelta
     from market_time import et_today
 
@@ -2006,6 +2008,7 @@ async def test_close_fill_without_a_usable_price_stays_open_for_reconciliation(
     """A broker response that says filled but omits or corrupts the fill price
     must never be converted into a fictitious full-credit win."""
     import main
+    monkeypatch.setattr(main, "_account_bound", True)
     monkeypatch.setattr(main, "db", db)
     legs = json.dumps([{"symbol": "SC", "side": "sell"}, {"symbol": "LC", "side": "buy"},
                        {"symbol": "SP", "side": "sell"}, {"symbol": "LP", "side": "buy"}])

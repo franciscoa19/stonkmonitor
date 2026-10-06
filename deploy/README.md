@@ -66,16 +66,53 @@ elsewhere (e.g. Homebrew).
 
 `DB_PATH` (in `backend/.env`) selects the SQLite file; blank means
 `backend/stonkmonitor.db`, and a relative name is taken from `backend/`. On its
-first run a database records a hash of the broker account ID. Every later start
+first run an empty account ledger records a hash of the broker account ID. Every later start
 checks it, and the backend aborts with `REFUSING TO START` if the keys in `.env`
-belong to a different account. Until the broker has confirmed the account, new
-condors are not opened.
+belong to a different account. If identity cannot be read, startup retries every
+10 seconds before serving HTTP/WebSocket routes or starting any trading tasks.
+Account verification also guards entries, exits, cancellations, manual requests,
+and broker-ledger reconciliation. Check the backend log if startup is waiting;
+HTTP health checks become available after verification succeeds.
+
+A populated ledger or restored backup from before account binding was added
+must **not** automatically adopt the connected account. Stop the backend and
+make a SQLite backup first. Verify the original broker account against its
+historical orders/positions in the broker dashboard. Using that original
+account's credentials, obtain its fingerprint with the read-only probe from
+`backend/` (this mode does not open the database):
+
+```sh
+venv/bin/python bind_account.py --show-fingerprint
+```
+
+Then explicitly bind that legacy ledger with:
+
+```sh
+venv/bin/python bind_account.py --expected-fingerprint 'paper:VERIFIED_FINGERPRINT'
+```
+
+Use the independently verified full fingerprint in place of the placeholder
+(`live:` for an original live ledger). `DB_PATH` selects the existing ledger.
+The tool checks the connected account against the supplied fingerprint before
+recording the binding; it cannot replace an existing different binding and
+does not send broker orders. Do not derive an override from unfamiliar new
+credentials simply to bypass a mismatch. A different account needs a new DB.
 
 To run a different account (for example a live one), give it its own file
 (`DB_PATH=live.db`) rather than reusing the paper ledger. The paper database
 keeps its own history. Note that `backend/reports/` and `REPORT_GIT_PUSH` are
 not per-account: with a live account they would publish its balances and trades
 to this repository.
+
+## Flow-entry sizing (flow trading is off by default)
+
+Flow entries floor quantities to the percentage budget and revalidate them
+at confirmation using fresh equity, cash, and options/non-marginable buying
+power. Orders only shrink from the suggested quantity. Missing buying power or
+unresolved manual orders block submission. Unlisted pending flow/condor entries
+reserve funds locally; listed broker orders are already included in available
+buying power. `AUTO_TRADE_MAX_RISK_USD` is optional and unset by default; an old
+explicit value in `.env` remains an intentional ceiling until removed.
 
 ## SQLite backup and recovery
 

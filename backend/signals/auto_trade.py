@@ -38,10 +38,11 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Optional
 from math import isfinite
 
-from db import DatabaseError
+from db import AccountMismatch, DatabaseError
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ class AutoTradeEngine:
         self._telegram = None
         self._db = None
         self._trader = None
+        self._account_check = None
         self._pending: dict[int, TradeSuggestion] = {}
         self._confirm_lock = asyncio.Lock()
         self._uncertain_submissions: set[int] = set()
@@ -117,10 +119,16 @@ class AutoTradeEngine:
         # Timestamps of every Telegram trade alert sent (pruned to rolling window)
         self._alert_timestamps: list[float] = []
 
-    def set_dependencies(self, telegram, db, trader):
+    def set_dependencies(self, telegram, db, trader, *, account_check=None):
         self._telegram = telegram
         self._db = db
         self._trader = trader
+        self._account_check = account_check
+
+    async def _require_account(self):
+        if self._account_check is None:
+            raise DatabaseError("Broker account verification is not configured")
+        await self._account_check()
 
     async def close(self):
         if self._session and not self._session.closed:
@@ -469,49 +477,119 @@ class AutoTradeEngine:
 
     # ── Position sizing ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _verified_equity(account: dict) -> float:
+        try:
+            equity = float(account["equity"])
+            return equity if not account.get("error") and isfinite(equity) and equity > 0 else 0.0
+        except (KeyError, TypeError, ValueError):
+            return 0.0
+
+    def _risk_budget(self, equity: float, risk_pct: Optional[float] = None) -> float:
+        pct = risk_pct if risk_pct is not None else self.settings.auto_trade_max_risk_pct
+        if not isfinite(equity) or equity <= 0 or not isfinite(pct) or not 0 < pct <= 1:
+            return 0.0
+        budget = equity * pct
+        ceiling = self.settings.auto_trade_max_risk_usd
+        if ceiling is not None:
+            if not isfinite(ceiling) or ceiling <= 0:
+                return 0.0
+            budget = min(budget, ceiling)
+        return budget
+
+    @staticmethod
+    def _affordable_quantity(budget: float, price: float, multiplier: int = 1) -> tuple[int, float]:
+        if not isfinite(budget) or budget <= 0 or not isfinite(price) or price <= 0:
+            return 0, 0.0
+        cost = Decimal(str(price)) * multiplier
+        qty = int(Decimal(str(budget)) // cost)
+        return qty, round(float(cost * qty), 2)
+
     def _size_options(self, equity: float, limit_price: float) -> tuple[int, float]:
         """Returns (contracts, risk_amount)."""
-        max_risk = min(
-            equity * self.settings.auto_trade_max_risk_pct,
-            self.settings.auto_trade_max_risk_usd,
-        )
-        cost_per = limit_price * 100  # 1 contract = 100 shares
-        if cost_per <= 0:
-            return 0, 0.0
-        qty = max(1, int(max_risk / cost_per))
-        # If even 1 contract exceeds 1.5x max_risk, skip — prevents busting
-        # the per-trade risk budget on small accounts.
-        if cost_per > max_risk * 1.5:
-            logger.info(
-                f"Auto-trade sizing: 1 option @ ${limit_price:.2f} costs ${cost_per:.0f} "
-                f"> 1.5× risk budget ${max_risk:.0f} (equity ${equity:,.0f} × "
-                f"{self.settings.auto_trade_max_risk_pct*100:.0f}%) — skipping"
-            )
-            return 0, 0.0
-        risk = qty * cost_per
-        return qty, round(risk, 2)
+        return self._affordable_quantity(self._risk_budget(equity), limit_price, 100)
 
     def _size_equity(self, equity: float, price: float,
                      risk_pct: Optional[float] = None) -> tuple[int, float]:
         """Returns (shares, risk_amount).
         risk_pct: override default auto_trade_max_risk_pct (used for long-term trades).
-        Same 1.5x guard as options sizing — refuses to bust risk budget on a single share.
+        Skip if even one share exceeds the percentage budget.
         """
-        pct = risk_pct if risk_pct is not None else self.settings.auto_trade_max_risk_pct
-        max_risk = min(
-            equity * pct,
-            self.settings.auto_trade_max_risk_usd,  # very high cap — % dominates
-        )
-        if price <= 0:
-            return 0, 0.0
-        if price > max_risk * 1.5:
-            logger.info(
-                f"Auto-trade sizing: 1 share @ ${price:.2f} > 1.5× risk budget "
-                f"${max_risk:.0f} (equity ${equity:,.0f} × {pct*100:.1f}%) — skipping"
-            )
-            return 0, 0.0
-        qty = max(1, int(max_risk / price))
-        return qty, round(qty * price, 2)
+        return self._affordable_quantity(self._risk_budget(equity, risk_pct), price)
+
+    async def _submission_size(self, suggestion, trade_id: int) -> tuple[int, float]:
+        """Size only an unsubmitted card; account funds already reserve listed
+        broker orders, while local entries missing from that list reserve here."""
+        orders = await asyncio.to_thread(self._trader.get_open_orders_raw)
+        if orders is None:
+            raise DatabaseError("Open-order snapshot unavailable for sizing")
+        known_orders, known_clients = set(), set()
+        for order in orders:
+            if not isinstance(order, dict) or not order.get("id"):
+                raise DatabaseError("Malformed open-order sizing snapshot")
+            known_orders.add(order["id"])
+            if order.get("client_order_id"):
+                known_clients.add(order["client_order_id"])
+
+        manual_unknown = await self._db._query(
+            "SELECT 1 FROM manual_order_requests WHERE status IN ('submitting','pending') LIMIT 1",
+            strict=True)
+        if manual_unknown:
+            raise DatabaseError("A manual order outcome is unresolved; new flow entries are deferred")
+        reserved = 0.0
+        ns = await self._db.order_namespace()
+        for row in await self._db.get_entry_reservations():
+            if row["id"] == trade_id:
+                continue
+            if (row.get("alpaca_order_id") in known_orders or any(
+                    f"sm-{ns}-trade-{row['id']}-{kind}" in known_clients for kind in ("bracket", "limit"))):
+                continue  # already reflected in the broker's available funds
+            if row.get("trade_type") not in ("option", "equity", "equity_long"):
+                raise DatabaseError("Unknown pending entry reservation type")
+            multiplier = 100 if row["trade_type"] == "option" else 1
+            try:
+                amount = float(row["qty"]) * float(row["limit_price"]) * multiplier
+            except (KeyError, TypeError, ValueError) as e:
+                raise DatabaseError("Unusable pending entry reservation") from e
+            if not isfinite(amount) or amount <= 0:
+                raise DatabaseError("Unusable pending entry reservation")
+            reserved += amount
+        for row in await self._db.get_active_condors():
+            if row["status"] != "pending_entry":
+                continue
+            if (row.get("entry_order_id") in known_orders
+                    or f"sm-{ns}-condor-{row['id']}-entry" in known_clients):
+                continue
+            try:
+                amount = float(row["qty"]) * float(row["max_loss"])
+            except (KeyError, TypeError, ValueError) as e:
+                raise DatabaseError("Unusable pending condor reservation") from e
+            if not isfinite(amount) or amount <= 0:
+                raise DatabaseError("Unusable pending condor reservation")
+            reserved += amount
+
+        # Read funds after the reservation snapshot: never size from the older
+        # balance used to build the card or from leveraged stock buying power.
+        account = await asyncio.to_thread(self._trader.get_account)
+        equity = self._verified_equity(account)
+        if equity <= 0 or account.get("trading_blocked") or account.get("account_blocked"):
+            raise DatabaseError("Verified tradable account balance unavailable")
+        self._cached_equity = equity
+        if suggestion.trade_type not in ("option", "equity", "equity_long"):
+            raise DatabaseError("Unknown trade type for percentage sizing")
+        field = "options_buying_power" if suggestion.trade_type == "option" else "non_marginable_buying_power"
+        try:
+            funds = [float(account[key]) for key in ("cash", field)]
+        except (KeyError, TypeError, ValueError) as e:
+            raise DatabaseError("Verified cash/buying power unavailable") from e
+        if any(not isfinite(value) or value < 0 for value in funds):
+            raise DatabaseError("Verified cash/buying power unavailable")
+        pct = self.settings.equity_long_risk_pct if suggestion.trade_type == "equity_long" else None
+        budget = min(self._risk_budget(equity, pct), max(0.0, min(funds) - reserved))
+        multiplier = 100 if suggestion.trade_type == "option" else 1
+        affordable, _ = self._affordable_quantity(budget, suggestion.limit_price, multiplier)
+        qty = min(suggestion.qty, affordable)  # never increase what the user confirmed
+        return qty, round(float(Decimal(str(suggestion.limit_price)) * multiplier * qty), 2)
 
     # ── Evaluation entry points ──────────────────────────────────────────────
 
@@ -609,7 +687,7 @@ class AutoTradeEngine:
             return
 
         # Update cached equity for % based sizing / circuit breaker
-        equity = float(account.get("equity", 0) or 0)
+        equity = self._verified_equity(account)
         if equity > 0:
             self._cached_equity = equity
 
@@ -651,7 +729,7 @@ class AutoTradeEngine:
             return
 
         # Update cached equity for % based sizing / circuit breaker
-        equity = float(account.get("equity", 0) or 0)
+        equity = self._verified_equity(account)
         if equity > 0:
             self._cached_equity = equity
 
@@ -792,7 +870,7 @@ class AutoTradeEngine:
             )
             return
 
-        equity = float(account.get("equity", 100_000))
+        equity = self._verified_equity(account)
         qty, risk = self._size_options(equity, limit_price)
         if qty == 0:
             return
@@ -910,7 +988,7 @@ class AutoTradeEngine:
             return
 
         limit_price = round(price * 1.005, 2)  # 0.5% above mid
-        equity = float(account.get("equity", 100_000))
+        equity = self._verified_equity(account)
         qty, risk = self._size_equity(equity, limit_price)
         if qty == 0:
             return
@@ -946,7 +1024,7 @@ class AutoTradeEngine:
             return
 
         limit_price = round(price * 1.005, 2)  # 0.5% above mid
-        equity = float(account.get("equity", self._cached_equity))
+        equity = self._verified_equity(account)
         long_risk_pct = self.settings.equity_long_risk_pct   # 0.05
         qty, risk = self._size_equity(equity, limit_price, risk_pct=long_risk_pct)
         if qty == 0:
@@ -1103,7 +1181,7 @@ class AutoTradeEngine:
         async with self._confirm_lock:
             try:
                 return await self._confirm_trade(trade_id, msg_id, autonomous=autonomous)
-            except DatabaseError as e:
+            except (AccountMismatch, DatabaseError) as e:
                 logger.error(f"Trade {trade_id} persistence unavailable: {e}")
                 return {"error": "Execution state unavailable; reconcile before retrying",
                         "ambiguous": trade_id in self._uncertain_submissions}
@@ -1117,6 +1195,8 @@ class AutoTradeEngine:
                     "⚠️ <b>Trade unavailable</b> — expired or already executed"
                 )
             return {"error": "not_found"}
+
+        await self._require_account()
 
         # Compute bracket TP/SL prices from signal's target/stop percentages
         tp_price = round(s.limit_price * (1 + s.target_pct / 100), 2)
@@ -1149,7 +1229,16 @@ class AutoTradeEngine:
                 return {"error": reason, "ambiguous": False}
             if autonomous and (not self.settings.alpaca_paper or not self._trader.paper):
                 return {"error": "Autonomous execution requires paper settings and broker", "ambiguous": False}
-            await self._db.update_pending_trade(trade_id, status="submitting", entry_order_status="unknown")
+            qty, risk = await self._submission_size(s, trade_id)
+            if qty < 1:
+                return {"error": "No quantity fits the current percentage budget and available funds", "ambiguous": False}
+            if self._circuit_breaker_active():
+                return {"error": f"Circuit breaker: daily P&L ${self._daily_pnl:+,.0f}", "ambiguous": False}
+            if self._ticker_in_cooldown(s.ticker):
+                return {"error": f"Cooldown: {s.ticker} had a recent losing exit", "ambiguous": False}
+            await self._db.update_pending_trade(trade_id, status="submitting", entry_order_status="unknown",
+                                               qty=qty, risk_amount=risk)
+            s.qty, s.risk_amount = qty, risk
             self._uncertain_submissions.add(trade_id)
             try:
                 result = await asyncio.to_thread(
@@ -1241,6 +1330,7 @@ class AutoTradeEngine:
 
     async def reconcile_submissions(self):
         """Recover accepted orders after a crash/timeout without submitting again."""
+        await self._require_account()
         async with self._confirm_lock:
             ns = await self._db.order_namespace()
             for status in ("submitting", "submission_unknown"):
