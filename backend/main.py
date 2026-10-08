@@ -1477,6 +1477,41 @@ def _condor_close_debit(legs: list, quotes: dict) -> float | None:
         - (px[legs[1]["symbol"]] + px[legs[3]["symbol"]])
 
 
+def _condor_close_legs(legs: list, quotes: dict) -> list:
+    """The legs a close order can actually trade: both short legs, and a long
+    wing only while somebody is bidding for it.
+
+    A condor that worked has worthless wings. A worthless option has no bid, so
+    it cannot be sold, and one unsellable leg stops the whole four-leg order:
+    NKE's close was cancelled unfilled five times on 2026-10-02 and PEP's eight
+    times on 10-08, each with a limit above the quoted cost, while buying back
+    the two NKE short legs on their own filled at once for less. The only four-
+    leg close that ever filled (MU) was a loser whose wings still had value.
+
+    So a wing with no bid is left out. It costs nothing — the close was going
+    to receive $0 for it — and it stays in the account until it expires. The
+    short legs are never left out: they are the risk, and each one is still
+    covered by its own wing until it has been bought back.
+
+    Returns all four legs whenever the book does not clearly say otherwise.
+    """
+    close = []
+    for leg in legs:
+        if leg.get("side") == "sell":
+            close.append(leg)
+            continue
+        try:
+            bid = float((quotes.get(leg["symbol"]) or {})["bid"])
+        except (KeyError, TypeError, ValueError):
+            return list(legs)             # unreadable wing: change nothing
+        if bid != bid or bid < 0:         # NaN or a negative bid is not a book
+            return list(legs)
+        if bid > 0:
+            close.append(leg)
+    shorts = [leg for leg in legs if leg.get("side") == "sell"]
+    return close if len(shorts) == 2 and all(s in close for s in shorts) else list(legs)
+
+
 async def _condor_risk_check(pnl: float) -> None:
     """Advance the anti-martingale throttle after a condor books P&L, and trip
     the breaker on a loss streak.
@@ -1616,7 +1651,11 @@ async def _reconcile_condor_expiry(c: dict, legs: list, remaining: int):
             expired[a["symbol"]] = expired.get(a["symbol"], 0) + q
         except (KeyError, TypeError, ValueError):
             continue
-    if not all(expired.get(l["symbol"], 0) == remaining * l.get("ratio_qty", 1) for l in legs):
+    # A wing left behind by an earlier short-legs-only close of part of this
+    # condor expires in the same activity as the wings still attached to it.
+    residual = await db.get_condor_residual_legs(cid)
+    if not all(expired.get(l["symbol"], 0) == remaining * l.get("ratio_qty", 1)
+               + residual.get(l["symbol"].strip().upper(), 0) for l in legs):
         await db.await_condor_settlement(cid, note)
         return
     pnl = float(c.get("close_pnl") or 0) + c["credit"] * 100 * remaining
@@ -1714,7 +1753,8 @@ async def _manage_condor(c: dict):
             try:
                 filled_qty = float(o["filled_qty"])
                 exit_debit = abs(float(o.get("filled_avg_price")))
-                c = await db.record_condor_close_fill(cid, c["close_order_id"], filled_qty, exit_debit)
+                c = await db.record_condor_close_fill(cid, c["close_order_id"], filled_qty, exit_debit,
+                                                      legs_json=c.get("close_legs_json"))
             except (KeyError, TypeError, ValueError):
                 logger.warning("Condor #%s has unusable close fill data; retrying", cid)
                 return
@@ -1813,11 +1853,31 @@ async def _manage_condor(c: dict):
         base = max(debit, 0.01)
         limit = round(min(max(base * 1.05, base + 0.01),
                           max(_condor_wing_width(c), 0.05)), 2)
+    # With a readable book, leave out any wing nobody is bidding for: it cannot
+    # be sold, and it would keep the whole order from filling. The debit and the
+    # limit above already value such a wing at zero, so the price is unchanged.
+    close_legs = _condor_close_legs(legs, quotes) if debit is not None else list(legs)
+    left = [l["symbol"] for l in legs if l not in close_legs]
     from uuid import uuid4
-    client_id = f"sm-condor-{cid}-{uuid4().hex[:16]}"
-    await db.mark_condor_closing(cid, None, client_id)
-    res = await loop.run_in_executor(
-        None, lambda: trader.close_multileg(legs, qty, limit, client_order_id=client_id))
+
+    async def submit(order_legs: list) -> tuple[dict, str]:
+        client_id = f"sm-condor-{cid}-{uuid4().hex[:16]}"
+        # Persist the identity and the legs before the POST: an ambiguous
+        # submission must stay tracked, and its fills must know their legs.
+        await db.begin_condor_close(
+            cid, client_id, _json.dumps(order_legs) if len(order_legs) < len(legs) else None)
+        result = await loop.run_in_executor(
+            None, lambda: trader.close_multileg(order_legs, qty, limit, client_order_id=client_id))
+        return result, client_id
+
+    res, client_id = await submit(close_legs)
+    if res.get("error") and left and not res.get("ambiguous", True):
+        # The broker definitively refused the reduced order. Send the original
+        # four-leg close instead, so this is never worse than it was before.
+        logger.warning(f"IV-exec condor #{cid} short-legs-only close refused ({res['error']}); "
+                       "falling back to all four legs")
+        left = []
+        res, client_id = await submit(list(legs))
     if res.get("error"):
         if not res.get("ambiguous", True):
             await db._exec("UPDATE iv_condors SET status='open', close_client_order_id=NULL WHERE id=?", (cid,),
@@ -1825,9 +1885,49 @@ async def _manage_condor(c: dict):
         logger.warning(f"IV-exec condor #{cid} close submit failed: {res['error']}")
         return
     await db.mark_condor_closing(cid, res.get("id"), client_id)
+    shape = (f" — short legs only, {len(left)} worthless wing(s) left to expire: {', '.join(left)}"
+             if left else "")
     logger.info(f"IV-exec condor #{cid} {c['ticker']} closing ({reason}) "
                 f"debit{'≈$%.2f' % debit if debit is not None else ' unknown'} "
-                f"limit ${limit:.2f} order={res.get('id')}")
+                f"limit ${limit:.2f} order={res.get('id')}{shape}")
+
+
+async def _note_valuable_leftover_wings() -> None:
+    """Say so when a wing left behind by a close has become worth selling.
+
+    A leftover wing is normally worthless and simply expires. If the stock runs
+    far enough for one to gain a real bid, that is money on the table — and in
+    the money at expiry the broker will exercise or sell it on its own. This
+    only reports it. Nothing is traded here.
+    """
+    from market_time import et_today
+    if not is_rth_now():
+        return
+    residual = await db.get_condor_residual_legs(min_expiry=et_today().isoformat())
+    if not residual:
+        return
+    positions = await asyncio.to_thread(trader.get_positions_raw) or []
+    held = {}
+    for p in positions:
+        try:
+            symbol, qty = str(p["symbol"]).strip().upper(), float(p["qty"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if symbol in residual and qty > 0:
+            held[symbol] = min(qty, residual[symbol])
+    if not held:
+        return
+    quotes = await asyncio.to_thread(trader.get_option_quotes, list(held)) or {}
+    for symbol, qty in held.items():
+        try:
+            bid = float((quotes.get(symbol) or {}).get("bid") or 0)
+        except (TypeError, ValueError):
+            continue
+        if bid >= 0.05:
+            logger.warning(
+                f"Leftover wing {symbol} x{qty:g} now has a ${bid:.2f} bid "
+                f"(about ${bid * 100 * qty:,.0f}). It is not managed automatically: "
+                "sell it by hand to collect that, or leave it to the broker at expiry.")
 
 
 async def iv_condor_monitor_loop():
@@ -1842,6 +1942,10 @@ async def iv_condor_monitor_loop():
                 except Exception as e:
                     logger.warning(f"Condor #{c.get('id')} manage error: {e}")
                 await asyncio.sleep(1)
+            try:
+                await _note_valuable_leftover_wings()
+            except Exception as e:
+                logger.debug(f"Leftover-wing check skipped: {e}")
         except Exception as e:
             logger.warning(f"Condor monitor error: {e}")
         await asyncio.sleep(300)  # every 5 min

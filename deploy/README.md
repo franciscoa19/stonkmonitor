@@ -163,6 +163,24 @@ The daily report shows the same two figures. Log lines to look for:
 `IV-exec skip …: account risk cap reached`, `cash reserve reached`, and
 `size reduced to xN by the account risk cap / cash reserve`.
 
+## Closing a condor that worked
+
+A winning condor's protective wings are worthless and nobody bids for them, so
+they cannot be sold. The close therefore buys back the two short legs and leaves
+any wing with a $0.00 bid in the account, where it expires on its own. The log
+line says so:
+
+    IV-exec condor #N TICKER closing (TP) … — short legs only, 2 worthless wing(s) left to expire: …
+
+The condor is then closed in the ledger (profit booked, risk and slot freed) and
+the leftover wings show up as two lone long options until expiry. That is
+expected: the bot knows they are its own and will not sell, exit or count them
+as an unknown holding. If one ever gains a real bid the log says
+`Leftover wing … now has a $X bid`; it is not sold automatically.
+
+A condor that lost still closes as one four-leg order, because its wings have
+value and can be sold.
+
 ## Flow-entry sizing (flow trading is off by default)
 
 Flow entries floor quantities to the percentage budget and revalidate them

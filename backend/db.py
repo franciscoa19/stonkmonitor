@@ -417,7 +417,8 @@ CREATE TABLE IF NOT EXISTS iv_condor_close_fills (
     order_id TEXT PRIMARY KEY,
     condor_id INTEGER NOT NULL,
     filled_qty INTEGER NOT NULL,
-    debit REAL NOT NULL
+    debit REAL NOT NULL,
+    legs_json TEXT            -- legs this order closed; NULL = all four
 );
 CREATE TABLE IF NOT EXISTS position_monitor_state (
     symbol TEXT PRIMARY KEY,
@@ -535,7 +536,9 @@ _MIGRATIONS = {
     "iv_condors": {"closed_qty": "INTEGER NOT NULL DEFAULT 0",
                    "close_pnl": "REAL NOT NULL DEFAULT 0",
                    "close_client_order_id": "TEXT",
-                   "settlement_note": "TEXT"},
+                   "settlement_note": "TEXT",
+                   "close_legs_json": "TEXT"},
+    "iv_condor_close_fills": {"legs_json": "TEXT"},
     "pending_trades":    {"strategy": "TEXT", "entry_order_status": "TEXT"},
     "manual_order_requests": {"broker_order_status": "TEXT"},
     "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL",
@@ -1173,6 +1176,20 @@ class Database:
             "UPDATE iv_condors SET status='closing', close_order_id=?, close_client_order_id=? WHERE id=?",
             (close_order_id, client_order_id, condor_id), strict=True, expected_rows=1)
 
+    async def begin_condor_close(self, condor_id: int, client_order_id: str,
+                                 close_legs_json: Optional[str] = None) -> None:
+        """Claim a close before it is submitted, with the legs it will contain.
+
+        `close_legs_json` is NULL for the usual four-leg close. A close that
+        leaves a worthless wing out records the legs it does include, so its
+        fills can be told apart later: the wings it left behind stay in the
+        account until they expire (get_condor_residual_legs).
+        """
+        await self._exec(
+            """UPDATE iv_condors SET status='closing', close_order_id=NULL,
+                      close_client_order_id=?, close_legs_json=? WHERE id=?""",
+            (client_order_id, close_legs_json, condor_id), strict=True, expected_rows=1)
+
     async def close_condor(self, condor_id: int, exit_debit: float, pnl: float) -> None:
         await self._exec(
             """UPDATE iv_condors SET status='closed', exit_debit=?, pnl=?, closed_at=?
@@ -1181,11 +1198,14 @@ class Database:
             strict=True, expected_rows=1)
 
     async def record_condor_close_fill(self, condor_id: int, order_id: str,
-                                       filled_qty: float, debit: float) -> dict:
+                                       filled_qty: float, debit: float, *,
+                                       legs_json: Optional[str] = None) -> dict:
         """Store cumulative fills once per broker order, including partial fills.
 
         Quantity on iv_condors remains the entry quantity. closed_qty is the sum
         across all replacement closes; close_pnl books only those actual fills.
+        `legs_json` is the set of legs this order closed (NULL = all four); it is
+        written when the order is first seen and never changed afterwards.
         """
         from math import isfinite
         q, d = float(filled_qty), float(debit)
@@ -1204,9 +1224,10 @@ class Database:
             if total["n"] + q > row["qty"]:
                 raise ValueError("close fills exceed entry quantity")
             await self._exec(
-                """INSERT INTO iv_condor_close_fills VALUES (?,?,?,?)
+                """INSERT INTO iv_condor_close_fills (order_id, condor_id, filled_qty, debit, legs_json)
+                   VALUES (?,?,?,?,?)
                    ON CONFLICT(order_id) DO UPDATE SET filled_qty=excluded.filled_qty, debit=excluded.debit""",
-                (order_id, condor_id, int(q), d), strict=True, expected_rows=1)
+                (order_id, condor_id, int(q), d, legs_json), strict=True, expected_rows=1)
             totals = await self._scalar(
                 """SELECT COALESCE(SUM(filled_qty),0) AS n,
                           COALESCE(SUM(filled_qty * debit),0) AS cost
@@ -1215,6 +1236,45 @@ class Database:
             await self._exec("UPDATE iv_condors SET closed_qty=?, close_pnl=? WHERE id=?",
                              (totals["n"], round(pnl, 2), condor_id), strict=True, expected_rows=1)
             return await self._scalar("SELECT * FROM iv_condors WHERE id=?", (condor_id,), strict=True)
+
+    async def get_condor_residual_legs(self, condor_id: Optional[int] = None, *,
+                                       min_expiry: Optional[str] = None) -> dict[str, float]:
+        """Long wings a close deliberately left in the account, by OCC symbol.
+
+        A winning condor's wings are worthless and have no bid, so they cannot
+        be sold and the close buys back the short legs only. Those wings then
+        sit in the account until they expire. They are derived from the close
+        fills rather than stored: for every fill whose order left a leg out,
+        that leg is still held in the filled quantity. Nothing needs clearing
+        when they expire — a symbol that is no longer held matches nothing.
+
+        Only a long leg can be residual. A fill that claims to have left a
+        short leg open is corrupt and fails closed.
+        """
+        sql = """SELECT f.legs_json AS closed_legs, f.filled_qty, c.legs_json AS condor_legs
+                 FROM iv_condor_close_fills f JOIN iv_condors c ON c.id = f.condor_id
+                 WHERE f.legs_json IS NOT NULL AND f.filled_qty > 0"""
+        params: tuple = ()
+        if condor_id is not None:
+            sql, params = sql + " AND c.id=?", params + (condor_id,)
+        if min_expiry is not None:        # an expired option cannot still be held
+            sql, params = sql + " AND c.expiry>=?", params + (min_expiry,)
+        rows = await self._query(sql, params, strict=True)
+        residual: dict[str, float] = {}
+        for row in rows:
+            try:
+                closed = {leg["symbol"].strip().upper() for leg in json.loads(row["closed_legs"])}
+                for leg in json.loads(row["condor_legs"]):
+                    symbol = leg["symbol"].strip().upper()
+                    if symbol in closed:
+                        continue
+                    if leg["side"] != "buy":
+                        raise ValueError("a close left a short leg open")
+                    residual[symbol] = (residual.get(symbol, 0.0)
+                                        + float(row["filled_qty"]) * float(leg.get("ratio_qty", 1)))
+            except (KeyError, AttributeError, TypeError, ValueError) as e:
+                raise DatabaseError("Condor close legs are malformed; automated trading deferred") from e
+        return residual
 
     async def await_condor_settlement(self, condor_id: int, note: str) -> None:
         await self._exec(

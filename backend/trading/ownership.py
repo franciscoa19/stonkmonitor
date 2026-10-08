@@ -2,13 +2,21 @@
 import asyncio
 import math
 import json
+from datetime import timedelta
 
+import market_time
 from db import DatabaseError, _is_occ
 
 
 async def option_ownership(db, trader, positions=None, orders=None) -> dict:
     condors = await db.get_active_condors()
     spread_legs = await db.get_active_condor_leg_symbols()
+    # Wings a close deliberately left to expire are ours as well: never an
+    # unknown holding, never given a single-leg exit. A week of slack covers an
+    # expiry the broker is slow to post.
+    residual = await db.get_condor_residual_legs(
+        min_expiry=(market_time.et_today() - timedelta(days=7)).isoformat())
+    spread_legs.update(residual)
     trades = await db._query(
         "SELECT * FROM pending_trades WHERE status IN ('confirmed','submitting','submission_unknown')",
         strict=True)
@@ -66,6 +74,8 @@ async def option_ownership(db, trader, positions=None, orders=None) -> dict:
             symbol = leg["symbol"].strip().upper()
             signed_qty = (qty - closed) * (1 if leg["side"] == "buy" else -1)
             local_qty[symbol] = local_qty.get(symbol, 0) + signed_qty
+    for symbol, qty in residual.items():
+        local_qty[symbol] = local_qty.get(symbol, 0) + qty
     unknown.update(s for s in held if s in local_qty and (
         held[s] * local_qty[s] <= 0 or abs(held[s]) > abs(local_qty[s]) + 1e-8))
     # Short options can also belong to a spread assembled one leg at a time.
