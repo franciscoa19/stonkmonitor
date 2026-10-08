@@ -99,6 +99,17 @@ VARIANT_SOURCES = ("watchlist", "measurement")
 # report passes in explicitly; this is the fallback for direct/test calls.
 MAX_TRUSTED_CAPTURE_LEAD_DAYS = 2
 
+# Shared by API and daily-report metrics. Closing purchases are executions,
+# not long entries. Nullable quantities let old ledgers be read until the next
+# complete FIFO pass backfills their actual entry and remaining quantities.
+LONG_ENTRY_QTY_SQL = (
+    "CASE WHEN position_intent='buy_to_close' THEN 0 "
+    "ELSE COALESCE(long_entry_qty,filled_qty,0) END")
+LONG_ENTRY_PREDICATE = f"side='buy' AND ({LONG_ENTRY_QTY_SQL})>0"
+OPEN_LONG_QTY_SQL = (
+    "CASE WHEN position_intent='buy_to_close' THEN 0 ELSE COALESCE(open_qty,"
+    "CASE WHEN realized_pnl IS NULL THEN filled_qty ELSE 0 END,0) END")
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -239,6 +250,7 @@ CREATE TABLE IF NOT EXISTS trade_performance (
     symbol          TEXT NOT NULL,
     ticker          TEXT NOT NULL,                  -- underlying ticker
     side            TEXT NOT NULL,                  -- buy/sell
+    position_intent TEXT,                           -- broker opening/closing intent
     qty             REAL NOT NULL,
     filled_qty      REAL DEFAULT 0,
     filled_avg_price REAL DEFAULT 0,
@@ -257,6 +269,8 @@ CREATE TABLE IF NOT EXISTS trade_performance (
     strategy        TEXT,                           -- setup that triggered it (joined from pending_trades)
     entry_hour_et   INTEGER,                        -- hour-of-day (ET) the entry was submitted
     hold_minutes    REAL,                           -- minutes held (submitted_at -> exit)
+    long_entry_qty  REAL,                           -- filled buys left after short covers
+    open_qty        REAL,                           -- remaining FIFO long quantity
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -463,6 +477,7 @@ CREATE TABLE IF NOT EXISTS iv_variant_evals (
     -- 1 = passed the three scanner gates, 0 = logged purely as the
     -- "sell everything indiscriminately" baseline (VALIDATION_SPEC §4).
     gate_passed    INTEGER DEFAULT 1,
+    recommendation TEXT,                  -- SELL_PREMIUM | CONSIDER | AVOID; NULL = legacy unknown
     -- Curated execution universe or measurement-only expansion. Keeping this
     -- provenance makes it possible to test the gates in each population.
     source         TEXT NOT NULL DEFAULT 'watchlist',
@@ -523,7 +538,8 @@ _MIGRATIONS = {
                    "settlement_note": "TEXT"},
     "pending_trades":    {"strategy": "TEXT", "entry_order_status": "TEXT"},
     "manual_order_requests": {"broker_order_status": "TEXT"},
-    "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL"},
+    "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL",
+                          "position_intent": "TEXT", "long_entry_qty": "REAL", "open_qty": "REAL"},
     "daily_equity":      {"open_equity": "REAL", "updated_at": "TEXT"},
     "iv_rv_evals":       {"earnings_date": "TEXT"},
     "iv_variant_evals":  {"credit_mid": "REAL", "fees": "REAL", "strike_step": "REAL",
@@ -531,7 +547,7 @@ _MIGRATIONS = {
                           "pricing_model": "TEXT",
                           "source": "TEXT NOT NULL DEFAULT 'watchlist'",
                           "collapsed_with": "TEXT",
-                          "lead_days": "INTEGER"},
+                          "lead_days": "INTEGER", "recommendation": "TEXT"},
 }
 
 
@@ -1302,7 +1318,8 @@ class Database:
                                   pricing_model: Optional[str] = None,
                                   source: str = "watchlist",
                                   collapsed_with: Optional[str] = None,
-                                  lead_days: Optional[int] = None) -> None:
+                                  lead_days: Optional[int] = None,
+                                  recommendation: Optional[str] = None) -> None:
         # Do not accidentally certify a direct/legacy call that did not record
         # both the reference mid and explicit commission assumption.
         pricing_model = pricing_model or (
@@ -1311,6 +1328,13 @@ class Database:
             else LEGACY_VARIANT_PRICING_MODEL)
         if source not in VARIANT_SOURCES:
             raise ValueError(f"unknown variant source: {source}")
+        # Explicit boolean-only callers certify the strict three-gate contract.
+        # Existing rows gain a NULL recommendation on migration: their old flag
+        # also admitted CONSIDER and cannot establish which gates passed.
+        recommendation = recommendation or ("SELL_PREMIUM" if gate_passed else "AVOID")
+        if recommendation not in ("SELL_PREMIUM", "CONSIDER", "AVOID"):
+            raise ValueError("unknown variant recommendation")
+        gate_passed = recommendation == "SELL_PREMIUM"
         now = datetime.utcnow().isoformat()
         today_et = et_today().isoformat()      # trading day, not the UTC day
         await self._exec(
@@ -1318,8 +1342,8 @@ class Database:
                  (ticker, earnings_date, signal_date, expiry, variant, spot,
                   implied_move_pct, short_put, long_put, short_call, long_call,
                   credit, credit_mid, fees, strike_step, pricing_model, gate_passed,
-                  source, collapsed_with, lead_days, max_loss, resolve_after, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  source, collapsed_with, lead_days, max_loss, resolve_after, created_at, recommendation)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, earnings_date, today_et, expiry, variant, round(spot, 2),
              round(implied_move_pct, 2), strikes.get("short_put"), strikes.get("long_put"),
              strikes.get("short_call"), strikes.get("long_call"),
@@ -1329,7 +1353,7 @@ class Database:
              strike_step, pricing_model, 1 if gate_passed else 0,
              source, collapsed_with, lead_days,
              (round(max_loss, 2) if max_loss is not None else None),
-             resolve_after, now))
+             resolve_after, now, recommendation))
 
     async def record_variant_attempt(self, ticker: str, earnings_date: str,
                                      structures_attempted: int, structures_priced: int,
@@ -1566,8 +1590,8 @@ class Database:
         where = "WHERE resolved=1 AND pricing_model=?"
         params: tuple = (VALIDATED_VARIANT_PRICING_MODEL,)
         if gate_passed is not None:
-            where += " AND COALESCE(gate_passed,1)=?"
-            params += (1 if gate_passed else 0,)
+            where += (" AND recommendation='SELL_PREMIUM'" if gate_passed
+                      else " AND recommendation IN ('CONSIDER','AVOID')")
         if source is not None:
             if source not in VARIANT_SOURCES:
                 raise ValueError(f"unknown variant source: {source}")
@@ -1615,19 +1639,21 @@ class Database:
         return out
 
     async def get_gate_comparison(self, source: Optional[str] = None) -> dict:
-        """Baseline 2: gated vs all events; failed gates are a separate diagnostic.
+        """Baseline 2: strict three-gate setups vs all events. CONSIDER is a
+        subset of failed gates; legacy unknowns only enter the all-event baseline.
         If selling everything matches the filtered set, the gates are noise."""
         from backtest.metrics import compute_metrics
         if source is not None and source not in VARIANT_SOURCES:
             raise ValueError(f"unknown variant source: {source}")
         out = {}
-        for label, flag in (("gated", 1), ("ungated", None), ("failed_gates", 0)):
+        for label, gate_where in (
+                ("gated", " AND recommendation='SELL_PREMIUM'"),
+                ("ungated", ""),
+                ("failed_gates", " AND recommendation IN ('CONSIDER','AVOID')"),
+                ("consider", " AND recommendation='CONSIDER'"),
+                ("unknown_gates", " AND recommendation IS NULL")):
             source_where = ""
             params: tuple = (VALIDATED_VARIANT_PRICING_MODEL, "condor_1.0sd")
-            gate_where = ""
-            if flag is not None:
-                gate_where = " AND COALESCE(gate_passed,1)=?"
-                params += (flag,)
             if source is not None:
                 source_where = " AND source=?"
                 params += (source,)
@@ -2019,6 +2045,7 @@ class Database:
             updatable = {
                 "filled_qty", "filled_avg_price", "order_status", "filled_at",
                 "exit_price", "exit_reason", "realized_pnl", "realized_pnl_pct",
+                "position_intent",
             }
             cols = {k: v for k, v in kwargs.items() if k in updatable and v is not None}
             if cols:
@@ -2044,8 +2071,8 @@ class Database:
                    (alpaca_order_id, symbol, ticker, side, qty, filled_qty,
                     filled_avg_price, order_type, order_status, submitted_at,
                     filled_at, signal_score, trade_type, strategy, entry_hour_et,
-                    created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    created_at, updated_at, position_intent)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     order_id,
                     kwargs.get("symbol", ""),
@@ -2063,6 +2090,7 @@ class Database:
                     strategy,
                     _et_hour(kwargs.get("submitted_at", "")),
                     now, now,
+                    kwargs.get("position_intent"),
                 ), strict=strict,
             )
 
@@ -2072,8 +2100,8 @@ class Database:
         now = datetime.utcnow().isoformat()
         # Find most recent entry without an exit
         rows = await self._query(
-            """SELECT id, submitted_at FROM trade_performance
-               WHERE (symbol=? OR ticker=?) AND side='buy' AND exit_reason IS NULL
+            f"""SELECT id, submitted_at FROM trade_performance
+               WHERE (symbol=? OR ticker=?) AND {LONG_ENTRY_PREDICATE} AND exit_reason IS NULL
                ORDER BY created_at DESC LIMIT 1""",
             (symbol, symbol),
         )
@@ -2097,8 +2125,10 @@ class Database:
         Incomplete activity coverage defers the whole symbol, preserving its
         last result until the broker catches up. Options use a ×100 multiplier.
 
-        Unmatched sells establish short inventory. Later buys cover that first,
-        so only their excess can become long lots. Short P&L remains outside the
+        Broker opening/closing intent takes precedence. An orphan buy-to-close
+        never creates a long, even when its short opened outside this ledger.
+        Without explicit intent, unmatched sells establish short inventory and
+        later buys cover that first. Short P&L remains outside the
         existing long-entry metrics. Returns the number of buy rows changed.
         """
         from collections import deque
@@ -2156,13 +2186,17 @@ class Database:
             for f in fills:
                 qty, price = f["qty"], f["price"]
                 if f["side"] == "buy":
-                    cover = min(qty, short_qty)
+                    intent = f["row"].get("position_intent")
+                    cover = min(qty, short_qty) if intent != "buy_to_open" else 0
                     short_qty -= cover
                     qty -= cover
+                    if intent == "buy_to_close":
+                        continue  # Never invent a long when its short entry is outside this ledger.
                     if qty > 1e-8:
                         lots.append({"id": f["row"]["id"], "price": price, "open": qty, "at": f["at"]})
                 elif f["side"] == "sell":
-                    while qty > 1e-8 and lots:
+                    intent = f["row"].get("position_intent")
+                    while qty > 1e-8 and lots and intent != "sell_to_open":
                         lot = lots[0]
                         take = min(qty, lot["open"])
                         s = stats[lot["id"]]
@@ -2177,7 +2211,12 @@ class Database:
                         qty -= take
                         if lot["open"] <= 1e-8:
                             lots.popleft()
-                    short_qty += max(qty, 0.0)
+                    if intent != "sell_to_close":
+                        short_qty += max(qty, 0.0)
+
+            remaining = {}
+            for lot in lots:
+                remaining[lot["id"]] = remaining.get(lot["id"], 0.0) + lot["open"]
 
             # Rebuild each complete symbol atomically. Corrections and replayed
             # activities replace matches rather than incrementing a counter.
@@ -2200,6 +2239,12 @@ class Database:
                 if row["side"] != "buy":
                     continue
                 s = stats[row["id"]]
+                open_qty = remaining.get(row["id"], 0.0)
+                entry_qty = s["sold"] + open_qty
+                if (row.get("long_entry_qty"), row.get("open_qty")) != (entry_qty, open_qty):
+                    await self._exec(
+                        "UPDATE trade_performance SET long_entry_qty=?,open_qty=? WHERE id=?",
+                        (entry_qty, open_qty, row["id"]), strict=True)
                 if s["sold"] <= 0:
                     # Clear stale matcher P&L on open entries and short covers.
                     if row["realized_pnl"] is not None and row["exit_reason"] in ("closed_win", "closed_loss"):
@@ -2249,29 +2294,33 @@ class Database:
     async def get_performance_summary(self) -> dict:
         """Aggregate performance stats across all closed trades."""
         summary = await self._scalar(
-            """SELECT
+            f"""SELECT
                 COUNT(*) as total_trades,
                 SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winners,
                 SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losers,
-                SUM(CASE WHEN realized_pnl IS NULL THEN 1 ELSE 0 END) as open_trades,
+                SUM(CASE WHEN ({OPEN_LONG_QTY_SQL})>0 THEN 1 ELSE 0 END) as open_trades,
+                SUM(CASE WHEN realized_pnl IS NOT NULL THEN 1 ELSE 0 END) as closed_trades,
                 SUM(realized_pnl) as total_pnl,
                 AVG(realized_pnl) as avg_pnl,
                 AVG(realized_pnl_pct) as avg_pnl_pct,
                 MAX(realized_pnl) as best_trade,
                 MIN(realized_pnl) as worst_trade,
                 AVG(CASE WHEN realized_pnl > 0 THEN realized_pnl END) as avg_win,
-                AVG(CASE WHEN realized_pnl < 0 THEN realized_pnl END) as avg_loss
-               FROM trade_performance WHERE side='buy'"""
+                AVG(CASE WHEN realized_pnl < 0 THEN realized_pnl END) as avg_loss,
+                SUM(CASE WHEN realized_pnl > 0 THEN realized_pnl ELSE 0 END) as gross_win,
+                SUM(CASE WHEN realized_pnl < 0 THEN -realized_pnl ELSE 0 END) as gross_loss
+               FROM trade_performance WHERE {LONG_ENTRY_PREDICATE}"""
         )
-        # Win rate
-        winners = summary.get("winners") or 0
-        losers = summary.get("losers") or 0
-        total_closed = winners + losers
+        for key in ("total_trades", "winners", "losers", "open_trades", "closed_trades"):
+            summary[key] = summary.get(key) or 0
+        # Breakeven closes still belong in the win-rate denominator.
+        winners = summary["winners"]
+        total_closed = summary["closed_trades"]
         summary["win_rate"] = round(winners / total_closed * 100, 1) if total_closed > 0 else 0
         # Profit factor
-        avg_win = abs(summary.get("avg_win") or 0)
-        avg_loss = abs(summary.get("avg_loss") or 1)
-        summary["profit_factor"] = round(avg_win / avg_loss, 2) if avg_loss > 0 else 0
+        gross_win = summary.pop("gross_win") or 0
+        gross_loss = summary.pop("gross_loss") or 0
+        summary["profit_factor"] = round(gross_win / gross_loss, 2) if gross_loss else None
         return summary
 
     # ── Read: Per-feed queries ───────────────────────────────────────────

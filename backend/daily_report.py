@@ -17,6 +17,7 @@ import html as _html
 import asyncio
 
 from market_time import et_today
+from db import LONG_ENTRY_PREDICATE
 import logging
 
 logger = logging.getLogger(__name__)
@@ -129,7 +130,8 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
 
     # ── Closed trades (realized) ─────────────────────────────────────────
     closed = await db._query(
-        "SELECT * FROM trade_performance WHERE realized_pnl IS NOT NULL ORDER BY updated_at DESC"
+        f"SELECT * FROM trade_performance WHERE {LONG_ENTRY_PREDICATE} "
+        "AND realized_pnl IS NOT NULL ORDER BY updated_at DESC"
     )
     n = len(closed)
     wins = [t for t in closed if (t.get("realized_pnl") or 0) > 0]
@@ -137,7 +139,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
     gross_win = sum(float(t["realized_pnl"]) for t in wins)
     gross_loss = abs(sum(float(t["realized_pnl"]) for t in losses))
     win_rate = (len(wins) / n * 100.0) if n else 0.0
-    profit_factor = (gross_win / gross_loss) if gross_loss else (gross_win and 999.0 or 0.0)
+    profit_factor = (gross_win / gross_loss) if gross_loss else None
     avg_win = (gross_win / len(wins)) if wins else 0.0
     avg_loss = (gross_loss / len(losses)) if losses else 0.0
     realized_total = sum(float(t["realized_pnl"]) for t in closed)
@@ -146,7 +148,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
 
     # ── Trade frequency ("too much / too little") ────────────────────────
     freq = await db._query(
-        "SELECT COUNT(*) n FROM trade_performance WHERE side='buy' AND submitted_at >= ?",
+        f"SELECT COUNT(*) n FROM trade_performance WHERE {LONG_ENTRY_PREDICATE} AND submitted_at >= ?",
         (_iso_days_ago(7),),
     )
     trades_7d = int(freq[0]["n"]) if freq else 0
@@ -155,13 +157,13 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
 
     # ── Attribution: by strategy ─────────────────────────────────────────
     by_strategy = await db._query(
-        """SELECT COALESCE(NULLIF(strategy,''),'(untagged)') strategy,
+        f"""SELECT COALESCE(NULLIF(strategy,''),'(untagged)') strategy,
                   COUNT(*) n,
                   SUM(CASE WHEN realized_pnl>0 THEN 1 ELSE 0 END) wins,
                   ROUND(SUM(realized_pnl),2) pnl,
                   ROUND(AVG(realized_pnl),2) avg_pnl,
                   ROUND(AVG(hold_minutes),1) avg_hold
-           FROM trade_performance WHERE realized_pnl IS NOT NULL
+           FROM trade_performance WHERE {LONG_ENTRY_PREDICATE} AND realized_pnl IS NOT NULL
            GROUP BY 1 ORDER BY pnl DESC"""
     )
     # ── IV/RV edge validation (hypothetical short-straddle hit-rate) ─────
@@ -223,8 +225,9 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
 
     # ── Attribution: by entry hour (ET) ──────────────────────────────────
     by_hour = await db._query(
-        """SELECT entry_hour_et h, COUNT(*) n, ROUND(SUM(realized_pnl),2) pnl
-           FROM trade_performance WHERE realized_pnl IS NOT NULL AND entry_hour_et IS NOT NULL
+        f"""SELECT entry_hour_et h, COUNT(*) n, ROUND(SUM(realized_pnl),2) pnl
+           FROM trade_performance WHERE {LONG_ENTRY_PREDICATE}
+           AND realized_pnl IS NOT NULL AND entry_hour_et IS NOT NULL
            GROUP BY h ORDER BY h"""
     )
 
@@ -409,7 +412,8 @@ async def export_history(db, reports_dir) -> dict:
             f.write(_json.dumps(row, default=str) + "\n")
 
     closed = await db._query(
-        "SELECT * FROM trade_performance WHERE realized_pnl IS NOT NULL ORDER BY updated_at")
+        f"SELECT * FROM trade_performance WHERE {LONG_ENTRY_PREDICATE} "
+        "AND realized_pnl IS NOT NULL ORDER BY updated_at")
     cols = ["ticker", "symbol", "strategy", "trade_type", "side", "qty",
             "filled_avg_price", "exit_price", "realized_pnl", "realized_pnl_pct",
             "exit_reason", "entry_hour_et", "hold_minutes", "submitted_at", "updated_at"]
@@ -640,9 +644,53 @@ def render_html(d: dict) -> str:
             f"<b>Quote coverage.</b> {priced}/{attempted} structures priceable{pct_text}."
             f"{dropped_text}</div>")
 
+    def _f(x, suffix=""):
+        return "—" if x is None else f"{x}{suffix}"
+
+    _cmp_html = ""
+    if gate_cmp.get("gated") or gate_cmp.get("ungated"):
+        g, u = gated, ungated
+        _cmp_html = (
+            "<div style=\"margin-top:14px\"><div class=\"mut\" style=\"font-size:10.5px;"
+            "text-transform:uppercase\">Do the gates earn their keep?</div>"
+            "<table style=\"width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px;margin-top:4px\">"
+            "<tr class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase;text-align:right\">"
+            "<th style=\"text-align:left\">Population</th><th>N</th><th>Expectancy</th>"
+            "<th>Profit factor</th><th>Tail ratio</th></tr>"
+            f"<tr><td>gated (passed all 3)</td><td style='text-align:right'>{g.get('n_events',0)}</td>"
+            f"<td style='text-align:right'>{_money(g.get('expectancy') or 0)}</td>"
+            f"<td style='text-align:right'>{_f(g.get('profit_factor'))}</td>"
+            f"<td style='text-align:right'>{_f(g.get('tail_ratio'))}</td></tr>"
+            f"<tr><td>all events (sell everything)</td><td style='text-align:right'>{u.get('n_events',0)}</td>"
+            f"<td style='text-align:right'>{_money(u.get('expectancy') or 0)}</td>"
+            f"<td style='text-align:right'>{_f(u.get('profit_factor'))}</td>"
+            f"<td style='text-align:right'>{_f(u.get('tail_ratio'))}</td></tr></table>"
+            "<div class=\"mut\" style=\"font-size:12px;margin-top:6px\">If selling "
+            "indiscriminately matches the filtered set, the three gates are noise.</div>"
+            f"{_sample_rail()}</div>")
+        source_rows = "".join(
+            f"<tr><td>{_html.escape(source)}</td><td>{label}</td>"
+            f"<td>{metrics.get('n_events', 0)}</td>"
+            f"<td>{_money(metrics.get('expectancy') or 0)}</td></tr>"
+            for source, comparison in (d.get("iv_gate_comparison_by_source") or {}).items()
+            for label, key in (("passed gates", "gated"), ("all events", "ungated"),
+                               ("failed gates", "failed_gates"), ("CONSIDER only", "consider"),
+                               ("unknown legacy gates", "unknown_gates"))
+            for metrics in [comparison.get(key, {})])
+        if source_rows:
+            _cmp_html += (
+                "<div class=\"mut\" style=\"margin-top:12px\">Selection differs by source; "
+                "check each population before using pooled results. CONSIDER is a subset "
+                "of failed gates. Legacy rows with unknown gates count only in all events.</div>"
+                "<table style=\"width:100%;font-size:12px\"><tr><th>Source</th>"
+                "<th>Population</th><th>N</th><th>Expectancy</th></tr>"
+                f"{source_rows}</table>")
+    else:
+        # A transient comparison-query failure must not hide the evidence
+        # requirement from the morning report.
+        _cmp_html = _sample_rail()
+
     if variants:
-        def _f(x, suffix=""):
-            return "—" if x is None else f"{x}{suffix}"
         _vrows = "".join(
             f"<tr><td style='padding:3px 12px 3px 0'>{_html.escape(str(v['variant']))}</td>"
             f"<td style='text-align:right'>{v['n_events']}</td>"
@@ -665,46 +713,6 @@ def render_html(d: dict) -> str:
             f"{_html.escape(str(v['variant']))}: worst {v.get('tail_events', 0)}/"
             f"{v['n_events']} event(s) ({v.get('tail_pct_effective') or 0}%)"
             for v in variants)
-        _cmp_html = ""
-        if gate_cmp.get("gated") or gate_cmp.get("ungated"):
-            g, u = gated, ungated
-            _cmp_html = (
-                "<div style=\"margin-top:14px\"><div class=\"mut\" style=\"font-size:10.5px;"
-                "text-transform:uppercase\">Do the gates earn their keep?</div>"
-                "<table style=\"width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px;margin-top:4px\">"
-                "<tr class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase;text-align:right\">"
-                "<th style=\"text-align:left\">Population</th><th>N</th><th>Expectancy</th>"
-                "<th>Profit factor</th><th>Tail ratio</th></tr>"
-                f"<tr><td>gated (passed all 3)</td><td style='text-align:right'>{g.get('n_events',0)}</td>"
-                f"<td style='text-align:right'>{_money(g.get('expectancy') or 0)}</td>"
-                f"<td style='text-align:right'>{_f(g.get('profit_factor'))}</td>"
-                f"<td style='text-align:right'>{_f(g.get('tail_ratio'))}</td></tr>"
-                f"<tr><td>all events (sell everything)</td><td style='text-align:right'>{u.get('n_events',0)}</td>"
-                f"<td style='text-align:right'>{_money(u.get('expectancy') or 0)}</td>"
-                f"<td style='text-align:right'>{_f(u.get('profit_factor'))}</td>"
-                f"<td style='text-align:right'>{_f(u.get('tail_ratio'))}</td></tr></table>"
-                "<div class=\"mut\" style=\"font-size:12px;margin-top:6px\">If selling "
-                "indiscriminately matches the filtered set, the three gates are noise.</div>"
-                f"{_sample_rail()}</div>")
-            source_rows = "".join(
-                f"<tr><td>{_html.escape(source)}</td><td>{label}</td>"
-                f"<td>{metrics.get('n_events', 0)}</td>"
-                f"<td>{_money(metrics.get('expectancy') or 0)}</td></tr>"
-                for source, comparison in (d.get("iv_gate_comparison_by_source") or {}).items()
-                for label, key in (("passed gates", "gated"), ("all events", "ungated"),
-                                   ("failed gates", "failed_gates"))
-                for metrics in [comparison.get(key, {})])
-            if source_rows:
-                _cmp_html += (
-                    "<div class=\"mut\" style=\"margin-top:12px\">Selection differs by source; "
-                    "check each population before using pooled results.</div>"
-                    "<table style=\"width:100%;font-size:12px\"><tr><th>Source</th>"
-                    "<th>Population</th><th>N</th><th>Expectancy</th></tr>"
-                    f"{source_rows}</table>")
-        else:
-            # A transient comparison-query failure must not hide the evidence
-            # requirement from the morning report.
-            _cmp_html = _sample_rail()
         _variant_card = (
             "<div class=\"card\"><h2>Strategy-variant comparison "
             "<span class=\"pill mut\" style=\"font-size:11px\">hold-to-expiry hypothetical</span></h2>"
@@ -725,10 +733,10 @@ def render_html(d: dict) -> str:
         _variant_card = (
             "<div class=\"card\"><h2>Strategy-variant comparison "
             "<span class=\"pill mut\" style=\"font-size:11px\">hold-to-expiry hypothetical</span></h2>"
-            "<div class=\"mut\" style=\"font-size:12px\">No resolved evaluations under the "
-            "current conservative pricing model yet. Earlier methodology is retained for audit "
+            "<div class=\"mut\" style=\"font-size:12px\">No resolved full-gate evaluations under the "
+            "current conservative pricing model yet. Other cohorts are shown below. Earlier methodology is retained for audit "
             "but is not evidence.</div>"
-            f"{_quote_coverage()}{_sample_rail()}</div>")
+            f"{_quote_coverage()}{_cmp_html}</div>")
     e = _html.escape
     pnl_cls = "up" if a["total_pnl"] >= 0 else "down"
     pnl_sign = "+" if a["total_pnl"] >= 0 else ""
@@ -756,7 +764,7 @@ def render_html(d: dict) -> str:
     else:
         risk_kpis = ""
     pf = m["profit_factor"]
-    pf_disp = "—" if m["closed_trades"] == 0 else (f"{pf:.2f}" if pf < 999 else "∞")
+    pf_disp = (f"{pf:.2f}" if pf is not None else ("∞" if m["wins"] else "—"))
     act_cls = {"QUIET": "mut", "MEASURED": "good", "HEAVY": "warn"}.get(act["tag"], "mut")
     date_label = report_day(d)
 

@@ -70,6 +70,15 @@ Variant rows retain their source (`watchlist` or `measurement`) as well. The
 two populations have different selection rules, so gate results must be checked
 within each source before treating a pooled result as generalizable.
 
+The full-gate cohort requires the recorded `SELL_PREMIUM` recommendation.
+`CONSIDER` is reported separately and also belongs to the failed-gates diagnostic;
+its eligibility for paper execution does not make it a three-gate observation.
+Older rows have no recorded recommendation and previously used a flag that also
+admitted `CONSIDER`. They remain in the all-event baseline and the explicit
+unknown-gates cohort, but cannot certify the filtered cohort. Their prices,
+payoffs and original flags are preserved. New captures and complete reprices
+record the recommendation alongside the strict flag.
+
 ## What does NOT exist, and why
 
 **There is no historical backtest.** Spec §1 asks for ≥1,200 events over ≥5

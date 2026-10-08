@@ -230,6 +230,13 @@ def is_sell_eligible(setup, max_days_to_earnings: int,
     return is_near_earnings(setup, max_days_to_earnings, now=now)
 
 
+def passes_all_sell_gates(setup, max_days_to_earnings: int,
+                          now: Optional[datetime] = None) -> bool:
+    """Strict validation cohort; CONSIDER remains alert/execution-policy eligible."""
+    return (getattr(setup, "recommendation", None) == "SELL_PREMIUM"
+            and is_sell_eligible(setup, max_days_to_earnings, now=now))
+
+
 def is_near_earnings(setup, max_days_to_earnings: int,
                      now: Optional[datetime] = None) -> bool:
     """A known, still-upcoming earnings print is within the window.

@@ -17,6 +17,7 @@ async def _save_order(db, order: dict) -> None:
     await db.upsert_trade_performance(
         strict=True, alpaca_order_id=order["id"], symbol=symbol, ticker=ticker,
         side=order["side"], qty=order["qty"], filled_qty=order["filled_qty"],
+        position_intent=order.get("position_intent"),
         filled_avg_price=order["filled_avg"] or 0, order_type=order["type"],
         order_status=order["status"], submitted_at=order["created_at"],
         filled_at=order.get("filled_at"), trade_type="option" if option else "equity")

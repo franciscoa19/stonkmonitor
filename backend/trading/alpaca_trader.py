@@ -117,6 +117,7 @@ class AlpacaTrader:
             "symbol":     o.get("symbol"),
             "qty":        float(o.get("qty") or 0),
             "side":       o.get("side") or "",
+            "position_intent": o.get("position_intent"),
             "type":       o.get("order_type") or o.get("type") or "",
             "status":     o.get("status") or "",
             "limit":      _f(o.get("limit_price")),

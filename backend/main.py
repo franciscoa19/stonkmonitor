@@ -1221,12 +1221,12 @@ async def log_variant_evals(setup, gate_passed: bool = True,
     One set per ticker+event+source (deduped). Each variant settles only after
     its own option expiry, using that session's historical underlying close.
 
-    `gate_passed` records whether the setup cleared the three scanner gates, so
-    filtered and indiscriminate selling can be scored against each other.
+    `gate_passed` is retained for callers, but is recomputed from the setup so
+    marginal execution eligibility cannot contaminate the three-gate cohort.
     `source` keeps the curated watchlist distinct from the measurement-only
     universe when the evidence is later analyzed.
     """
-    from signals.earnings_scanner import is_near_earnings
+    from signals.earnings_scanner import is_near_earnings, passes_all_sell_gates
     from signals.iv_variants import build_variants, expiry_settlement_date
     if not settings.iv_variants_log_enabled:
         return
@@ -1235,6 +1235,11 @@ async def log_variant_evals(setup, gate_passed: bool = True,
                      getattr(setup, "ticker", "?"))
         return
     edate = getattr(setup, "next_earnings_date", None)
+
+    # Measurement classification is independent of whether marginal setups may
+    # execute. Never label CONSIDER as passing all three gates.
+    gate_passed = passes_all_sell_gates(setup, settings.iv_setup_max_days_to_earnings)
+    recommendation = getattr(setup, "recommendation", "AVOID")
 
     # Re-price as the print approaches. Logging once at first eligibility (7
     # days out) captures the QUIET front-month IV, well before the earnings
@@ -1318,7 +1323,8 @@ async def log_variant_evals(setup, gate_passed: bool = True,
             resolve_after=resolve_after, credit_mid=v.get("credit_mid"),
             fees=v.get("fees"), strike_step=v.get("strike_step"),
             gate_passed=gate_passed, source=source,
-            collapsed_with=v.get("collapsed_with"), lead_days=_days_to)
+            collapsed_with=v.get("collapsed_with"), lead_days=_days_to,
+            recommendation=recommendation)
         logged.append(v["variant"])
     if logged:
         logger.info(f"Variant-log {setup.ticker} ({'gated' if gate_passed else 'baseline'}): "
@@ -1370,7 +1376,7 @@ async def measurement_universe_loop():
     from feeds.earnings_calendar import get_upcoming_reporters
     from feeds.uw_budget import current_session
     from signals.earnings_scanner import (scan_ticker as earnings_scan,
-                                          is_sell_eligible, is_near_earnings)
+                                          passes_all_sell_gates, is_near_earnings)
     from api.routes import _watchlist
     s = settings
     await asyncio.sleep(90)          # let startup + the calendar warm-up finish
@@ -1422,7 +1428,7 @@ async def measurement_universe_loop():
                         continue
                     n = await log_variant_evals(
                         setup,
-                        gate_passed=is_sell_eligible(setup, s.iv_setup_max_days_to_earnings),
+                        gate_passed=passes_all_sell_gates(setup, s.iv_setup_max_days_to_earnings),
                         source="measurement")
                     if n:
                         logged += 1
@@ -1853,7 +1859,7 @@ async def iv_scanner_loop():
     from feeds.uw_budget import current_session, budget
     from feeds.unusual_whales import iv_summary_from_termstructure
     from signals.earnings_scanner import (scan_ticker as earnings_scan,
-                                          is_sell_eligible, is_near_earnings)
+                                          is_sell_eligible, is_near_earnings, passes_all_sell_gates)
     await asyncio.sleep(30)  # give server time to start
 
     _earnings_last_run: dict[str, float] = {}  # ticker → epoch of last scan
@@ -1949,7 +1955,7 @@ async def iv_scanner_loop():
                     try:
                         if is_near_earnings(setup, _max_days) and (
                                 eligible or settings.iv_log_ungated_baseline):
-                            await log_variant_evals(setup, gate_passed=eligible)
+                            await log_variant_evals(setup, gate_passed=passes_all_sell_gates(setup, _max_days))
                     except Exception as e:
                         logger.debug(f"variant-log {ticker} skipped: {e}")
 
