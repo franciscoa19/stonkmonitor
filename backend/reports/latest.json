@@ -1,17 +1,17 @@
 {
-  "generated": "2026-10-07T12:01:52.916386+00:00",
+  "generated": "2026-10-08T12:01:59.673100+00:00",
   "account": {
-    "equity": 51569.4,
+    "equity": 51779.4,
     "cash": 53279.4,
     "buying_power": 189117.6,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": 1569.4000000000015,
-    "total_pnl_pct": 3.1388000000000025,
+    "total_pnl": 1779.4000000000015,
+    "total_pnl_pct": 3.558800000000003,
     "open_positions": 4,
-    "days_running": 29,
+    "days_running": 30,
     "error": null
   },
   "metrics": {
@@ -30,23 +30,23 @@
     "trades_per_day": 0.2857142857142857
   },
   "account_risk": {
-    "equity": 51569.4,
+    "equity": 51779.4,
     "max_risk_pct": 0.3,
-    "risk_cap": 15470.82,
+    "risk_cap": 15533.82,
     "open_risk": 4875.0,
-    "open_risk_pct": 0.0945,
+    "open_risk_pct": 0.0941,
     "condor_risk": 4875.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 10595.82,
+    "risk_headroom": 10658.82,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 10313.88,
+    "cash_reserve": 10355.88,
     "free_cash": 47279.4,
-    "free_cash_pct": 0.9168,
+    "free_cash_pct": 0.9131,
     "unlisted_reserved": 0.0,
-    "cash_available": 36965.52
+    "cash_available": 36923.52
   },
   "account_risk_error": null,
   "activity": {
@@ -168,7 +168,11 @@
     },
     {
       "date": "2026-10-07",
-      "equity": 51569.4
+      "equity": 51779.4
+    },
+    {
+      "date": "2026-10-08",
+      "equity": 51779.4
     }
   ],
   "iv_rv": {
@@ -176,7 +180,7 @@
     "wins": 0,
     "win_rate": 0.0,
     "avg_edge_pct": 0.0,
-    "open": 1
+    "open": 2
   },
   "iv_condors": {
     "closed": 0,
@@ -196,8 +200,8 @@
         "strikes": "117.0/121.0 \u2014 131.0/135.0",
         "credit_collected": 1125.0,
         "max_risk": 4875.0,
-        "unrealized_pnl": -585.0,
-        "pct_of_max_risk": -12.0,
+        "unrealized_pnl": -375.0,
+        "pct_of_max_risk": -7.7,
         "legs_matched": 4,
         "legs_expected": 4,
         "partial": false
@@ -394,16 +398,16 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 15,
-    "structures_attempted": 75,
-    "structures_priced": 45,
-    "priced_pct": 60.0,
+    "events": 31,
+    "structures_attempted": 155,
+    "structures_priced": 73,
+    "priced_pct": 47.1,
     "dropped_variants": {
-      "condor_0.7sd": 6,
-      "condor_1.0sd": 6,
-      "condor_1.3sd": 6,
-      "fly": 6,
-      "straddle": 6
+      "condor_0.7sd": 17,
+      "condor_1.0sd": 17,
+      "condor_1.3sd": 18,
+      "fly": 15,
+      "straddle": 15
     }
   },
   "implied_vs_realized": {
@@ -457,8 +461,8 @@
     "closes_counted": 0
   },
   "heartbeat": {
-    "last_seen": "2026-10-07T12:01:26.623043",
-    "age_minutes": 0.4,
+    "last_seen": "2026-10-08T11:47:19.520561",
+    "age_minutes": 14.7,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -470,33 +474,33 @@
     {
       "symbol": "PEP261009C00131000",
       "qty": -15.0,
-      "pnl": 45.0,
-      "pnl_pct": 4.11,
-      "market_val": -1050.0
+      "pnl": 780.0,
+      "pnl_pct": 71.23,
+      "market_val": -315.0
     },
     {
       "symbol": "PEP261009C00135000",
       "qty": 15.0,
-      "pnl": -150.0,
-      "pnl_pct": -41.67,
-      "market_val": 210.0
+      "pnl": -315.0,
+      "pnl_pct": -87.5,
+      "market_val": 45.0
     },
     {
       "symbol": "PEP261009P00117000",
       "qty": 15.0,
-      "pnl": -105.0,
-      "pnl_pct": -77.78,
-      "market_val": 30.0
+      "pnl": 60.0,
+      "pnl_pct": 44.44,
+      "market_val": 195.0
     },
     {
       "symbol": "PEP261009P00121000",
       "qty": -15.0,
-      "pnl": -375.0,
-      "pnl_pct": -71.43,
-      "market_val": -900.0
+      "pnl": -900.0,
+      "pnl_pct": -171.43,
+      "market_val": -1425.0
     }
   ],
   "proposals": [
-    "No closed trades in 29 days. Note the flow/pattern engine is OFF (AUTO_TRADE_FLOW_ENABLED=false), so AUTO_TRADE_SCORE_THRESHOLD is not the constraint \u2014 lowering it would change nothing. The live path is the IV/earnings condor: widen the watchlist or relax the scanner gates to grow the sample."
+    "No closed trades in 30 days. Note the flow/pattern engine is OFF (AUTO_TRADE_FLOW_ENABLED=false), so AUTO_TRADE_SCORE_THRESHOLD is not the constraint \u2014 lowering it would change nothing. The live path is the IV/earnings condor: widen the watchlist or relax the scanner gates to grow the sample."
   ]
 }
