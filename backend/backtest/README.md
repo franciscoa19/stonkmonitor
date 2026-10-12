@@ -79,6 +79,22 @@ unknown-gates cohort, but cannot certify the filtered cohort. Their prices,
 payoffs and original flags are preserved. New captures and complete reprices
 record the recommendation alongside the strict flag.
 
+### IV/RV observation prices
+
+The simpler `iv_rv_evals` observations measure the move at a fixed historical
+session close, rather than the latest trade or a quote midpoint when the hourly
+resolver happens to run. The existing `resolve_after` date selects the session;
+weekends and holidays use the preceding trading session. If that close would
+be on or before the earnings date, whose report time may be unknown, the first
+session after the report is used instead. With no earnings date, the measurement
+cannot precede the signal's session.
+
+Resolution waits until 30 minutes after the scheduled session close, including
+early closes. A missing, invalid or inaccessible historical bar leaves the row
+pending for another pass; later retries still request the same session. These
+observations are hypothetical move measurements, not executable option P&L.
+Already-resolved observations retain their original results for audit.
+
 ## What does NOT exist, and why
 
 **There is no historical backtest.** Spec §1 asks for ≥1,200 events over ≥5

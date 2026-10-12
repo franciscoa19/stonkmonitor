@@ -923,24 +923,71 @@ async def daily_equity_loop():
         await asyncio.sleep(3600)  # hourly
 
 
-async def resolve_due_iv_evals(today: str) -> int:
-    """Measure the realized move for every eval whose window has elapsed.
+def _iv_eval_measurement_session(ev: dict) -> str | None:
+    """Session close at the declared horizon, never a pre-earnings price.
 
-    The price is the stock's last trade, of any age. After the close this feed's
-    quote is a placeholder on both sides ($120.23 x $133.83 for PEP on
-    2026-10-09, a "midpoint" of $127.03 against a $125.97 close), and a move
-    measured from that is not a measurement. With no trade at all the eval stays
-    due and is tried again next hour.
+    A weekend/holiday horizon uses the preceding session. If that would still
+    precede the earnings report (whose time may be unknown), use the first
+    session strictly after the earnings date instead. Without a known report
+    date, never measure before the signal's session.
     """
+    from datetime import date, datetime, time, timedelta
+    from market_time import ET
+    from feeds.uw_budget import market_close_minute
+
+    def trading_day(day):
+        return market_close_minute(datetime.combine(day, time.min, tzinfo=ET)) is not None
+
+    try:
+        target = date.fromisoformat(ev["resolve_after"])
+        while not trading_day(target):
+            target -= timedelta(days=1)
+        earnings = ev.get("earnings_date")
+        floor = date.fromisoformat(earnings or ev["signal_date"])
+        earliest = floor + timedelta(days=1) if earnings else floor
+        if target < earliest:
+            target = earliest
+            while not trading_day(target):
+                target += timedelta(days=1)
+        return target.isoformat()
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+async def resolve_due_iv_evals(today: str, *, now=None) -> int:
+    """Measure due observations from their completed historical session close.
+
+    Neither current trades nor quotes can substitute for this session. Missing
+    or invalid bars leave the observation pending, even if a retry happens on a
+    later trading day. Already-resolved observations are not rewritten.
+    """
+    from math import isfinite
+    from signals.iv_variants import settlement_ready
+
     resolved = 0
+    prices = {}
     for ev in await db.get_due_iv_evals(today):
-        px = await asyncio.to_thread(feed.get_spot, ev["ticker"], None)
-        if px and ev["entry_price"]:
-            realized = abs(px / ev["entry_price"] - 1) * 100
-            await db.resolve_iv_eval(ev["id"], px, realized, ev["implied_move_pct"] or 0)
-            resolved += 1
-            logger.info(f"IV/RV eval resolved: {ev['ticker']} realized "
-                        f"±{realized:.1f}% vs implied ±{ev['implied_move_pct']:.1f}%")
+        session = _iv_eval_measurement_session(ev)
+        if not session or not settlement_ready(session, now=now):
+            continue
+        key = (ev["ticker"], session)
+        if key not in prices:
+            prices[key] = await asyncio.to_thread(feed.get_daily_close, *key)
+        try:
+            px = float(prices[key])
+            entry = float(ev["entry_price"])
+            implied = float(ev["implied_move_pct"] or 0)
+        except (TypeError, ValueError):
+            continue
+        if not all(isfinite(v) for v in (px, entry, implied)) or px <= 0 or entry <= 0 or implied < 0:
+            continue
+        realized = abs(px / entry - 1) * 100
+        if not isfinite(realized):
+            continue
+        await db.resolve_iv_eval(ev["id"], px, realized, implied)
+        resolved += 1
+        logger.info(f"IV/RV eval resolved: {ev['ticker']} at {session} close, realized "
+                    f"±{realized:.1f}% vs implied ±{implied:.1f}%")
     return resolved
 
 

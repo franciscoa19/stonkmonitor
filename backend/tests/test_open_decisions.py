@@ -275,27 +275,27 @@ async def test_friday_replayed_the_condor_is_held_not_bought_back(database, desk
     assert any("holding to expiry" in r.message for r in caplog.records)
 
 
-# ── The research resolver measures from a trade too ─────────────────────────
-async def test_a_realized_move_is_measured_from_the_last_trade_not_a_placeholder_quote(database, session, monkeypatch):
+# ── Research resolves from its historical measurement session ──────────────
+async def test_a_realized_move_is_measured_from_the_session_close_not_a_placeholder_quote(database, session, monkeypatch):
     monkeypatch.setattr(session, "db", database)
     await database.record_iv_eval("PEP", "SELL_PREMIUM", 1.5, 3.4, 123.73, "2026-10-10", "2026-10-08")
     asked = []
 
-    def get_spot(ticker, max_age_seconds=900):
-        asked.append((ticker, max_age_seconds))
+    def get_daily_close(ticker, session_date):
+        asked.append((ticker, session_date))
         return 125.97                                       # Friday's close; the quote midpoint said 127.03
-    monkeypatch.setattr(session, "feed", NS(get_spot=get_spot,
+    monkeypatch.setattr(session, "feed", NS(get_daily_close=get_daily_close,
         get_latest_quote=lambda _t: pytest.fail("a quote midpoint is not a measurement")))
     assert await session.resolve_due_iv_evals("2026-10-11") == 1
-    assert asked == [("PEP", None)]                         # the last trade, whenever it was
+    assert asked == [("PEP", "2026-10-09")]               # Saturday's horizon uses Friday's close
     row = (await database._query("SELECT * FROM iv_rv_evals"))[0]
     assert row["resolved"] == 1 and row["exit_price"] == 125.97
     assert row["realized_move_pct"] == pytest.approx(abs(125.97 / 123.73 - 1) * 100, abs=0.01)
 
 
-async def test_with_no_trade_at_all_the_eval_stays_due(database, session, monkeypatch):
+async def test_with_no_historical_close_the_eval_stays_due(database, session, monkeypatch):
     monkeypatch.setattr(session, "db", database)
     await database.record_iv_eval("PEP", "SELL_PREMIUM", 1.5, 3.4, 123.73, "2026-10-10", "2026-10-08")
-    monkeypatch.setattr(session, "feed", NS(get_spot=lambda *a, **kw: None))
+    monkeypatch.setattr(session, "feed", NS(get_daily_close=lambda *a, **kw: None))
     assert await session.resolve_due_iv_evals("2026-10-11") == 0
     assert len(await database.get_due_iv_evals("2026-10-11")) == 1

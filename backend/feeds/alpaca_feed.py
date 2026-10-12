@@ -34,26 +34,25 @@ def spot_from(trade: Optional[dict], quote: Optional[dict], *, now: Optional[dat
     The last trade wins when it is recent enough: it is a price somebody paid.
     Otherwise a quote counts only if it is two-sided and tight. A one-sided or
     wide quote is not averaged into a number — the answer is None, and the
-    caller waits. `max_age_seconds=None` accepts a trade of any age, for
-    callers that want the latest price whenever the market last traded.
+    caller waits. `max_age_seconds=None` accepts a timestamped past trade of
+    any age; it never removes timestamp checks or the quote's 15-minute limit.
     """
     from math import isfinite
     now = now or datetime.now().astimezone()
 
-    def fresh(stamp) -> bool:
-        if max_age_seconds is None:
-            return True
+    def fresh(stamp, age_limit) -> bool:
         try:
             at = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
             if at.tzinfo is None:
                 return False
-            return 0 <= (now - at).total_seconds() <= max_age_seconds
+            age = (now - at).total_seconds()
+            return age >= 0 and (age_limit is None or age <= age_limit)
         except (TypeError, ValueError):
             return False
 
     try:
         price = float((trade or {}).get("price"))
-        if isfinite(price) and price > 0 and fresh((trade or {}).get("timestamp")):
+        if isfinite(price) and price > 0 and fresh((trade or {}).get("timestamp"), max_age_seconds):
             return price
     except (TypeError, ValueError):
         pass
@@ -64,7 +63,8 @@ def spot_from(trade: Optional[dict], quote: Optional[dict], *, now: Optional[dat
     if not (isfinite(bid) and isfinite(ask)) or bid <= 0 or ask < bid:
         return None
     mid = (bid + ask) / 2
-    if (ask - bid) / mid > MAX_SPOT_SPREAD_PCT or not fresh((quote or {}).get("timestamp")):
+    quote_age_limit = 900 if max_age_seconds is None else max_age_seconds
+    if (ask - bid) / mid > MAX_SPOT_SPREAD_PCT or not fresh((quote or {}).get("timestamp"), quote_age_limit):
         return None
     return mid
 
