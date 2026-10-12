@@ -1,23 +1,23 @@
 {
-  "generated": "2026-10-09T12:07:30.587809+00:00",
+  "generated": "2026-10-12T12:14:34.361992+00:00",
   "account": {
-    "equity": 53009.4,
-    "cash": 53279.4,
-    "buying_power": 189117.6,
+    "equity": 52333.18,
+    "cash": 52333.18,
+    "buying_power": 209332.72,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": 3009.4000000000015,
-    "total_pnl_pct": 6.018800000000002,
-    "open_positions": 4,
-    "days_running": 31,
+    "total_pnl": 2333.1800000000003,
+    "total_pnl_pct": 4.666360000000001,
+    "open_positions": 0,
+    "days_running": 34,
     "error": null
   },
   "metrics": {
     "closed_trades": 0,
-    "closed_condors": 0,
-    "closed_all": 0,
+    "closed_condors": 1,
+    "closed_all": 1,
     "wins": 0,
     "losses": 0,
     "win_rate": 0.0,
@@ -30,28 +30,28 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 53009.4,
+    "equity": 52333.18,
     "max_risk_pct": 0.3,
-    "risk_cap": 15902.82,
-    "open_risk": 4875.0,
-    "open_risk_pct": 0.092,
-    "condor_risk": 4875.0,
+    "risk_cap": 15699.954,
+    "open_risk": 0.0,
+    "open_risk_pct": 0.0,
+    "condor_risk": 0.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 11027.82,
+    "risk_headroom": 15699.954,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 10601.88,
-    "free_cash": 47279.4,
-    "free_cash_pct": 0.8919,
+    "cash_reserve": 10466.636,
+    "free_cash": 52333.18,
+    "free_cash_pct": 1.0,
     "unlisted_reserved": 0.0,
-    "cash_available": 36677.52
+    "cash_available": 41866.544
   },
   "account_risk_error": null,
   "activity": {
     "tag": "MEASURED",
-    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 0 closed, 1 open."
+    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 1 closed, 0 open."
   },
   "equity_curve": [
     {
@@ -176,41 +176,36 @@
     },
     {
       "date": "2026-10-09",
-      "equity": 53009.4
+      "equity": 52333.64
+    },
+    {
+      "date": "2026-10-10",
+      "equity": 52333.18
+    },
+    {
+      "date": "2026-10-11",
+      "equity": 52333.18
+    },
+    {
+      "date": "2026-10-12",
+      "equity": 52333.18
     }
   ],
   "iv_rv": {
-    "resolved": 0,
-    "wins": 0,
-    "win_rate": 0.0,
-    "avg_edge_pct": 0.0,
+    "resolved": 1,
+    "wins": 1,
+    "win_rate": 100.0,
+    "avg_edge_pct": 1.88,
     "open": 6
   },
   "iv_condors": {
-    "closed": 0,
-    "wins": 0,
-    "win_rate": 0.0,
-    "total_pnl": 0,
-    "open": 1,
+    "closed": 1,
+    "wins": 1,
+    "win_rate": 100.0,
+    "total_pnl": 180.0,
+    "open": 0,
     "pending": 0,
-    "open_detail": [
-      {
-        "ticker": "PEP",
-        "status": "open",
-        "settlement_note": null,
-        "qty": 15,
-        "expiry": "2026-10-09",
-        "earnings_date": "2026-10-08",
-        "strikes": "117.0/121.0 \u2014 131.0/135.0",
-        "credit_collected": 1125.0,
-        "max_risk": 4875.0,
-        "unrealized_pnl": 855.0,
-        "pct_of_max_risk": 17.5,
-        "legs_matched": 4,
-        "legs_expected": 4,
-        "partial": false
-      }
-    ]
+    "open_detail": []
   },
   "iv_variants": [],
   "iv_gate_comparison": {
@@ -235,24 +230,24 @@
       "events_needed": 100
     },
     "ungated": {
-      "n_events": 0,
-      "n_wins": 0,
-      "win_rate": null,
-      "total_pnl": 0.0,
-      "expectancy": null,
-      "profit_factor": null,
-      "avg_win": null,
-      "avg_loss": null,
-      "largest_single_loss": null,
-      "max_drawdown": 0.0,
-      "sharpe": null,
-      "sortino": null,
-      "tail_ratio": null,
-      "tail_events": 0,
-      "tail_pct_effective": null,
+      "n_events": 2,
+      "n_wins": 1,
+      "win_rate": 50.0,
+      "total_pnl": -188.4,
+      "expectancy": -94.2,
+      "profit_factor": 0.21,
+      "avg_win": 49.8,
+      "avg_loss": -238.2,
+      "largest_single_loss": -238.2,
+      "max_drawdown": 238.2,
+      "sharpe": -0.46,
+      "sortino": -0.56,
+      "tail_ratio": -4.78,
+      "tail_events": 1,
+      "tail_pct_effective": 50.0,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": false,
-      "events_needed": 100
+      "events_needed": 98
     },
     "failed_gates": {
       "n_events": 0,
@@ -295,24 +290,24 @@
       "events_needed": 100
     },
     "unknown_gates": {
-      "n_events": 0,
-      "n_wins": 0,
-      "win_rate": null,
-      "total_pnl": 0.0,
-      "expectancy": null,
-      "profit_factor": null,
-      "avg_win": null,
-      "avg_loss": null,
-      "largest_single_loss": null,
-      "max_drawdown": 0.0,
-      "sharpe": null,
-      "sortino": null,
-      "tail_ratio": null,
-      "tail_events": 0,
-      "tail_pct_effective": null,
+      "n_events": 2,
+      "n_wins": 1,
+      "win_rate": 50.0,
+      "total_pnl": -188.4,
+      "expectancy": -94.2,
+      "profit_factor": 0.21,
+      "avg_win": 49.8,
+      "avg_loss": -238.2,
+      "largest_single_loss": -238.2,
+      "max_drawdown": 238.2,
+      "sharpe": -0.46,
+      "sortino": -0.56,
+      "tail_ratio": -4.78,
+      "tail_events": 1,
+      "tail_pct_effective": 50.0,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": false,
-      "events_needed": 100
+      "events_needed": 98
     }
   },
   "iv_gate_comparison_by_source": {
@@ -338,24 +333,24 @@
         "events_needed": 100
       },
       "ungated": {
-        "n_events": 0,
-        "n_wins": 0,
-        "win_rate": null,
-        "total_pnl": 0.0,
-        "expectancy": null,
+        "n_events": 1,
+        "n_wins": 1,
+        "win_rate": 100.0,
+        "total_pnl": 49.8,
+        "expectancy": 49.8,
         "profit_factor": null,
-        "avg_win": null,
+        "avg_win": 49.8,
         "avg_loss": null,
         "largest_single_loss": null,
         "max_drawdown": 0.0,
         "sharpe": null,
         "sortino": null,
         "tail_ratio": null,
-        "tail_events": 0,
-        "tail_pct_effective": null,
+        "tail_events": 1,
+        "tail_pct_effective": 100.0,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 100
+        "events_needed": 99
       },
       "failed_gates": {
         "n_events": 0,
@@ -398,24 +393,24 @@
         "events_needed": 100
       },
       "unknown_gates": {
-        "n_events": 0,
-        "n_wins": 0,
-        "win_rate": null,
-        "total_pnl": 0.0,
-        "expectancy": null,
+        "n_events": 1,
+        "n_wins": 1,
+        "win_rate": 100.0,
+        "total_pnl": 49.8,
+        "expectancy": 49.8,
         "profit_factor": null,
-        "avg_win": null,
+        "avg_win": 49.8,
         "avg_loss": null,
         "largest_single_loss": null,
         "max_drawdown": 0.0,
         "sharpe": null,
         "sortino": null,
         "tail_ratio": null,
-        "tail_events": 0,
-        "tail_pct_effective": null,
+        "tail_events": 1,
+        "tail_pct_effective": 100.0,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 100
+        "events_needed": 99
       }
     },
     "measurement": {
@@ -440,24 +435,24 @@
         "events_needed": 100
       },
       "ungated": {
-        "n_events": 0,
+        "n_events": 1,
         "n_wins": 0,
-        "win_rate": null,
-        "total_pnl": 0.0,
-        "expectancy": null,
-        "profit_factor": null,
+        "win_rate": 0.0,
+        "total_pnl": -238.2,
+        "expectancy": -238.2,
+        "profit_factor": 0.0,
         "avg_win": null,
-        "avg_loss": null,
-        "largest_single_loss": null,
-        "max_drawdown": 0.0,
+        "avg_loss": -238.2,
+        "largest_single_loss": -238.2,
+        "max_drawdown": 238.2,
         "sharpe": null,
-        "sortino": null,
+        "sortino": -1.0,
         "tail_ratio": null,
-        "tail_events": 0,
-        "tail_pct_effective": null,
+        "tail_events": 1,
+        "tail_pct_effective": 100.0,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 100
+        "events_needed": 99
       },
       "failed_gates": {
         "n_events": 0,
@@ -500,49 +495,59 @@
         "events_needed": 100
       },
       "unknown_gates": {
-        "n_events": 0,
+        "n_events": 1,
         "n_wins": 0,
-        "win_rate": null,
-        "total_pnl": 0.0,
-        "expectancy": null,
-        "profit_factor": null,
+        "win_rate": 0.0,
+        "total_pnl": -238.2,
+        "expectancy": -238.2,
+        "profit_factor": 0.0,
         "avg_win": null,
-        "avg_loss": null,
-        "largest_single_loss": null,
-        "max_drawdown": 0.0,
+        "avg_loss": -238.2,
+        "largest_single_loss": -238.2,
+        "max_drawdown": 238.2,
         "sharpe": null,
-        "sortino": null,
+        "sortino": -1.0,
         "tail_ratio": null,
-        "tail_events": 0,
-        "tail_pct_effective": null,
+        "tail_events": 1,
+        "tail_pct_effective": 100.0,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 100
+        "events_needed": 99
       }
     }
   },
   "iv_quote_coverage": {
-    "events": 31,
-    "structures_attempted": 155,
-    "structures_priced": 126,
-    "priced_pct": 81.3,
+    "events": 32,
+    "structures_attempted": 160,
+    "structures_priced": 130,
+    "priced_pct": 81.2,
     "dropped_variants": {
       "condor_0.7sd": 8,
       "condor_1.0sd": 9,
-      "condor_1.3sd": 10,
+      "condor_1.3sd": 11,
       "fly": 1,
       "straddle": 1
     }
   },
   "implied_vs_realized": {
     "watchlist": {
-      "n_events": 0,
-      "pct_exceeding_implied": null,
+      "n_events": 1,
+      "pct_exceeding_implied": 0.0,
       "n_exceeding": 0,
-      "avg_implied_pct": null,
-      "avg_realized_pct": null,
-      "avg_edge_pct": null,
-      "events": [],
+      "avg_implied_pct": 3.49,
+      "avg_realized_pct": 0.74,
+      "avg_edge_pct": 2.75,
+      "events": [
+        {
+          "ticker": "PEP",
+          "earnings_date": "2026-10-08",
+          "implied_pct": 3.49,
+          "realized_pct": 0.74,
+          "edge_pct": 2.75,
+          "exceeded": false,
+          "lead_days": 1
+        }
+      ],
       "lead_cutoff_days": 2,
       "stale_capture": {
         "n_events": 0,
@@ -555,13 +560,23 @@
       }
     },
     "measurement": {
-      "n_events": 0,
-      "pct_exceeding_implied": null,
-      "n_exceeding": 0,
-      "avg_implied_pct": null,
-      "avg_realized_pct": null,
-      "avg_edge_pct": null,
-      "events": [],
+      "n_events": 1,
+      "pct_exceeding_implied": 100.0,
+      "n_exceeding": 1,
+      "avg_implied_pct": 5.22,
+      "avg_realized_pct": 8.41,
+      "avg_edge_pct": -3.19,
+      "events": [
+        {
+          "ticker": "STZ",
+          "earnings_date": "2026-10-06",
+          "implied_pct": 5.22,
+          "realized_pct": 8.41,
+          "edge_pct": -3.19,
+          "exceeded": true,
+          "lead_days": 0
+        }
+      ],
       "lead_cutoff_days": 2,
       "stale_capture": {
         "n_events": 0,
@@ -582,11 +597,11 @@
     "halted_at": null,
     "halted_reason": null,
     "rearmed_at": null,
-    "closes_counted": 0
+    "closes_counted": 1
   },
   "heartbeat": {
-    "last_seen": "2026-10-09T12:07:08.031997",
-    "age_minutes": 0.4,
+    "last_seen": "2026-10-12T11:32:44.156542",
+    "age_minutes": 41.9,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -594,37 +609,9 @@
   "by_strategy": [],
   "by_hour": [],
   "recent": [],
-  "open_positions": [
-    {
-      "symbol": "PEP261009C00131000",
-      "qty": -15.0,
-      "pnl": 885.0,
-      "pnl_pct": 80.82,
-      "market_val": -210.0
-    },
-    {
-      "symbol": "PEP261009C00135000",
-      "qty": 15.0,
-      "pnl": -360.0,
-      "pnl_pct": -100.0,
-      "market_val": 0.0
-    },
-    {
-      "symbol": "PEP261009P00117000",
-      "qty": 15.0,
-      "pnl": -135.0,
-      "pnl_pct": -100.0,
-      "market_val": 0.0
-    },
-    {
-      "symbol": "PEP261009P00121000",
-      "qty": -15.0,
-      "pnl": 465.0,
-      "pnl_pct": 88.57,
-      "market_val": -60.0
-    }
-  ],
+  "open_positions": [],
   "proposals": [
-    "No closed trades in 31 days. Note the flow/pattern engine is OFF (AUTO_TRADE_FLOW_ENABLED=false), so AUTO_TRADE_SCORE_THRESHOLD is not the constraint \u2014 lowering it would change nothing. The live path is the IV/earnings condor: widen the watchlist or relax the scanner gates to grow the sample."
+    "Watchlist review: no changes \u2014 all 78 names active; no strong un-watchlisted names.",
+    "No changes proposed \u2014 baseline accruing. Keep collecting."
   ]
 }
