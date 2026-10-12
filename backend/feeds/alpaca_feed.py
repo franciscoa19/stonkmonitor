@@ -7,6 +7,7 @@ from typing import Optional
 from alpaca.data import StockHistoricalDataClient, OptionHistoricalDataClient
 from alpaca.data.requests import (
     StockLatestQuoteRequest,
+    StockLatestTradeRequest,
     StockBarsRequest,
     OptionChainRequest,
     OptionLatestQuoteRequest,
@@ -18,6 +19,54 @@ from datetime import date, datetime, time, timedelta
 from market_time import et_now
 
 logger = logging.getLogger(__name__)
+
+# A quote midpoint is only a price when both sides are real. This feed is one
+# exchange, and around the open and close (and whenever it is thin) one side of
+# its book is a placeholder: PEP showed $120.23 x $126.31 at 09:30:25 on
+# 2026-10-09, a "midpoint" of $123.27 while the stock traded at $126.25.
+MAX_SPOT_SPREAD_PCT = 0.005
+
+
+def spot_from(trade: Optional[dict], quote: Optional[dict], *, now: Optional[datetime] = None,
+              max_age_seconds: Optional[float] = 900) -> Optional[float]:
+    """The stock's price, from evidence that is actually a price.
+
+    The last trade wins when it is recent enough: it is a price somebody paid.
+    Otherwise a quote counts only if it is two-sided and tight. A one-sided or
+    wide quote is not averaged into a number — the answer is None, and the
+    caller waits. `max_age_seconds=None` accepts a trade of any age, for
+    callers that want the latest price whenever the market last traded.
+    """
+    from math import isfinite
+    now = now or datetime.now().astimezone()
+
+    def fresh(stamp) -> bool:
+        if max_age_seconds is None:
+            return True
+        try:
+            at = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            if at.tzinfo is None:
+                return False
+            return 0 <= (now - at).total_seconds() <= max_age_seconds
+        except (TypeError, ValueError):
+            return False
+
+    try:
+        price = float((trade or {}).get("price"))
+        if isfinite(price) and price > 0 and fresh((trade or {}).get("timestamp")):
+            return price
+    except (TypeError, ValueError):
+        pass
+    try:
+        bid, ask = float((quote or {}).get("bid")), float((quote or {}).get("ask"))
+    except (TypeError, ValueError):
+        return None
+    if not (isfinite(bid) and isfinite(ask)) or bid <= 0 or ask < bid:
+        return None
+    mid = (bid + ask) / 2
+    if (ask - bid) / mid > MAX_SPOT_SPREAD_PCT or not fresh((quote or {}).get("timestamp")):
+        return None
+    return mid
 
 
 class AlpacaFeed:
@@ -46,6 +95,25 @@ class AlpacaFeed:
         except Exception as e:
             logger.error(f"Alpaca quote error for {ticker}: {e}")
             return {}
+
+    def get_latest_trade(self, ticker: str) -> dict:
+        """The most recent trade print: {price, timestamp}, or {} if unavailable."""
+        try:
+            req = StockLatestTradeRequest(symbol_or_symbols=ticker.upper())
+            trade = self.stock_client.get_stock_latest_trade(req).get(ticker.upper())
+            if not trade:
+                return {}
+            return {"ticker": ticker.upper(), "price": float(trade.price),
+                    "timestamp": trade.timestamp.isoformat()}
+        except Exception as e:
+            logger.error(f"Alpaca trade error for {ticker}: {e}")
+            return {}
+
+    def get_spot(self, ticker: str, max_age_seconds: Optional[float] = 900) -> Optional[float]:
+        """The stock's current price for a decision, or None when there is no
+        trustworthy one (see spot_from). Never the midpoint of a one-sided book."""
+        return spot_from(self.get_latest_trade(ticker), self.get_latest_quote(ticker),
+                         max_age_seconds=max_age_seconds)
 
     def get_bars(self, ticker: str, days: int = 30, timeframe: str = "1Day") -> list[dict]:
         """Get OHLCV bars for a ticker."""

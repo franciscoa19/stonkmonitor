@@ -118,6 +118,11 @@ class Settings(BaseSettings):
     # gap can push several toward max loss at once — so the concurrency limit is
     # the real portfolio control, not the per-trade cap.
     iv_exec_max_positions: int = Field(3)
+    # Minutes after the opening bell before a condor is opened or closed by
+    # choice. Opening option quotes are not prices: PEP's two short legs were
+    # asked $0.63 at 09:30:25 on 2026-10-09 while they traded at $0.02-0.06,
+    # and the bot paid it. A forced expiry-day close is never delayed. 0 = off.
+    iv_exec_open_delay_minutes: int = Field(15, ge=0, le=180)
     iv_exec_max_per_day: int = Field(4)               # new condors per day
     iv_exec_tp_pct: float = Field(0.5)                     # close at 50% of max credit captured
     # Expiry day: after this ET hour, close on whatever the book offers rather

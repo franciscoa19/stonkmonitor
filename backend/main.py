@@ -872,16 +872,7 @@ async def daily_equity_loop():
         # Resolve any IV/RV evals whose window has elapsed: measure the realized
         # move vs the implied move logged at signal time (hypothetical straddle).
         try:
-            today = et_now().strftime("%Y-%m-%d")
-            for ev in await db.get_due_iv_evals(today):
-                q = feed.get_latest_quote(ev["ticker"])
-                bid, ask = float(q.get("bid") or 0), float(q.get("ask") or 0)
-                px = (bid + ask) / 2 if (bid and ask) else (bid or ask)
-                if px and ev["entry_price"]:
-                    realized = abs(px / ev["entry_price"] - 1) * 100
-                    await db.resolve_iv_eval(ev["id"], px, realized, ev["implied_move_pct"] or 0)
-                    logger.info(f"IV/RV eval resolved: {ev['ticker']} realized "
-                                f"±{realized:.1f}% vs implied ±{ev['implied_move_pct']:.1f}%")
+            await resolve_due_iv_evals(et_now().strftime("%Y-%m-%d"))
         except Exception as e:
             logger.warning(f"IV eval resolve error: {e}")
 
@@ -930,6 +921,27 @@ async def daily_equity_loop():
             logger.warning(f"Variant eval resolve error: {e}")
 
         await asyncio.sleep(3600)  # hourly
+
+
+async def resolve_due_iv_evals(today: str) -> int:
+    """Measure the realized move for every eval whose window has elapsed.
+
+    The price is the stock's last trade, of any age. After the close this feed's
+    quote is a placeholder on both sides ($120.23 x $133.83 for PEP on
+    2026-10-09, a "midpoint" of $127.03 against a $125.97 close), and a move
+    measured from that is not a measurement. With no trade at all the eval stays
+    due and is tried again next hour.
+    """
+    resolved = 0
+    for ev in await db.get_due_iv_evals(today):
+        px = await asyncio.to_thread(feed.get_spot, ev["ticker"], None)
+        if px and ev["entry_price"]:
+            realized = abs(px / ev["entry_price"] - 1) * 100
+            await db.resolve_iv_eval(ev["id"], px, realized, ev["implied_move_pct"] or 0)
+            resolved += 1
+            logger.info(f"IV/RV eval resolved: {ev['ticker']} realized "
+                        f"±{realized:.1f}% vs implied ±{ev['implied_move_pct']:.1f}%")
+    return resolved
 
 
 _account_bound = False
@@ -990,6 +1002,10 @@ async def maybe_execute_condor(setup):
     # until the next open. Closes already wait for RTH — so must entries.
     if not is_rth_now():
         logger.debug("IV-exec %s: entry deferred to regular trading hours",
+                     getattr(setup, "ticker", "?"))
+        return
+    if opening_quotes_settling():
+        logger.debug("IV-exec %s: entry deferred until the opening quotes settle",
                      getattr(setup, "ticker", "?"))
         return
     # A same-day BMO print has already happened. Fail closed when report timing
@@ -1167,6 +1183,15 @@ async def _open_condor(setup, s, ticker: str):
         f"risk ${plan['risk_usd']:.0f} exp {plan['expiry']} order={res.get('id')} | "
         f"account risk now ${limits['open_risk'] + plan_risk:,.0f} "
         f"({(limits['open_risk'] + plan_risk) / equity:.1%} of equity, cap {limits['max_risk_pct']:.0%})")
+
+
+def opening_quotes_settling(now=None) -> bool:
+    """True for the first minutes of the regular session, while option books are
+    still forming and a quoted price is not one anybody trades at."""
+    from market_time import et_now
+    n = et_now(now)
+    since_open = (n.hour * 60 + n.minute) - (9 * 60 + 30)
+    return 0 <= since_open < int(settings.iv_exec_open_delay_minutes)
 
 
 def is_rth_now() -> bool:
@@ -1808,6 +1833,9 @@ async def _manage_condor(c: dict):
         if not is_rth_now():
             logger.debug("IV-exec condor #%s close deferred: outside RTH", cid)
             return
+        if opening_quotes_settling():
+            logger.debug("IV-exec condor #%s close deferred: opening quotes still settling", cid)
+            return
         if debit is None:
             logger.debug("IV-exec condor #%s close deferred: book not executable", cid)
             return
@@ -1816,11 +1844,15 @@ async def _manage_condor(c: dict):
 
     # ── Hold an expiring, comfortably-OTM condor instead of paying to close ──
     if c["status"] == "open" and expiring and (tp_hit or post_earnings or forced):
-        spot = await loop.run_in_executor(None, feed.get_latest_quote, c["ticker"])
-        spot_px = None
-        if isinstance(spot, dict):
-            b, a = float(spot.get("bid") or 0), float(spot.get("ask") or 0)
-            spot_px = spot.get("mid") or ((b + a) / 2 if (b and a) else (b or a))
+        # A traded price, never a quote midpoint: one side of this feed's book
+        # is often a placeholder, and on 2026-10-09 that read PEP as $123.27
+        # while it traded at $126.25 — outside the hold band, so a condor that
+        # was comfortably safe all day was bought back at the open instead.
+        spot_px = await loop.run_in_executor(None, feed.get_spot, c["ticker"])
+        if spot_px is None and not forced:
+            logger.info(f"IV-exec condor #{cid} {c['ticker']}: no reliable stock price yet; "
+                        "hold-or-close decision deferred to the next cycle")
+            return
         if _condor_expiry_hold(c, spot_px, settings.iv_exec_expiry_hold_buffer_pct):
             logger.info(
                 f"IV-exec condor #{cid} {c['ticker']} holding to expiry: spot "

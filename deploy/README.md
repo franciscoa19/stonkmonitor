@@ -181,6 +181,19 @@ as an unknown holding. If one ever gains a real bid the log says
 A condor that lost still closes as one four-leg order, because its wings have
 value and can be sold.
 
+## The first minutes after the bell
+
+Opening option quotes are not prices, and the stock feed's quote is often
+one-sided at the open. Until `IV_EXEC_OPEN_DELAY_MINUTES` (default 15) have
+passed since 09:30 ET the bot neither opens a condor nor closes one by choice.
+A forced close at the expiry-day deadline is never delayed. Set it to 0 to turn
+the wait off.
+
+The stock price used to decide whether to hold a condor to expiry is the last
+trade, not a quote midpoint. If there is no recent trade and no tight quote, the
+log says `no reliable stock price yet; hold-or-close decision deferred` and the
+decision is taken on a later cycle.
+
 ## Flow-entry sizing (flow trading is off by default)
 
 Flow entries floor quantities to the percentage budget and revalidate them

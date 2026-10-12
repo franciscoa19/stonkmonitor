@@ -42,7 +42,8 @@ def session(monkeypatch):
     monkeypatch.setattr(market_time, "et_today", lambda *a: now.date())
     monkeypatch.setattr(market_time, "et_now", lambda *a: now)
     monkeypatch.setattr(main, "is_rth_now", lambda: True)
-    monkeypatch.setattr(main, "feed", NS(get_latest_quote=lambda _: {"bid": 91, "ask": 91}))
+    monkeypatch.setattr(main, "feed", NS(get_latest_quote=lambda _: {"bid": 91, "ask": 91},
+                                         get_spot=lambda *a, **kw: 91))
     # These tests use fake brokers; the account guard has its own tests.
     monkeypatch.setattr(main, "_account_bound", True)
     monkeypatch.setattr(main, "_account_bind_lock", asyncio.Lock())

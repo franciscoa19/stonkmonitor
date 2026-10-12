@@ -1877,6 +1877,7 @@ async def test_condor_close_defers_outside_rth_but_never_past_expiry(db, monkeyp
 
     def feed_at(px):
         return _NS(get_latest_quote=lambda _t: {"bid": px, "ask": px, "mid": px},
+                   get_spot=lambda _t, **kw: px,
                    get_daily_close=lambda _t, _d: None)
 
     # Pin the clock to the day between the print and expiry. Read off the wall
