@@ -1,17 +1,17 @@
 {
-  "generated": "2026-10-12T12:14:34.361992+00:00",
+  "generated": "2026-10-13T12:08:35.560561+00:00",
   "account": {
-    "equity": 52333.18,
-    "cash": 52333.18,
-    "buying_power": 209332.72,
+    "equity": 51368.87,
+    "cash": 55178.87,
+    "buying_power": 175715.48,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": 2333.1800000000003,
-    "total_pnl_pct": 4.666360000000001,
-    "open_positions": 0,
-    "days_running": 34,
+    "total_pnl": 1368.8700000000026,
+    "total_pnl_pct": 2.737740000000005,
+    "open_positions": 8,
+    "days_running": 35,
     "error": null
   },
   "metrics": {
@@ -30,28 +30,28 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 52333.18,
+    "equity": 51368.87,
     "max_risk_pct": 0.3,
-    "risk_cap": 15699.954,
-    "open_risk": 0.0,
-    "open_risk_pct": 0.0,
-    "condor_risk": 0.0,
+    "risk_cap": 15410.661,
+    "open_risk": 8400.0,
+    "open_risk_pct": 0.1635,
+    "condor_risk": 8400.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 15699.954,
+    "risk_headroom": 7010.661,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 10466.636,
-    "free_cash": 52333.18,
-    "free_cash_pct": 1.0,
+    "cash_reserve": 10273.774,
+    "free_cash": 43928.87,
+    "free_cash_pct": 0.8552,
     "unlisted_reserved": 0.0,
-    "cash_available": 41866.544
+    "cash_available": 33655.096
   },
   "account_risk_error": null,
   "activity": {
     "tag": "MEASURED",
-    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 1 closed, 0 open."
+    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 1 closed, 2 open."
   },
   "equity_curve": [
     {
@@ -188,7 +188,11 @@
     },
     {
       "date": "2026-10-12",
-      "equity": 52333.18
+      "equity": 51370.68
+    },
+    {
+      "date": "2026-10-13",
+      "equity": 51368.87
     }
   ],
   "iv_rv": {
@@ -196,16 +200,49 @@
     "wins": 1,
     "win_rate": 100.0,
     "avg_edge_pct": 1.88,
-    "open": 6
+    "open": 8
   },
   "iv_condors": {
     "closed": 1,
     "wins": 1,
     "win_rate": 100.0,
     "total_pnl": 180.0,
-    "open": 0,
+    "open": 2,
     "pending": 0,
-    "open_detail": []
+    "open_detail": [
+      {
+        "ticker": "UNH",
+        "status": "open",
+        "settlement_note": null,
+        "qty": 5,
+        "expiry": "2026-10-16",
+        "earnings_date": "2026-10-13",
+        "strikes": "337.5/350.0 \u2014 402.5/415.0",
+        "credit_collected": 1830.0,
+        "max_risk": 4420.0,
+        "unrealized_pnl": -700.0,
+        "pct_of_max_risk": -15.8,
+        "legs_matched": 4,
+        "legs_expected": 4,
+        "partial": false
+      },
+      {
+        "ticker": "WFC",
+        "status": "open",
+        "settlement_note": null,
+        "qty": 20,
+        "expiry": "2026-10-16",
+        "earnings_date": "2026-10-13",
+        "strikes": "77.0/79.0 \u2014 87.5/90.0",
+        "credit_collected": 1020.0,
+        "max_risk": 3980.0,
+        "unrealized_pnl": -260.0,
+        "pct_of_max_risk": -6.5,
+        "legs_matched": 4,
+        "legs_expected": 4,
+        "partial": false
+      }
+    ]
   },
   "iv_variants": [],
   "iv_gate_comparison": {
@@ -517,16 +554,16 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 32,
-    "structures_attempted": 160,
-    "structures_priced": 130,
-    "priced_pct": 81.2,
+    "events": 45,
+    "structures_attempted": 225,
+    "structures_priced": 126,
+    "priced_pct": 56.0,
     "dropped_variants": {
-      "condor_0.7sd": 8,
-      "condor_1.0sd": 9,
-      "condor_1.3sd": 11,
-      "fly": 1,
-      "straddle": 1
+      "condor_0.7sd": 22,
+      "condor_1.0sd": 23,
+      "condor_1.3sd": 24,
+      "fly": 15,
+      "straddle": 15
     }
   },
   "implied_vs_realized": {
@@ -600,8 +637,8 @@
     "closes_counted": 1
   },
   "heartbeat": {
-    "last_seen": "2026-10-12T11:32:44.156542",
-    "age_minutes": 41.9,
+    "last_seen": "2026-10-13T12:02:30.796213",
+    "age_minutes": 6.1,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -609,9 +646,65 @@
   "by_strategy": [],
   "by_hour": [],
   "recent": [],
-  "open_positions": [],
+  "open_positions": [
+    {
+      "symbol": "UNH261016C00402500",
+      "qty": -5.0,
+      "pnl": -550.0,
+      "pnl_pct": -26.19,
+      "market_val": -2650.0
+    },
+    {
+      "symbol": "UNH261016C00415000",
+      "qty": 5.0,
+      "pnl": -65.0,
+      "pnl_pct": -5.73,
+      "market_val": 1070.0
+    },
+    {
+      "symbol": "UNH261016P00337500",
+      "qty": 5.0,
+      "pnl": -210.0,
+      "pnl_pct": -27.63,
+      "market_val": 550.0
+    },
+    {
+      "symbol": "UNH261016P00350000",
+      "qty": -5.0,
+      "pnl": 125.0,
+      "pnl_pct": 7.69,
+      "market_val": -1500.0
+    },
+    {
+      "symbol": "WFC261016C00087500",
+      "qty": -20.0,
+      "pnl": -80.0,
+      "pnl_pct": -8.16,
+      "market_val": -1060.0
+    },
+    {
+      "symbol": "WFC261016C00090000",
+      "qty": 20.0,
+      "pnl": -80.0,
+      "pnl_pct": -18.18,
+      "market_val": 360.0
+    },
+    {
+      "symbol": "WFC261016P00077000",
+      "qty": 20.0,
+      "pnl": -60.0,
+      "pnl_pct": -15.0,
+      "market_val": 340.0
+    },
+    {
+      "symbol": "WFC261016P00079000",
+      "qty": -20.0,
+      "pnl": -40.0,
+      "pnl_pct": -4.54,
+      "market_val": -920.0
+    }
+  ],
   "proposals": [
-    "Watchlist review: no changes \u2014 all 78 names active; no strong un-watchlisted names.",
     "No changes proposed \u2014 baseline accruing. Keep collecting."
   ]
 }
