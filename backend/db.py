@@ -537,7 +537,9 @@ _MIGRATIONS = {
                    "close_pnl": "REAL NOT NULL DEFAULT 0",
                    "close_client_order_id": "TEXT",
                    "settlement_note": "TEXT",
-                   "close_legs_json": "TEXT"},
+                   "close_legs_json": "TEXT",
+                   "close_attempts": "INTEGER NOT NULL DEFAULT 0",
+                   "close_attempt_day": "TEXT"},
     "iv_condor_close_fills": {"legs_json": "TEXT"},
     "pending_trades":    {"strategy": "TEXT", "entry_order_status": "TEXT"},
     "manual_order_requests": {"broker_order_status": "TEXT"},
@@ -1177,18 +1179,32 @@ class Database:
             (close_order_id, client_order_id, condor_id), strict=True, expected_rows=1)
 
     async def begin_condor_close(self, condor_id: int, client_order_id: str,
-                                 close_legs_json: Optional[str] = None) -> None:
+                                 close_legs_json: Optional[str] = None, *,
+                                 attempts: Optional[int] = None,
+                                 attempt_day: Optional[str] = None) -> None:
         """Claim a close before it is submitted, with the legs it will contain.
 
         `close_legs_json` is NULL for the usual four-leg close. A close that
         leaves a worthless wing out records the legs it does include, so its
         fills can be told apart later: the wings it left behind stay in the
         account until they expire (get_condor_residual_legs).
+
+        `attempts` / `attempt_day` record how many closes have been sent for
+        this condor on that trading day, so the next one can bid higher and a
+        restart does not start the count again. Omitted, they are left alone.
         """
+        if attempts is None:
+            await self._exec(
+                """UPDATE iv_condors SET status='closing', close_order_id=NULL,
+                          close_client_order_id=?, close_legs_json=? WHERE id=?""",
+                (client_order_id, close_legs_json, condor_id), strict=True, expected_rows=1)
+            return
         await self._exec(
             """UPDATE iv_condors SET status='closing', close_order_id=NULL,
-                      close_client_order_id=?, close_legs_json=? WHERE id=?""",
-            (client_order_id, close_legs_json, condor_id), strict=True, expected_rows=1)
+                      close_client_order_id=?, close_legs_json=?,
+                      close_attempts=?, close_attempt_day=? WHERE id=?""",
+            (client_order_id, close_legs_json, int(attempts), attempt_day, condor_id),
+            strict=True, expected_rows=1)
 
     async def close_condor(self, condor_id: int, exit_debit: float, pnl: float) -> None:
         await self._exec(

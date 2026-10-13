@@ -181,6 +181,14 @@ as an unknown holding. If one ever gains a real bid the log says
 A condor that lost still closes as one four-leg order, because its wings have
 value and can be sold.
 
+**Close price.** The first close order bids a little over the quoted cost. Each
+retry that goes unfilled (about every ten minutes) bids a step higher, reaching
+a ceiling by the fourth attempt: the profit-target price for a take-profit, or
+the cost of the two short legs alone (plus a cushion) for a close that has to
+happen. The log shows `limit $X (attempt N today)`. A take-profit that keeps
+retrying at the same price means the market is not actually selling at the
+target yet.
+
 ## The first minutes after the bell
 
 Opening option quotes are not prices, and the stock feed's quote is often

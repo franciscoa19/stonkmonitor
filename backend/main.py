@@ -1584,6 +1584,43 @@ def _condor_close_legs(legs: list, quotes: dict) -> list:
     return close if len(shorts) == 2 and all(s in close for s in shorts) else list(legs)
 
 
+def _condor_close_limit(c: dict, legs: list, quotes: dict, debit: float,
+                        tp_hit: bool, attempt: int) -> float:
+    """The most to pay to buy a condor back on this attempt (net debit).
+
+    The first attempt bids a little over the quoted cost. Every unfilled retry
+    bids a step higher, reaching a ceiling by the fourth attempt and staying
+    there. One fixed tick over the quote was not enough: WFC's take-profit close
+    went unfilled eleven times on 2026-10-13 at $0.01 over a $0.24 quote, as
+    PEP's and NKE's had, while UNH (six cents over) and MU filled at once. A
+    limit is a ceiling, not the price paid — the order fills at the market's
+    price when the limit reaches it.
+
+    The ceiling depends on why the condor is closing:
+      * profit target — the target price itself. Paying more than that is not
+        taking the profit; if the market will not sell there, the target has
+        not really been reached and the order simply waits.
+      * a close that has to happen (after the print) — what the two short legs
+        cost to buy back on their own, plus a cushion. That is the most the
+        structure can cost if the wings fetch nothing at all.
+    Never more than the wing width, the most a condor can ever cost.
+    """
+    from math import floor
+    width = max(_condor_wing_width(c), 0.05)
+    base = max(debit, 0.01)
+    first = max(base * 1.05, base + 0.01)
+    if tp_hit:
+        target = (1 - settings.iv_exec_tp_pct) * float(c["credit"])
+        ceiling = floor(target * 100 + 1e-9) / 100
+    else:
+        shorts = sum(float(quotes[l["symbol"]]["ask"]) for l in legs if l.get("side") == "sell")
+        ceiling = max(shorts * 1.05, shorts + 0.02)
+    ceiling = min(max(ceiling, 0.01), width)
+    first = min(first, ceiling)
+    step = max(0.01, (ceiling - first) / 3)
+    return round(min(ceiling, first + max(0, int(attempt)) * step), 2)
+
+
 async def _condor_risk_check(pnl: float) -> None:
     """Advance the anti-martingale throttle after a condor books P&L, and trip
     the breaker on a loss streak.
@@ -1914,6 +1951,10 @@ async def _manage_condor(c: dict):
 
     # Submit the close (marketable-ish debit limit) and mark closing.
     reason = "TP" if tp_hit else ("expiry" if forced and not post_earnings else "post-earnings")
+    # How many closes have already been sent for this condor today. Kept on the
+    # row, so a restart carries on from the same step instead of starting over.
+    close_day = et_today().isoformat()
+    attempt = int(c.get("close_attempts") or 0) if c.get("close_attempt_day") == close_day else 0
     if forced or debit is None:
         # At the expiry deadline, use the bounded-risk ceiling even when a
         # quote exists. A pending TP order must not strand this close.
@@ -1923,15 +1964,9 @@ async def _manage_condor(c: dict):
         limit = round(max(_condor_wing_width(c), 0.05), 2)
         reason += " (no book — wing-width limit)"
     else:
-        # The debit is already at the touch, so it needs only a small cushion for
-        # movement between quote and submit — but it must be at least one tick.
-        # A percentage cushion vanishes on penny-priced options: 5% of $0.07 is
-        # $0.0035, which rounds to zero and leaves the limit exactly AT the
-        # touch, so NKE's close sat unfilled on expiry day. Never more than the
-        # wing width, the most a condor can cost to buy back.
-        base = max(debit, 0.01)
-        limit = round(min(max(base * 1.05, base + 0.01),
-                          max(_condor_wing_width(c), 0.05)), 2)
+        # A little over the quoted cost on the first attempt, a step higher on
+        # every unfilled retry, up to a ceiling (see _condor_close_limit).
+        limit = _condor_close_limit(c, legs, quotes, debit, tp_hit, attempt)
     # With a readable book, leave out any wing nobody is bidding for: it cannot
     # be sold, and it would keep the whole order from filling. The debit and the
     # limit above already value such a wing at zero, so the price is unchanged.
@@ -1944,7 +1979,8 @@ async def _manage_condor(c: dict):
         # Persist the identity and the legs before the POST: an ambiguous
         # submission must stay tracked, and its fills must know their legs.
         await db.begin_condor_close(
-            cid, client_id, _json.dumps(order_legs) if len(order_legs) < len(legs) else None)
+            cid, client_id, _json.dumps(order_legs) if len(order_legs) < len(legs) else None,
+            attempts=attempt + 1, attempt_day=close_day)
         result = await loop.run_in_executor(
             None, lambda: trader.close_multileg(order_legs, qty, limit, client_order_id=client_id))
         return result, client_id
@@ -1968,7 +2004,7 @@ async def _manage_condor(c: dict):
              if left else "")
     logger.info(f"IV-exec condor #{cid} {c['ticker']} closing ({reason}) "
                 f"debit{'≈$%.2f' % debit if debit is not None else ' unknown'} "
-                f"limit ${limit:.2f} order={res.get('id')}{shape}")
+                f"limit ${limit:.2f} (attempt {attempt + 1} today) order={res.get('id')}{shape}")
 
 
 async def _note_valuable_leftover_wings() -> None:
