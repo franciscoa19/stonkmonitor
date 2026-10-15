@@ -4,6 +4,7 @@ Supports market, limit, stop, and options orders.
 """
 import logging
 from typing import Optional, Literal
+import requests
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     MarketOrderRequest,
@@ -46,16 +47,17 @@ class AlpacaTrader:
                 "Content-Type": "application/json"}
 
     @staticmethod
-    def _retry_call(fn, attempts: int = 2, delay: float = 0.5):
-        """Call fn(), retrying once on any exception. Alpaca intermittently drops
-        the connection mid-request (RemoteDisconnected / read timeout); one quick
-        retry absorbs the blip instead of surfacing a transient error."""
+    def _retry_call(fn, attempts: int = 2, delay: float = 0.5, retry_on=(Exception,)):
+        """Call fn(), retrying once on any exception (or only on `retry_on`).
+        Alpaca intermittently drops the connection mid-request (RemoteDisconnected
+        / read timeout); one quick retry absorbs the blip instead of surfacing a
+        transient error. Read-only calls only: an order is never resent."""
         import time as _t
         last = None
         for i in range(attempts):
             try:
                 return fn()
-            except Exception as e:
+            except retry_on as e:
                 last = e
                 if i < attempts - 1:
                     _t.sleep(delay)
@@ -518,7 +520,13 @@ class AlpacaTrader:
                       expiration_date_gte=exp_gte, expiration_date_lte=exp_lte, limit=limit)
             if opt_type:
                 kw["type"] = opt_type
-            res = self.client.get_option_contracts(GetOptionContractsRequest(**kw))
+            req = GetOptionContractsRequest(**kw)
+            # The SDK retries only HTTP 429/504. A pooled connection the server
+            # dropped while the Mac slept answers its next request with a reset
+            # (seven research checks lost on 2026-10-15), so retry that once on a
+            # fresh connection — but not an error Alpaca actually returned.
+            res = self._retry_call(lambda: self.client.get_option_contracts(req),
+                                   retry_on=(requests.exceptions.ConnectionError,))
             return [
                 {"symbol": c.symbol, "strike": float(c.strike_price),
                  "expiry": c.expiration_date, "type": c.type.value if c.type else None,
