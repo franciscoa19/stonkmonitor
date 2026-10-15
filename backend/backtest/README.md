@@ -95,6 +95,32 @@ pending for another pass; later retries still request the same session. These
 observations are hypothetical move measurements, not executable option P&L.
 Already-resolved observations retain their original results for audit.
 
+### Market-event days
+
+Days the whole market moved on news (a CPI print, an FOMC decision) can be
+tagged in `market_events` (`POST /api/market-events`). Nothing is removed: the
+daily report shows its headline results again without any trade or observation
+whose holding window included a tagged day, so an outlier can be seen rather
+than silently dropped. Before tagging a day, check whether the losses were the
+market's or the stocks' own earnings reactions — the second is what the
+strategy is selling, and excluding it flatters the results.
+
+### Stop what-if study
+
+`venv/bin/python -m backtest.stop_study [--json out.json]` replays every closed
+bot condor and every resolved research condor against five-minute history of
+the stock and its four options, under: hold to expiry; the bot's policy
+(profit target at half the credit, otherwise close at 09:45 ET the session
+after the print, otherwise at 15:00 on expiry day); the policy plus a stop when
+the stock trades through a short strike; the policy plus a stop at half the
+maximum loss. Like the bot, nothing acts before 09:45.
+
+It opens the ledger read-only and only reads price history. Option values are
+last trades in each five-minute bar, not executable quotes: they flatter every
+rule, so compare rules with each other rather than reading any one as a fill.
+A rule with no priced bar after its trigger is reported as "no data". The
+summary prints its sample size; a few events are an anecdote.
+
 ## What does NOT exist, and why
 
 **There is no historical backtest.** Spec §1 asks for ≥1,200 events over ≥5

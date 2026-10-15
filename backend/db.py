@@ -110,6 +110,22 @@ OPEN_LONG_QTY_SQL = (
     "CASE WHEN position_intent='buy_to_close' THEN 0 ELSE COALESCE(open_qty,"
     "CASE WHEN realized_pnl IS NULL THEN filled_qty ELSE 0 END,0) END")
 
+def _outside_market_events(start_sql: str, end_sql: str) -> str:
+    """SQL condition: no tagged market-event day falls in [start, end].
+
+    Both arguments are fixed column expressions written in this module, never
+    caller input.
+    """
+    return (" AND NOT EXISTS (SELECT 1 FROM market_events me"
+            f" WHERE me.date BETWEEN {start_sql} AND {end_sql})")
+
+
+# Holding windows of each kind of record, as SQL date expressions.
+_IV_EVAL_WINDOW = ("signal_date", "COALESCE(resolve_after, signal_date)")
+_VARIANT_WINDOW = ("signal_date", "COALESCE(expiry, resolve_after, signal_date)")
+_CONDOR_WINDOW = ("substr(opened_at,1,10)", "COALESCE(substr(closed_at,1,10), expiry)")
+
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -318,6 +334,16 @@ CREATE TABLE IF NOT EXISTS manual_order_requests (
 CREATE TABLE IF NOT EXISTS watchlist (
     ticker     TEXT PRIMARY KEY,               -- upper-cased symbol, scanned for IV + earnings
     added_at   TEXT NOT NULL
+);
+
+-- Days the whole market moved on news (a CPI print, an FOMC decision). Nothing
+-- is deleted or excluded by default; the report shows results with and without
+-- events whose holding window included one of these days.
+CREATE TABLE IF NOT EXISTS market_events (
+    date       TEXT PRIMARY KEY,               -- YYYY-MM-DD, the ET trading day
+    label      TEXT NOT NULL,                  -- e.g. CPI, FOMC
+    note       TEXT,
+    created_at TEXT NOT NULL
 );
 
 -- ── Indexes ───────────────────────────────────────────────────────────
@@ -868,6 +894,22 @@ class Database:
     async def remove_watchlist(self, ticker: str) -> None:
         await self._exec("DELETE FROM watchlist WHERE ticker = ?", (ticker.upper(),))
 
+    # ── Market-wide event days (tagged, never deleted) ───────────────────
+    async def get_market_events(self) -> list[dict]:
+        return await self._query("SELECT date, label, note, created_at FROM market_events ORDER BY date",
+                                 strict=True)
+
+    async def add_market_event(self, date: str, label: str, note: Optional[str] = None) -> None:
+        await self._exec(
+            """INSERT INTO market_events (date, label, note, created_at) VALUES (?,?,?,?)
+               ON CONFLICT(date) DO UPDATE SET label=excluded.label, note=excluded.note""",
+            (date, label, note, datetime.utcnow().isoformat()), strict=True, expected_rows=1)
+
+    async def remove_market_event(self, date: str) -> bool:
+        before = await self._scalar("SELECT COUNT(*) AS n FROM market_events WHERE date=?", (date,), strict=True)
+        await self._exec("DELETE FROM market_events WHERE date=?", (date,), strict=True)
+        return bool(before.get("n"))
+
     # ── Daily equity snapshot (paper equity curve) ───────────────────────
     async def record_daily_equity(self, date_str: str, equity: float, cash: float = 0.0,
                                   buying_power: float = 0.0, open_positions: int = 0,
@@ -963,8 +1005,10 @@ class Database:
             (round(exit_price, 2), round(realized_move_pct, 2), hypo_win, edge,
              datetime.utcnow().isoformat(), eval_id))
 
-    async def get_iv_eval_summary(self) -> dict:
-        rows = await self._query("SELECT * FROM iv_rv_evals WHERE resolved=1")
+    async def get_iv_eval_summary(self, exclude_market_events: bool = False) -> dict:
+        rows = await self._query(
+            "SELECT * FROM iv_rv_evals WHERE resolved=1"
+            + (_outside_market_events(*_IV_EVAL_WINDOW) if exclude_market_events else ""))
         n = len(rows)
         wins = sum(1 for r in rows if r["hypo_win"])
         avg_edge = round(sum(r["hypo_edge_pct"] or 0 for r in rows) / n, 2) if n else 0.0
@@ -1310,8 +1354,10 @@ class Database:
     async def delete_position_monitor_state(self, symbol: str) -> None:
         await self._exec("DELETE FROM position_monitor_state WHERE symbol=?", (symbol,), strict=True)
 
-    async def get_condor_summary(self) -> dict:
-        rows = await self._query("SELECT * FROM iv_condors WHERE status='closed'")
+    async def get_condor_summary(self, exclude_market_events: bool = False) -> dict:
+        rows = await self._query(
+            "SELECT * FROM iv_condors WHERE status='closed'"
+            + (_outside_market_events(*_CONDOR_WINDOW) if exclude_market_events else ""))
         n = len(rows)
         wins = sum(1 for r in rows if (r["pnl"] or 0) > 0)
         pnl = round(sum(r["pnl"] or 0 for r in rows), 2)
@@ -1648,7 +1694,8 @@ class Database:
 
     async def get_variant_summary(self, gate_passed: Optional[bool] = True,
                                   source: Optional[str] = None,
-                                  distinct_only: bool = False) -> list[dict]:
+                                  distinct_only: bool = False,
+                                  exclude_market_events: bool = False) -> list[dict]:
         """Full metric set per variant over resolved events, best expectancy first.
 
         `gate_passed=True` scores only setups that cleared the three scanner
@@ -1675,6 +1722,8 @@ class Database:
             params += (source,)
         if distinct_only:
             where += " AND collapsed_with IS NULL"
+        if exclude_market_events:
+            where += _outside_market_events(*_VARIANT_WINDOW)
         rows = await self._query(
             # max_drawdown is path-dependent, so this event order is part of
             # the metric definition rather than cosmetic presentation sorting.
@@ -1714,7 +1763,8 @@ class Database:
         out.sort(key=lambda x: (x["expectancy"] is None, -(x["expectancy"] or 0)))
         return out
 
-    async def get_gate_comparison(self, source: Optional[str] = None) -> dict:
+    async def get_gate_comparison(self, source: Optional[str] = None,
+                                  exclude_market_events: bool = False) -> dict:
         """Baseline 2: strict three-gate setups vs all events. CONSIDER is a
         subset of failed gates; legacy unknowns only enter the all-event baseline.
         If selling everything matches the filtered set, the gates are noise."""
@@ -1733,6 +1783,8 @@ class Database:
             if source is not None:
                 source_where = " AND source=?"
                 params += (source,)
+            if exclude_market_events:
+                source_where += _outside_market_events(*_VARIANT_WINDOW)
             rows = await self._query(
                 # Keep the gated/ungated drawdown paths chronological too.
                 """SELECT realized_pnl FROM iv_variant_evals

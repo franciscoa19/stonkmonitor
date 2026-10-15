@@ -187,6 +187,22 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
     except Exception:
         iv_gate_cmp = {}
         iv_gate_by_source = {}
+    # Days the whole market moved on news. Results are shown both ways; nothing
+    # is dropped from the main figures.
+    try:
+        market_events = await db.get_market_events()
+    except Exception:
+        market_events = []
+    excluding_events = None
+    if market_events:
+        try:
+            excluding_events = {
+                "iv_rv": await db.get_iv_eval_summary(exclude_market_events=True),
+                "iv_condors": await db.get_condor_summary(exclude_market_events=True),
+                "iv_gate_comparison": await db.get_gate_comparison(exclude_market_events=True),
+            }
+        except Exception as e:
+            logger.warning("Report: results excluding market-event days unavailable (%s)", e)
     try:
         from config import get_settings as _gs
         heartbeat = await db.get_heartbeat(_gs().heartbeat_stale_minutes)
@@ -359,6 +375,8 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
         "iv_quote_coverage": iv_quote_coverage,
         "implied_vs_realized": implied_vs_realized,
         "risk_state": risk_state,
+        "market_events": [dict(e) for e in market_events],
+        "excluding_market_events": excluding_events,
         "heartbeat": heartbeat,
         "by_strategy": [dict(r) for r in by_strategy],
         "by_hour": [dict(r) for r in by_hour],
@@ -469,6 +487,50 @@ async def build_watchlist_review(db, watchlist, lookback_days: int = 14,
 # ══════════════════════════════════════════════════════════════════════════
 #  HTML render
 # ══════════════════════════════════════════════════════════════════════════
+def _render_market_events(d: dict) -> str:
+    """Tagged market-event days, and the headline results with and without the
+    records whose holding window included one. Empty when nothing is tagged."""
+    events = d.get("market_events") or []
+    if not events:
+        return ""
+    e = _html.escape
+    ex = d.get("excluding_market_events") or {}
+    days = ", ".join(f"{e(str(ev['date']))} ({e(str(ev['label']))})" for ev in events)
+
+    def pct(x):
+        return "—" if x is None else f"{x:.0f}%"
+
+    def money(x):
+        return "—" if x is None else f"${x:+,.0f}"
+
+    rows = []
+    c_all, c_ex = d.get("iv_condors") or {}, ex.get("iv_condors") or {}
+    rows.append(("Condors closed", c_all.get("closed"), c_ex.get("closed")))
+    rows.append(("Condor P&amp;L", money(c_all.get("total_pnl")), money(c_ex.get("total_pnl"))))
+    rows.append(("Condor win rate", pct(c_all.get("win_rate") if c_all.get("closed") else None),
+                 pct(c_ex.get("win_rate") if c_ex.get("closed") else None)))
+    i_all, i_ex = d.get("iv_rv") or {}, ex.get("iv_rv") or {}
+    rows.append(("IV/RV observations resolved", i_all.get("resolved"), i_ex.get("resolved")))
+    rows.append(("IV/RV hit rate", pct(i_all.get("win_rate") if i_all.get("resolved") else None),
+                 pct(i_ex.get("win_rate") if i_ex.get("resolved") else None)))
+    g_all, g_ex = d.get("iv_gate_comparison") or {}, ex.get("iv_gate_comparison") or {}
+    for label, key in (("Research condor, passed gates", "gated"), ("Research condor, all events", "ungated")):
+        m_all, m_ex = g_all.get(key) or {}, g_ex.get(key) or {}
+        rows.append((f"{label}: events", m_all.get("n_events", 0), m_ex.get("n_events", 0)))
+        rows.append((f"{label}: expectancy", money(m_all.get("expectancy")), money(m_ex.get("expectancy"))))
+    body = "".join(f"<tr><td>{label}</td><td style='text-align:right'>{v_all if v_all is not None else '—'}</td>"
+                   f"<td style='text-align:right'>{v_ex if v_ex is not None else '—'}</td></tr>"
+                   for label, v_all, v_ex in rows)
+    return ("<div class=\"card\"><h2>Market-event days</h2>"
+            f"<div class=\"mut\" style=\"font-size:12px\">Tagged: {days}. Nothing is removed from the "
+            "figures above; this shows them again without any trade or observation that was open on a "
+            "tagged day.</div>"
+            "<table style=\"width:100%;font-family:var(--mono);font-size:13px;margin-top:8px\">"
+            "<tr class=\"mut\" style=\"font-size:10.5px;text-transform:uppercase\"><th style='text-align:left'></th>"
+            "<th style='text-align:right'>All</th><th style='text-align:right'>Excluding tagged days</th></tr>"
+            f"{body}</table></div>")
+
+
 def render_html(d: dict) -> str:
     a, m = d["account"], d["metrics"]
     act = d["activity"]
@@ -737,6 +799,7 @@ def render_html(d: dict) -> str:
             "current conservative pricing model yet. Other cohorts are shown below. Earlier methodology is retained for audit "
             "but is not evidence.</div>"
             f"{_quote_coverage()}{_cmp_html}</div>")
+    _market_events_card = _render_market_events(d)
     e = _html.escape
     pnl_cls = "up" if a["total_pnl"] >= 0 else "down"
     pnl_sign = "+" if a["total_pnl"] >= 0 else ""
@@ -871,6 +934,8 @@ def render_html(d: dict) -> str:
   {_edge_html}
 
   {_variant_card}
+
+  {_market_events_card}
 
   <div class="card">
     <h2>Equity curve</h2>

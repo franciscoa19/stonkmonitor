@@ -202,6 +202,18 @@ trade, not a quote midpoint. If there is no recent trade and no tight quote, the
 log says `no reliable stock price yet; hold-or-close decision deferred` and the
 decision is taken on a later cycle.
 
+## Tagging a market-event day
+
+To mark a day the whole market moved on news (nothing is deleted; the daily
+report then shows its figures with and without records open that day):
+
+    curl -s -X POST http://localhost:8000/api/market-events \
+         -H 'Content-Type: application/json' -H 'Origin: http://localhost:3000' \
+         -d '{"date": "2026-10-14", "label": "CPI", "note": "hot print"}'
+
+`GET /api/market-events` lists them and `DELETE /api/market-events/2026-10-14`
+removes one.
+
 ## Flow-entry sizing (flow trading is off by default)
 
 Flow entries floor quantities to the percentage budget and revalidate them

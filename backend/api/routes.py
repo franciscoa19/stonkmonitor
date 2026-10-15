@@ -45,6 +45,24 @@ class WatchlistRequest(BaseModel):
     ticker: str
 
 
+class MarketEventRequest(BaseModel):
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    label: str = Field(min_length=1, max_length=40)
+    note: Optional[str] = Field(None, max_length=200)
+
+    @field_validator("date")
+    @classmethod
+    def real_date(cls, value):
+        from datetime import date
+        date.fromisoformat(value)
+        return value
+
+    @field_validator("label", "note")
+    @classmethod
+    def strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
 # ------------------------------------------------------------------ #
 #  Account & Positions                                                 #
 # ------------------------------------------------------------------ #
@@ -542,6 +560,31 @@ async def get_filter_status():
 #  Watchlist                                                           #
 # ------------------------------------------------------------------ #
 _watchlist: list[str] = []
+
+
+@router.get("/market-events")
+async def list_market_events():
+    """Days tagged as market-wide events (CPI, FOMC...). Read by the report."""
+    from main import db
+    return {"events": await db.get_market_events()}
+
+
+@router.post("/market-events")
+async def add_market_event(req: MarketEventRequest):
+    """Tag a day. Nothing is deleted: the report shows results with and without it."""
+    from main import db
+    if not req.label:
+        raise HTTPException(422, "label required")
+    await db.add_market_event(req.date, req.label, req.note or None)
+    return {"events": await db.get_market_events()}
+
+
+@router.delete("/market-events/{day}")
+async def remove_market_event(day: str):
+    from main import db
+    if not await db.remove_market_event(day):
+        raise HTTPException(404, "No market event on that day")
+    return {"events": await db.get_market_events()}
 
 
 @router.get("/watchlist")
