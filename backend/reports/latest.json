@@ -1,23 +1,23 @@
 {
-  "generated": "2026-10-14T12:08:38.745329+00:00",
+  "generated": "2026-10-15T12:17:40.390519+00:00",
   "account": {
-    "equity": 53288.75,
-    "cash": 55870.75,
-    "buying_power": 177483.0,
+    "equity": 52278.22,
+    "cash": 53968.22,
+    "buying_power": 189872.88,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": 3288.75,
-    "total_pnl_pct": 6.5775,
-    "open_positions": 8,
-    "days_running": 36,
+    "total_pnl": 2278.220000000001,
+    "total_pnl_pct": 4.556440000000003,
+    "open_positions": 5,
+    "days_running": 37,
     "error": null
   },
   "metrics": {
     "closed_trades": 0,
-    "closed_condors": 2,
-    "closed_all": 2,
+    "closed_condors": 3,
+    "closed_all": 3,
     "wins": 0,
     "losses": 0,
     "win_rate": 0.0,
@@ -30,28 +30,28 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 53288.75,
+    "equity": 52278.22,
     "max_risk_pct": 0.3,
-    "risk_cap": 15986.625,
-    "open_risk": 9115.0,
-    "open_risk_pct": 0.171,
-    "condor_risk": 9115.0,
+    "risk_cap": 15683.466,
+    "open_risk": 5135.0,
+    "open_risk_pct": 0.0982,
+    "condor_risk": 5135.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 6871.625,
+    "risk_headroom": 10548.466,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 10657.75,
-    "free_cash": 44370.75,
-    "free_cash_pct": 0.8326,
+    "cash_reserve": 10455.644,
+    "free_cash": 47468.22,
+    "free_cash_pct": 0.908,
     "unlisted_reserved": 0.0,
-    "cash_available": 33713.0
+    "cash_available": 37012.576
   },
   "account_risk_error": null,
   "activity": {
     "tag": "MEASURED",
-    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 2 closed, 2 open."
+    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 3 closed, 1 open."
   },
   "equity_curve": [
     {
@@ -196,7 +196,11 @@
     },
     {
       "date": "2026-10-14",
-      "equity": 53288.75
+      "equity": 52279.24
+    },
+    {
+      "date": "2026-10-15",
+      "equity": 52278.22
     }
   ],
   "iv_rv": {
@@ -204,32 +208,16 @@
     "wins": 1,
     "win_rate": 100.0,
     "avg_edge_pct": 1.88,
-    "open": 9
+    "open": 10
   },
   "iv_condors": {
-    "closed": 2,
+    "closed": 3,
     "wins": 2,
-    "win_rate": 100.0,
-    "total_pnl": 1340.0,
-    "open": 2,
+    "win_rate": 66.7,
+    "total_pnl": 460.0,
+    "open": 1,
     "pending": 0,
     "open_detail": [
-      {
-        "ticker": "WFC",
-        "status": "open",
-        "settlement_note": null,
-        "qty": 20,
-        "expiry": "2026-10-16",
-        "earnings_date": "2026-10-13",
-        "strikes": "77.0/79.0 \u2014 87.5/90.0",
-        "credit_collected": 1020.0,
-        "max_risk": 3980.0,
-        "unrealized_pnl": 180.0,
-        "pct_of_max_risk": 4.5,
-        "legs_matched": 4,
-        "legs_expected": 4,
-        "partial": false
-      },
       {
         "ticker": "MS",
         "status": "open",
@@ -240,8 +228,8 @@
         "strikes": "175.0/180.0 \u2014 197.5/202.5",
         "credit_collected": 1365.0,
         "max_risk": 5135.0,
-        "unrealized_pnl": -377.0,
-        "pct_of_max_risk": -7.3,
+        "unrealized_pnl": -325.0,
+        "pct_of_max_risk": -6.3,
         "legs_matched": 4,
         "legs_expected": 4,
         "partial": false
@@ -558,16 +546,16 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 59,
-    "structures_attempted": 295,
-    "structures_priced": 185,
-    "priced_pct": 62.7,
+    "events": 73,
+    "structures_attempted": 365,
+    "structures_priced": 263,
+    "priced_pct": 72.1,
     "dropped_variants": {
-      "condor_0.7sd": 23,
-      "condor_1.0sd": 25,
-      "condor_1.3sd": 29,
-      "fly": 17,
-      "straddle": 16
+      "condor_0.7sd": 22,
+      "condor_1.0sd": 22,
+      "condor_1.3sd": 27,
+      "fly": 16,
+      "straddle": 15
     }
   },
   "implied_vs_realized": {
@@ -631,18 +619,145 @@
     }
   },
   "risk_state": {
-    "multiplier": 1.0,
-    "loss_streak": 0,
+    "multiplier": 0.5,
+    "loss_streak": 1,
     "halt_streak": 3,
     "halted": false,
     "halted_at": null,
     "halted_reason": null,
     "rearmed_at": null,
-    "closes_counted": 2
+    "closes_counted": 3
+  },
+  "market_events": [
+    {
+      "date": "2026-10-14",
+      "label": "CPI",
+      "note": "hot CPI print; broad selloff (SPY -1.0%, QQQ -2.0%, VIX +10%; financials -0.3%)",
+      "created_at": "2026-10-15T01:31:25.855087"
+    }
+  ],
+  "excluding_market_events": {
+    "iv_rv": {
+      "resolved": 1,
+      "wins": 1,
+      "win_rate": 100.0,
+      "avg_edge_pct": 1.88,
+      "open": 10
+    },
+    "iv_condors": {
+      "closed": 2,
+      "wins": 2,
+      "win_rate": 100.0,
+      "total_pnl": 1340.0,
+      "open": 1,
+      "pending": 0
+    },
+    "iv_gate_comparison": {
+      "gated": {
+        "n_events": 0,
+        "n_wins": 0,
+        "win_rate": null,
+        "total_pnl": 0.0,
+        "expectancy": null,
+        "profit_factor": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "largest_single_loss": null,
+        "max_drawdown": 0.0,
+        "sharpe": null,
+        "sortino": null,
+        "tail_ratio": null,
+        "tail_events": 0,
+        "tail_pct_effective": null,
+        "pct_events_exceeding_implied": null,
+        "sufficient_sample": false,
+        "events_needed": 100
+      },
+      "ungated": {
+        "n_events": 2,
+        "n_wins": 1,
+        "win_rate": 50.0,
+        "total_pnl": -188.4,
+        "expectancy": -94.2,
+        "profit_factor": 0.21,
+        "avg_win": 49.8,
+        "avg_loss": -238.2,
+        "largest_single_loss": -238.2,
+        "max_drawdown": 238.2,
+        "sharpe": -0.46,
+        "sortino": -0.56,
+        "tail_ratio": -4.78,
+        "tail_events": 1,
+        "tail_pct_effective": 50.0,
+        "pct_events_exceeding_implied": null,
+        "sufficient_sample": false,
+        "events_needed": 98
+      },
+      "failed_gates": {
+        "n_events": 0,
+        "n_wins": 0,
+        "win_rate": null,
+        "total_pnl": 0.0,
+        "expectancy": null,
+        "profit_factor": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "largest_single_loss": null,
+        "max_drawdown": 0.0,
+        "sharpe": null,
+        "sortino": null,
+        "tail_ratio": null,
+        "tail_events": 0,
+        "tail_pct_effective": null,
+        "pct_events_exceeding_implied": null,
+        "sufficient_sample": false,
+        "events_needed": 100
+      },
+      "consider": {
+        "n_events": 0,
+        "n_wins": 0,
+        "win_rate": null,
+        "total_pnl": 0.0,
+        "expectancy": null,
+        "profit_factor": null,
+        "avg_win": null,
+        "avg_loss": null,
+        "largest_single_loss": null,
+        "max_drawdown": 0.0,
+        "sharpe": null,
+        "sortino": null,
+        "tail_ratio": null,
+        "tail_events": 0,
+        "tail_pct_effective": null,
+        "pct_events_exceeding_implied": null,
+        "sufficient_sample": false,
+        "events_needed": 100
+      },
+      "unknown_gates": {
+        "n_events": 2,
+        "n_wins": 1,
+        "win_rate": 50.0,
+        "total_pnl": -188.4,
+        "expectancy": -94.2,
+        "profit_factor": 0.21,
+        "avg_win": 49.8,
+        "avg_loss": -238.2,
+        "largest_single_loss": -238.2,
+        "max_drawdown": 238.2,
+        "sharpe": -0.46,
+        "sortino": -0.56,
+        "tail_ratio": -4.78,
+        "tail_events": 1,
+        "tail_pct_effective": 50.0,
+        "pct_events_exceeding_implied": null,
+        "sufficient_sample": false,
+        "events_needed": 98
+      }
+    }
   },
   "heartbeat": {
-    "last_seen": "2026-10-14T12:02:35.545201",
-    "age_minutes": 6.1,
+    "last_seen": "2026-10-15T11:40:30.253932",
+    "age_minutes": 37.2,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -654,58 +769,37 @@
     {
       "symbol": "MS261016C00197500",
       "qty": -13.0,
-      "pnl": 468.0,
-      "pnl_pct": 34.29,
-      "market_val": -897.0
+      "pnl": 1287.0,
+      "pnl_pct": 94.29,
+      "market_val": -78.0
     },
     {
       "symbol": "MS261016C00202500",
       "qty": 13.0,
-      "pnl": -286.0,
-      "pnl_pct": -50.0,
-      "market_val": 286.0
+      "pnl": -572.0,
+      "pnl_pct": -100.0,
+      "market_val": 0.0
     },
     {
       "symbol": "MS261016P00175000",
       "qty": 13.0,
-      "pnl": 39.0,
-      "pnl_pct": 10.0,
-      "market_val": 429.0
+      "pnl": -130.0,
+      "pnl_pct": -33.33,
+      "market_val": 260.0
     },
     {
       "symbol": "MS261016P00180000",
       "qty": -13.0,
-      "pnl": -598.0,
-      "pnl_pct": -62.16,
-      "market_val": -1560.0
-    },
-    {
-      "symbol": "WFC261016C00087500",
-      "qty": -20.0,
-      "pnl": 840.0,
-      "pnl_pct": 85.71,
-      "market_val": -140.0
+      "pnl": -910.0,
+      "pnl_pct": -94.59,
+      "market_val": -1872.0
     },
     {
       "symbol": "WFC261016C00090000",
       "qty": 20.0,
-      "pnl": -420.0,
-      "pnl_pct": -95.45,
-      "market_val": 20.0
-    },
-    {
-      "symbol": "WFC261016P00077000",
-      "qty": 20.0,
-      "pnl": -320.0,
-      "pnl_pct": -80.0,
-      "market_val": 80.0
-    },
-    {
-      "symbol": "WFC261016P00079000",
-      "qty": -20.0,
-      "pnl": 80.0,
-      "pnl_pct": 9.09,
-      "market_val": -800.0
+      "pnl": -440.0,
+      "pnl_pct": -100.0,
+      "market_val": 0.0
     }
   ],
   "proposals": [
