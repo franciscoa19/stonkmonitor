@@ -121,7 +121,6 @@ def _outside_market_events(start_sql: str, end_sql: str) -> str:
 
 
 # Holding windows of each kind of record, as SQL date expressions.
-_IV_EVAL_WINDOW = ("signal_date", "COALESCE(resolve_after, signal_date)")
 _VARIANT_WINDOW = ("signal_date", "COALESCE(expiry, resolve_after, signal_date)")
 _CONDOR_WINDOW = ("substr(opened_at,1,10)", "COALESCE(substr(closed_at,1,10), expiry)")
 
@@ -386,6 +385,7 @@ CREATE TABLE IF NOT EXISTS iv_rv_evals (
     implied_move_pct  REAL,                   -- expected (straddle) move at signal
     entry_price       REAL,
     resolve_after     TEXT,                   -- date to measure the realized move
+    measurement_session TEXT,                 -- actual historical session; NULL = legacy unknown
     resolved          INTEGER DEFAULT 0,
     exit_price        REAL,
     realized_move_pct REAL,                   -- abs % move entry->exit
@@ -572,7 +572,7 @@ _MIGRATIONS = {
     "trade_performance": {"strategy": "TEXT", "entry_hour_et": "INTEGER", "hold_minutes": "REAL",
                           "position_intent": "TEXT", "long_entry_qty": "REAL", "open_qty": "REAL"},
     "daily_equity":      {"open_equity": "REAL", "updated_at": "TEXT"},
-    "iv_rv_evals":       {"earnings_date": "TEXT"},
+    "iv_rv_evals":       {"earnings_date": "TEXT", "measurement_session": "TEXT"},
     "iv_variant_evals":  {"credit_mid": "REAL", "fees": "REAL", "strike_step": "REAL",
                           "gate_passed": "INTEGER", "pin_risk": "INTEGER",
                           "pricing_model": "TEXT",
@@ -996,19 +996,29 @@ class Database:
             "SELECT * FROM iv_rv_evals WHERE resolved=0 AND resolve_after <= ?", (today,))
 
     async def resolve_iv_eval(self, eval_id: int, exit_price: float,
-                              realized_move_pct: float, implied_move_pct: float) -> None:
+                              realized_move_pct: float, implied_move_pct: float, *,
+                              measurement_session: Optional[str] = None) -> None:
+        if measurement_session is not None:
+            measurement_session = date.fromisoformat(measurement_session).isoformat()
         hypo_win = 1 if realized_move_pct < implied_move_pct else 0
         edge = round(implied_move_pct - realized_move_pct, 2)
         await self._exec(
             """UPDATE iv_rv_evals SET resolved=1, exit_price=?, realized_move_pct=?,
-                 hypo_win=?, hypo_edge_pct=?, resolved_at=? WHERE id=?""",
+                 hypo_win=?, hypo_edge_pct=?, resolved_at=?, measurement_session=? WHERE id=?""",
             (round(exit_price, 2), round(realized_move_pct, 2), hypo_win, edge,
-             datetime.utcnow().isoformat(), eval_id))
+             datetime.utcnow().isoformat(), measurement_session, eval_id))
 
     async def get_iv_eval_summary(self, exclude_market_events: bool = False) -> dict:
-        rows = await self._query(
-            "SELECT * FROM iv_rv_evals WHERE resolved=1"
-            + (_outside_market_events(*_IV_EVAL_WINDOW) if exclude_market_events else ""))
+        rows = await self._query("SELECT * FROM iv_rv_evals WHERE resolved=1")
+        if exclude_market_events:
+            from signals.iv_research import legacy_window_end
+            days = [event["date"] for event in await self.get_market_events()]
+            kept = []
+            for row in rows:
+                end = row["measurement_session"] or legacy_window_end(row)
+                if not any(row["signal_date"] <= day and (end is None or day <= end) for day in days):
+                    kept.append(row)
+            rows = kept
         n = len(rows)
         wins = sum(1 for r in rows if r["hypo_win"])
         avg_edge = round(sum(r["hypo_edge_pct"] or 0 for r in rows) / n, 2) if n else 0.0

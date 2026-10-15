@@ -31,10 +31,13 @@ async def condor(db, ticker, opened, closed, pnl, expiry="2026-10-16"):
 
 
 async def iv_eval(db, ticker, signal, resolve_after, win):
+    from signals.iv_research import measurement_session
     await db.record_iv_eval(ticker, "SELL_PREMIUM", 1.5, 4.0, 100.0, resolve_after, signal)
     row = (await db._query("SELECT id FROM iv_rv_evals WHERE ticker=?", (ticker,)))[0]
     await db._exec("UPDATE iv_rv_evals SET signal_date=? WHERE id=?", (signal, row["id"]), strict=True)
-    await db.resolve_iv_eval(row["id"], 101.0 if win else 110.0, 1.0 if win else 10.0, 4.0)
+    session = measurement_session({"resolve_after": resolve_after, "earnings_date": signal, "signal_date": signal})
+    await db.resolve_iv_eval(row["id"], 101.0 if win else 110.0, 1.0 if win else 10.0, 4.0,
+                             measurement_session=session)
 
 
 async def variant(db, ticker, signal, expiry, pnl, recommendation="SELL_PREMIUM"):

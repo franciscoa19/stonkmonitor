@@ -924,34 +924,8 @@ async def daily_equity_loop():
 
 
 def _iv_eval_measurement_session(ev: dict) -> str | None:
-    """Session close at the declared horizon, never a pre-earnings price.
-
-    A weekend/holiday horizon uses the preceding session. If that would still
-    precede the earnings report (whose time may be unknown), use the first
-    session strictly after the earnings date instead. Without a known report
-    date, never measure before the signal's session.
-    """
-    from datetime import date, datetime, time, timedelta
-    from market_time import ET
-    from feeds.uw_budget import market_close_minute
-
-    def trading_day(day):
-        return market_close_minute(datetime.combine(day, time.min, tzinfo=ET)) is not None
-
-    try:
-        target = date.fromisoformat(ev["resolve_after"])
-        while not trading_day(target):
-            target -= timedelta(days=1)
-        earnings = ev.get("earnings_date")
-        floor = date.fromisoformat(earnings or ev["signal_date"])
-        earliest = floor + timedelta(days=1) if earnings else floor
-        if target < earliest:
-            target = earliest
-            while not trading_day(target):
-                target += timedelta(days=1)
-        return target.isoformat()
-    except (KeyError, TypeError, ValueError, OverflowError):
-        return None
+    from signals.iv_research import measurement_session
+    return measurement_session(ev)
 
 
 async def resolve_due_iv_evals(today: str, *, now=None) -> int:
@@ -984,7 +958,7 @@ async def resolve_due_iv_evals(today: str, *, now=None) -> int:
         realized = abs(px / entry - 1) * 100
         if not isfinite(realized):
             continue
-        await db.resolve_iv_eval(ev["id"], px, realized, implied)
+        await db.resolve_iv_eval(ev["id"], px, realized, implied, measurement_session=session)
         resolved += 1
         logger.info(f"IV/RV eval resolved: {ev['ticker']} at {session} close, realized "
                     f"±{realized:.1f}% vs implied ±{implied:.1f}%")

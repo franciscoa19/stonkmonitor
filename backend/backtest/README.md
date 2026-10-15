@@ -94,6 +94,11 @@ early closes. A missing, invalid or inaccessible historical bar leaves the row
 pending for another pass; later retries still request the same session. These
 observations are hypothetical move measurements, not executable option P&L.
 Already-resolved observations retain their original results for audit.
+New resolutions store `measurement_session` with the historical price. Market-event
+filtering uses that session even if a lookup retries on a later day. Older rows
+have no recorded session: filtering conservatively covers the declared horizon,
+derived measurement session and actual ET resolution date, without rewriting or
+certifying the original price.
 
 ### Market-event days
 
@@ -111,15 +116,29 @@ strategy is selling, and excluding it flatters the results.
 bot condor and every resolved research condor against five-minute history of
 the stock and its four options, under: hold to expiry; the bot's policy
 (profit target at half the credit, otherwise close at 09:45 ET the session
-after the print, otherwise at 15:00 on expiry day); the policy plus a stop when
-the stock trades through a short strike; the policy plus a stop at half the
-maximum loss. Like the bot, nothing acts before 09:45.
+after the print, otherwise at 15:00 on expiry day, or 12:00 on a 13:00 early
+close); the policy plus a stop when a completed stock bar closes through a short
+strike; the policy plus a stop at half the maximum loss. Like the bot, nothing
+acts before 09:45. Intrabar crossings between these observations are not tested.
 
 It opens the ledger read-only and only reads price history. Option values are
-last trades in each five-minute bar, not executable quotes: they flatter every
-rule, so compare rules with each other rather than reading any one as a fill.
-A rule with no priced bar after its trigger is reported as "no data". The
-summary prints its sample size; a few events are an anecdote.
+last trades in each five-minute bar, not executable quotes. A bar's close is
+available only after its five-minute interval ends. A decision requires later
+option bars whose entire intervals follow it in every leg; the prior marks that
+triggered the decision cannot also supply its fill. Hypothetical take-profit
+fills must stay within the target, and exits never pay above the wing-width cap.
+
+A triggered exit with no usable later prices remains "no data", with its trigger
+retained in the JSON/text diagnostics; it is never replaced by a successful
+hold. The hold rule can be valued separately, but only after the scheduled
+expiry close and the 30-minute buffer, with a bar covering that close. Morning,
+stale, and after-hours bars cannot supply settlement. Actual trading days and
+early closes follow the same market calendar used by the bot.
+
+The summary prints each rule's sample size and missing-data count. Rules can
+have different coverage, so compare matched per-event results before interpreting
+their averages. The study still cannot establish executable fills or an edge
+from a handful of observations.
 
 ## What does NOT exist, and why
 

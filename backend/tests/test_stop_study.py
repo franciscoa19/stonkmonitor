@@ -2,7 +2,7 @@
 history and temporary ledgers; nothing is fetched or traded."""
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -24,10 +24,14 @@ def legs():
 
 
 def session_bars(path):
-    """One bar every 30 min, 09:30–15:30 ET, Mon 23rd to Fri 27th: {(day, hh, mm): value}."""
+    """Completed five-minute observations on real sessions, including the half day."""
     out = []
     for day in (23, 24, 25, 26, 27):
-        for hh, mm in ((9, 30), (9, 45), (10, 0), (11, 0), (12, 0), (13, 0), (14, 0), (15, 0), (15, 30), (15, 55)):
+        close = study._session_close(date(2026, 11, day))
+        if close is None:
+            continue
+        for minute in range(9 * 60 + 35, close.hour * 60 + close.minute + 1, 5):
+            hh, mm = divmod(minute, 60)
             out.append(((day, hh, mm), path(day, hh, mm)))
     return out
 
@@ -53,7 +57,8 @@ def toy_price(leg, spot, when, decay=1.0):
     """Intrinsic value, plus time value on the short legs that fades to nothing
     at expiry: the condor is worth about its $1.00 credit at entry. `decay` > 1
     makes the time value fade faster, so the profit target comes early."""
-    days_left = max((datetime(2026, 11, 27, 16, tzinfo=ET) - when.astimezone(ET)).total_seconds() / 86400, 0)
+    close = datetime(2026, 11, 27, 13, tzinfo=ET)
+    days_left = max((close - when.astimezone(ET)).total_seconds() / 86400, 0)
     k = leg["strike"]
     value = max(spot - k, 0) if leg["right"] == "C" else max(k - spot, 0)
     time_value = 0.5 * (days_left / 4.25) ** decay if leg["side"] == "sell" else 0.0
@@ -89,7 +94,7 @@ async def ledger(tmp_path, *, research=True, trade=True):
 
 
 def run(con, fake):
-    return study.run(con, fake)
+    return study.run(con, fake, now=et(28, 12, 0))
 
 
 def by_ident(report, cohort_prefix):
@@ -112,7 +117,7 @@ async def test_a_dip_through_the_short_put_that_recovers_is_sold_at_the_bottom_b
         return 86.0 if (day == 24 and hh in (10, 11)) else 100.0
     con = await ledger(tmp_path, trade=False)
     r = by_ident(run(con, Fake(dip, toy_price)), "research")["results"]
-    assert r["breach stop"]["reason"] == "breach stop" and r["breach stop"]["exit"] == "11-24 10:00"
+    assert r["breach stop"]["reason"] == "breach stop" and r["breach stop"]["exit"] == "11-24 10:05"
     assert r["breach stop"]["pnl_per_spread"] < r["policy"]["pnl_per_spread"] < r["hold"]["pnl_per_spread"] + 1e-9
 
 
@@ -122,7 +127,7 @@ async def test_a_collapse_that_keeps_going_is_cut_short_by_the_stops(tmp_path):
     con = await ledger(tmp_path, trade=False)
     r = by_ident(run(con, Fake(collapse, toy_price)), "research")["results"]
     assert r["hold"]["pnl_per_spread"] == pytest.approx((1.0 - 5.0) * 100 - 2.6)   # the full max loss
-    assert r["breach stop"]["exit"] == "11-24 09:45"
+    assert r["breach stop"]["exit"] == "11-24 09:50"
     assert r["breach stop"]["pnl_per_spread"] > r["hold"]["pnl_per_spread"]
     assert r["loss stop"]["reason"] in ("loss stop", "breach stop", "after the print")
 
@@ -132,14 +137,14 @@ async def test_the_loss_stop_fires_at_half_the_maximum_loss(tmp_path):
         return 100.0 if day == 23 else 86.0
     con = await ledger(tmp_path, trade=False)
     r = by_ident(run(con, Fake(slide, toy_price)), "research")["results"]
-    assert (r["loss stop"]["reason"], r["loss stop"]["exit"]) == ("loss stop", "11-24 09:45")
+    assert (r["loss stop"]["reason"], r["loss stop"]["exit"]) == ("loss stop", "11-24 09:50")
     assert r["loss stop"]["pnl_per_spread"] <= -(400 * 0.5)                  # at least half the max loss
     assert r["policy"]["reason"] == "after the print"                         # without the stop: Wednesday
 
 
 async def test_nothing_acts_before_09_45(tmp_path):
     def opening_dip(day, hh, mm):
-        return 85.0 if (day == 24 and (hh, mm) == (9, 30)) else 100.0
+        return 85.0 if (day == 24 and (hh, mm) == (9, 35)) else 100.0
     con = await ledger(tmp_path, trade=False)
     r = by_ident(run(con, Fake(opening_dip, toy_price)), "research")["results"]
     assert r["breach stop"]["reason"] != "breach stop"                       # the 09:30 bar is never acted on
@@ -151,16 +156,19 @@ async def test_after_the_print_the_policy_exits_the_next_morning(tmp_path):
     con = await ledger(tmp_path, trade=False)
     expensive = lambda leg, spot, when: toy_price(leg, spot, when) + (0.6 if leg["side"] == "sell" else 0)
     r = by_ident(run(con, Fake(drift, expensive)), "research")["results"]
-    assert (r["policy"]["reason"], r["policy"]["exit"]) == ("after the print", "11-25 09:45")
+    assert (r["policy"]["reason"], r["policy"]["exit"]) == ("after the print", "11-25 09:50")
 
 
 # ── Data gaps ───────────────────────────────────────────────────────────────
 async def test_a_leg_without_trades_is_reported_not_guessed(tmp_path):
     con = await ledger(tmp_path, trade=False)
     missing = [s for s, l in legs().items() if l["side"] == "buy" and l["right"] == "P"]
-    r = by_ident(run(con, Fake(lambda d, h, m: 100.0, toy_price, missing=missing)), "research")["results"]
+    report = run(con, Fake(lambda d, h, m: 100.0, toy_price, missing=missing))
+    r = by_ident(report, "research")["results"]
     assert r["hold"] is not None                                              # settles off the stock alone
-    assert r["policy"]["reason"] == "held to expiry (no priced exit)"
+    assert all(r[rule] is None for rule in ("policy", "breach stop", "loss stop"))
+    summary = next(iter(report["summary"].values()))
+    assert summary["rules"]["policy"]["no_data"] == 1
 
 
 async def test_no_price_history_at_all_is_no_data(tmp_path):
