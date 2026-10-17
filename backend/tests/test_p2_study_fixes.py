@@ -143,7 +143,7 @@ async def test_real_resolver_records_the_session_and_filters_that_day_not_the_re
     await database.record_iv_eval("TEST", "SELL_PREMIUM", 1.5, 4, 100, "2026-10-18", "2026-10-16")
     await database._exec("UPDATE iv_rv_evals SET signal_date='2026-10-15'", strict=True)
     calls = []
-    def historical(ticker, day):
+    def historical(ticker, day, **_):
         calls.append((ticker, day))
         return 105
     monkeypatch.setattr(main, "db", database)

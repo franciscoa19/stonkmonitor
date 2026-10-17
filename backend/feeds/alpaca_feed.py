@@ -14,11 +14,20 @@ from alpaca.data.requests import (
 )
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.live import StockDataStream
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
-from market_time import et_now
+from market_time import ET, et_now
 
 logger = logging.getLogger(__name__)
+
+# The data plan refuses SIP history that ends within the last 15 minutes
+# ("subscription does not permit querying recent SIP data"), and an end in the
+# future counts as that. A daily-close request ending at UTC midnight was
+# therefore refused until 20:15 ET, holding every expiry evaluation for hours.
+RECENT_SIP_LAG = timedelta(minutes=16)
+# A daily bar is read only once the request covers this long past the
+# scheduled close, so the closing auction is in it.
+CLOSE_REPORTED_AFTER = timedelta(minutes=10)
 
 # A quote midpoint is only a price when both sides are real. This feed is one
 # exchange, and around the open and close (and whenever it is thin) one side of
@@ -151,21 +160,35 @@ class AlpacaFeed:
             logger.error(f"Alpaca bars error for {ticker}: {e}")
             return []
 
-    def get_daily_close(self, ticker: str, session_date: str) -> Optional[float]:
+    def get_daily_close(self, ticker: str, session_date: str, *,
+                        now: Optional[datetime] = None) -> Optional[float]:
         """Closing stock price for one completed market session.
 
         This is deliberately historical rather than a latest quote: expiry-based
         option evaluations must use the underlying's price *at expiration*, not
         a later live price. Returns None until Alpaca has a bar for that session.
+        The daily bar's close is the regular session's (2026-10-16: STT's daily
+        close $165.72, its last after-hours trade $168.39).
         """
+        from feeds.uw_budget import market_close_minute
         try:
             target = date.fromisoformat(session_date)
-            start = datetime.combine(target, time.min)
+            start = datetime.combine(target, time.min, tzinfo=timezone.utc)
+            day = datetime.combine(target, time.min, tzinfo=ET)
+            close_minute = market_close_minute(day)
+            if close_minute is None:
+                logger.debug(f"No session on {session_date} for {ticker}")
+                return None
+            now = et_now(now)                          # naive = ET, as in settlement_ready
+            end = min(start + timedelta(days=1), now - RECENT_SIP_LAG)
+            if end < day + timedelta(minutes=close_minute) + CLOSE_REPORTED_AFTER:
+                logger.debug(f"Daily close for {ticker} on {session_date} not readable yet")
+                return None
             req = StockBarsRequest(
                 symbol_or_symbols=ticker.upper(),
                 timeframe=TimeFrame.Day,
                 start=start,
-                end=start + timedelta(days=1),
+                end=end,
             )
             # get_stock_bars returns a BarSet — dict-like through .data, with
             # no .get() of its own. Reaching for .get() on the BarSet silently

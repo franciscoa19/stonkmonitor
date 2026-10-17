@@ -281,7 +281,7 @@ async def test_a_realized_move_is_measured_from_the_session_close_not_a_placehol
     await database.record_iv_eval("PEP", "SELL_PREMIUM", 1.5, 3.4, 123.73, "2026-10-10", "2026-10-08")
     asked = []
 
-    def get_daily_close(ticker, session_date):
+    def get_daily_close(ticker, session_date, **_):
         asked.append((ticker, session_date))
         return 125.97                                       # Friday's close; the quote midpoint said 127.03
     monkeypatch.setattr(session, "feed", NS(get_daily_close=get_daily_close,

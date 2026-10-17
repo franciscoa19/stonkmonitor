@@ -946,7 +946,7 @@ async def resolve_due_iv_evals(today: str, *, now=None) -> int:
             continue
         key = (ev["ticker"], session)
         if key not in prices:
-            prices[key] = await asyncio.to_thread(feed.get_daily_close, *key)
+            prices[key] = await asyncio.to_thread(feed.get_daily_close, *key, now=now)
         try:
             px = float(prices[key])
             entry = float(ev["entry_price"])
