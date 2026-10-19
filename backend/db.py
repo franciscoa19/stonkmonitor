@@ -1036,9 +1036,20 @@ class Database:
         return bool(r)
 
     async def count_condors_opened_today(self, today: str) -> int:
+        """Entries sent today that filled or may still fill. A void entry never
+        filled and took no risk, so it does not use up the day's allowance."""
         row = await self._scalar(
-            "SELECT COUNT(*) AS n FROM iv_condors WHERE substr(opened_at,1,10)=?", (today,), strict=True)
+            "SELECT COUNT(*) AS n FROM iv_condors WHERE substr(opened_at,1,10)=? AND status != 'void'",
+            (today,), strict=True)
         return int(row.get("n", 0))
+
+    async def condor_tried_today(self, ticker: str, today: str) -> bool:
+        """Any entry for this ticker sent today, filled or not. An entry that
+        timed out is not sent again the same day."""
+        r = await self._query(
+            "SELECT id FROM iv_condors WHERE ticker=? AND substr(opened_at,1,10)=? LIMIT 1",
+            (ticker, today), strict=True)
+        return bool(r)
 
     async def count_open_condors(self) -> int:
         row = await self._scalar(

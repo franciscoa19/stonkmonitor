@@ -1065,6 +1065,9 @@ async def maybe_execute_condor(setup):
     if await db.has_open_condor(ticker):
         return
     today = et_today().isoformat()
+    if await db.condor_tried_today(ticker, today):
+        logger.debug(f"IV-exec skip {ticker}: an entry was already sent today")
+        return
     if await db.count_open_condors() >= s.iv_exec_max_positions:
         logger.info("IV-exec skip: max open condors reached")
         return
@@ -1688,6 +1691,26 @@ def _expiry_force_close_due(expiry, now=None) -> bool:
     return n.hour * 60 + n.minute >= force_minute
 
 
+def _entry_timed_out(order: dict, now=None) -> bool:
+    """Whether an entry order has rested unfilled past IV_EXEC_ENTRY_TIMEOUT_MINUTES.
+
+    Age is from the broker's own created_at. An unreadable stamp never times
+    out: that order waits for the close, as every entry did before.
+    """
+    from datetime import datetime
+    from market_time import et_now
+    minutes = int(settings.iv_exec_entry_timeout_minutes or 0)
+    if minutes <= 0:
+        return False
+    try:
+        created = datetime.fromisoformat(str((order or {}).get("created_at")).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if created.tzinfo is None:
+        return False
+    return (et_now(now) - created).total_seconds() >= minutes * 60
+
+
 async def _reconcile_condor_expiry(c: dict, legs: list, remaining: int):
     """Only finalize worthless expiry after the broker confirms every leg.
 
@@ -1784,6 +1807,13 @@ async def _manage_condor(c: dict):
         if est not in entry_terminal:
             await db.update_condor_entry_status(cid, est)
             if _expiry_force_close_due(c.get("expiry")) and est != "pending_cancel":
+                await asyncio.to_thread(trader.cancel_order_raw, c["entry_order_id"])
+            elif _entry_timed_out(o) and est not in ("pending_cancel", "pending_replace") and is_rth_now():
+                # An unfilled entry holds a slot until the close. Cancel it; the
+                # broker's terminal status voids it (or keeps a partial fill) on a
+                # later cycle.
+                logger.info(f"IV-exec condor #{cid} {c['ticker']} entry unfilled after "
+                            f"{settings.iv_exec_entry_timeout_minutes} min; cancelling to free the slot")
                 await asyncio.to_thread(trader.cancel_order_raw, c["entry_order_id"])
             return
         if filled_qty <= 0:

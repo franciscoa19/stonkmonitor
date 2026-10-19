@@ -123,7 +123,12 @@ class Settings(BaseSettings):
     # asked $0.63 at 09:30:25 on 2026-10-09 while they traded at $0.02-0.06,
     # and the bot paid it. A forced expiry-day close is never delayed. 0 = off.
     iv_exec_open_delay_minutes: int = Field(15, ge=0, le=180)
-    iv_exec_max_per_day: int = Field(4)               # new condors per day
+    # Cancel an entry that has not filled after this many minutes, freeing its
+    # slot. Half the entries to 2026-10-19 never filled and each held a slot to
+    # the close; the fills came after 10-149 minutes. A partial fill is kept,
+    # and the ticker is not tried again that day. 0 = wait for the close.
+    iv_exec_entry_timeout_minutes: int = Field(60, ge=0, le=390)
+    iv_exec_max_per_day: int = Field(4)               # new condors per day (entries that never filled excluded)
     iv_exec_tp_pct: float = Field(0.5)                     # close at 50% of max credit captured
     # Expiry day: after this ET hour, close on whatever the book offers rather
     # than deferring for a better one. On an early-close session the force time
