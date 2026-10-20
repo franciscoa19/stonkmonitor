@@ -1,16 +1,16 @@
 {
-  "generated": "2026-10-19T12:02:06.585858+00:00",
+  "generated": "2026-10-20T14:29:40.576075+00:00",
   "account": {
-    "equity": 50781.56,
-    "cash": 50781.56,
-    "buying_power": 203126.24,
+    "equity": 50595.18,
+    "cash": 51209.18,
+    "buying_power": 198836.72,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": 781.5599999999977,
-    "total_pnl_pct": 1.5631199999999952,
-    "open_positions": 0,
+    "total_pnl": 595.1800000000003,
+    "total_pnl_pct": 1.1903600000000005,
+    "open_positions": 4,
     "days_running": 41,
     "error": null
   },
@@ -30,28 +30,28 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 50781.56,
+    "equity": 50595.18,
     "max_risk_pct": 0.3,
-    "risk_cap": 15234.468,
-    "open_risk": 0.0,
-    "open_risk_pct": 0.0,
-    "condor_risk": 0.0,
+    "risk_cap": 15178.554,
+    "open_risk": 1072.0,
+    "open_risk_pct": 0.0212,
+    "condor_risk": 1072.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 15234.468,
+    "risk_headroom": 14106.554,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 10156.312,
-    "free_cash": 50781.56,
-    "free_cash_pct": 1.0,
+    "cash_reserve": 10119.036,
+    "free_cash": 49709.18,
+    "free_cash_pct": 0.9825,
     "unlisted_reserved": 0.0,
-    "cash_available": 40625.248
+    "cash_available": 39590.144
   },
   "account_risk_error": null,
   "activity": {
     "tag": "MEASURED",
-    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 4 closed, 0 open."
+    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 4 closed, 1 open."
   },
   "equity_curve": [
     {
@@ -216,7 +216,7 @@
     },
     {
       "date": "2026-10-19",
-      "equity": 50781.56
+      "equity": 50663.36
     }
   ],
   "iv_rv": {
@@ -231,9 +231,26 @@
     "wins": 2,
     "win_rate": 50.0,
     "total_pnl": -1360.0,
-    "open": 0,
+    "open": 1,
     "pending": 0,
-    "open_detail": []
+    "open_detail": [
+      {
+        "ticker": "IBM",
+        "status": "open",
+        "settlement_note": null,
+        "qty": 2,
+        "expiry": "2026-10-23",
+        "earnings_date": "2026-10-21",
+        "strikes": "207.5/215.0 \u2014 250.0/257.5",
+        "credit_collected": 428.0,
+        "max_risk": 1072.0,
+        "unrealized_pnl": -186.0,
+        "pct_of_max_risk": -17.4,
+        "legs_matched": 4,
+        "legs_expected": 4,
+        "partial": false
+      }
+    ]
   },
   "iv_variants": [
     {
@@ -678,12 +695,12 @@
   "iv_quote_coverage": {
     "events": 83,
     "structures_attempted": 415,
-    "structures_priced": 348,
-    "priced_pct": 83.9,
+    "structures_priced": 327,
+    "priced_pct": 78.8,
     "dropped_variants": {
-      "condor_0.7sd": 15,
-      "condor_1.0sd": 16,
-      "condor_1.3sd": 24,
+      "condor_0.7sd": 19,
+      "condor_1.0sd": 24,
+      "condor_1.3sd": 33,
       "fly": 8,
       "straddle": 4
     }
@@ -1041,7 +1058,7 @@
       "wins": 2,
       "win_rate": 100.0,
       "total_pnl": 1340.0,
-      "open": 0,
+      "open": 1,
       "pending": 0
     },
     "iv_gate_comparison": {
@@ -1148,25 +1165,46 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-10-19T11:22:11.983788",
-    "age_minutes": 39.9,
-    "stale": false,
+    "last_seen": "2026-10-19T21:23:32.305267",
+    "age_minutes": 1026.2,
+    "stale": true,
     "threshold_minutes": 180,
-    "note": "hourly loop is current"
+    "note": "hourly loop last wrote 17.1h ago \u2014 expected hourly"
   },
   "by_strategy": [],
   "by_hour": [],
   "recent": [],
-  "open_positions": [],
+  "open_positions": [
+    {
+      "symbol": "IBM261023C00250000",
+      "qty": -2.0,
+      "pnl": -250.0,
+      "pnl_pct": -35.71,
+      "market_val": -950.0
+    },
+    {
+      "symbol": "IBM261023C00257500",
+      "qty": 2.0,
+      "pnl": 88.0,
+      "pnl_pct": 21.46,
+      "market_val": 498.0
+    },
+    {
+      "symbol": "IBM261023P00207500",
+      "qty": 2.0,
+      "pnl": -76.0,
+      "pnl_pct": -45.24,
+      "market_val": 92.0
+    },
+    {
+      "symbol": "IBM261023P00215000",
+      "qty": -2.0,
+      "pnl": 52.0,
+      "pnl_pct": 16.99,
+      "market_val": -254.0
+    }
+  ],
   "proposals": [
-    "Watchlist REMOVE?: AAPL \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: ABBV \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: ABNB \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: ADBE \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: AMAT \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: AMD \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: AMZN \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: ARM \u2014 0 signals & 0 trades in 14d.",
     "No changes proposed \u2014 baseline accruing. Keep collecting."
   ]
 }
