@@ -352,6 +352,12 @@ async def test_recreated_db_never_adopts_an_old_condor_entry(tmp_path, monkeypat
         new_cid = await new.record_condor("NEW", "2026-11-25", "2026-11-27", legs, strikes,
                                           2, 1, 400, None, "submitting")
         assert new_cid == old_cid                 # the collision precondition
+        # Inside the session the entry was sent in, so the 404 means "still
+        # looking", whatever the wall clock says when the suite runs.
+        await new._exec("UPDATE iv_condors SET opened_at='2026-11-24T15:00:00' WHERE id=?", (new_cid,), strict=True)
+        import market_time
+        monkeypatch.setattr(market_time, "et_now",
+                            lambda *a: datetime(2026, 11, 24, 11, 0, tzinfo=market_time.ET))
         monkeypatch.setattr(main, "db", new)
         monkeypatch.setattr(main, "trader", NS(
             get_order_by_client_id=lambda cid: broker_orders.get(cid, {"error": "404", "not_found": True}),

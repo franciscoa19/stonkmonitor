@@ -1691,6 +1691,33 @@ def _expiry_force_close_due(expiry, now=None) -> bool:
     return n.hour * 60 + n.minute >= force_minute
 
 
+ENTRY_SESSION_GRACE = 15          # minutes after the close before a missing entry counts as never sent
+
+
+def _entry_session_over(opened_at, now=None) -> bool:
+    """Whether the session an entry was sent in has closed, plus a grace period.
+
+    `opened_at` is the ledger's UTC stamp. A day order cannot outlive its
+    session, so after this point a broker 404 means it was never accepted.
+    An unreadable stamp never counts as over.
+    """
+    from datetime import datetime, timedelta, timezone
+    from feeds.uw_budget import market_close_minute
+    from market_time import ET, et_now
+    try:
+        sent = datetime.fromisoformat(str(opened_at).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    sent = sent.replace(tzinfo=sent.tzinfo or timezone.utc).astimezone(ET)
+    day = sent.replace(hour=0, minute=0, second=0, microsecond=0)
+    close_minute = market_close_minute(day)
+    if close_minute is None:                       # not a session day: over once that day is
+        close = day + timedelta(days=1)
+    else:
+        close = day + timedelta(minutes=close_minute)
+    return et_now(now) >= close + timedelta(minutes=ENTRY_SESSION_GRACE)
+
+
 def _entry_timed_out(order: dict, now=None) -> bool:
     """Whether an entry order has rested unfilled past IV_EXEC_ENTRY_TIMEOUT_MINUTES.
 
@@ -1795,6 +1822,19 @@ async def _manage_condor(c: dict):
             found = await asyncio.to_thread(
                 trader.get_order_by_client_id, _condor_entry_client_id(await db.order_namespace(), cid))
             if not found.get("id"):
+                # An entry is a day order. Once its session has closed, an order
+                # the broker still answers 404 for was never accepted (AXP #17,
+                # 2026-10-21: the POST timed out and Alpaca never saw it). Void
+                # it only on a definitive 404, with none of its legs held.
+                if (c["status"] == "pending_entry" and found.get("not_found")
+                        and _entry_session_over(c.get("opened_at"))):
+                    held = await asyncio.to_thread(trader.get_positions_raw)
+                    symbols = {l["symbol"] for l in legs}
+                    if held is not None and not any(p.get("symbol") in symbols for p in held):
+                        await db.void_condor(cid, "not_submitted")
+                        logger.info(f"IV-exec condor #{cid} {c['ticker']} voided (entry never reached "
+                                    "the broker; its session has closed)")
+                        return
                 logger.warning("Condor #%s awaiting entry submission reconciliation", cid)
                 return
             c = {**c, "entry_order_id": found["id"]}
