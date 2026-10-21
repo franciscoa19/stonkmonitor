@@ -1,17 +1,17 @@
 {
-  "generated": "2026-10-20T14:29:40.576075+00:00",
+  "generated": "2026-10-21T12:05:58.941439+00:00",
   "account": {
-    "equity": 50595.18,
-    "cash": 51209.18,
-    "buying_power": 198836.72,
+    "equity": 50533.41,
+    "cash": 52056.41,
+    "buying_power": 191025.64,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": 595.1800000000003,
-    "total_pnl_pct": 1.1903600000000005,
-    "open_positions": 4,
-    "days_running": 41,
+    "total_pnl": 533.4100000000035,
+    "total_pnl_pct": 1.066820000000007,
+    "open_positions": 12,
+    "days_running": 43,
     "error": null
   },
   "metrics": {
@@ -30,28 +30,28 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 50595.18,
+    "equity": 50533.41,
     "max_risk_pct": 0.3,
-    "risk_cap": 15178.554,
-    "open_risk": 1072.0,
-    "open_risk_pct": 0.0212,
-    "condor_risk": 1072.0,
+    "risk_cap": 15160.023,
+    "open_risk": 3023.0,
+    "open_risk_pct": 0.0598,
+    "condor_risk": 3023.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 14106.554,
+    "risk_headroom": 12137.023,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 10119.036,
-    "free_cash": 49709.18,
-    "free_cash_pct": 0.9825,
+    "cash_reserve": 10106.682,
+    "free_cash": 47756.41,
+    "free_cash_pct": 0.945,
     "unlisted_reserved": 0.0,
-    "cash_available": 39590.144
+    "cash_available": 37649.728
   },
   "account_risk_error": null,
   "activity": {
     "tag": "MEASURED",
-    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 4 closed, 1 open."
+    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 4 closed, 3 open."
   },
   "equity_curve": [
     {
@@ -217,6 +217,14 @@
     {
       "date": "2026-10-19",
       "equity": 50663.36
+    },
+    {
+      "date": "2026-10-20",
+      "equity": 50534.18
+    },
+    {
+      "date": "2026-10-21",
+      "equity": 50533.41
     }
   ],
   "iv_rv": {
@@ -231,7 +239,7 @@
     "wins": 2,
     "win_rate": 50.0,
     "total_pnl": -1360.0,
-    "open": 1,
+    "open": 3,
     "pending": 0,
     "open_detail": [
       {
@@ -244,8 +252,40 @@
         "strikes": "207.5/215.0 \u2014 250.0/257.5",
         "credit_collected": 428.0,
         "max_risk": 1072.0,
-        "unrealized_pnl": -186.0,
-        "pct_of_max_risk": -17.4,
+        "unrealized_pnl": -188.0,
+        "pct_of_max_risk": -17.5,
+        "legs_matched": 4,
+        "legs_expected": 4,
+        "partial": false
+      },
+      {
+        "ticker": "TSLA",
+        "status": "open",
+        "settlement_note": null,
+        "qty": 1,
+        "expiry": "2026-10-23",
+        "earnings_date": "2026-10-21",
+        "strikes": "337.5/347.5 \u2014 400.0/410.0",
+        "credit_collected": 291.0,
+        "max_risk": 709.0,
+        "unrealized_pnl": -22.0,
+        "pct_of_max_risk": -3.1,
+        "legs_matched": 4,
+        "legs_expected": 4,
+        "partial": false
+      },
+      {
+        "ticker": "NFLX",
+        "status": "open",
+        "settlement_note": null,
+        "qty": 9,
+        "expiry": "2026-10-23",
+        "earnings_date": "2026-10-20",
+        "strikes": "60.0/62.0 \u2014 76.0/78.0",
+        "credit_collected": 558.0,
+        "max_risk": 1242.0,
+        "unrealized_pnl": -36.0,
+        "pct_of_max_risk": -2.9,
         "legs_matched": 4,
         "legs_expected": 4,
         "partial": false
@@ -693,16 +733,16 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 83,
-    "structures_attempted": 415,
-    "structures_priced": 327,
-    "priced_pct": 78.8,
+    "events": 104,
+    "structures_attempted": 520,
+    "structures_priced": 377,
+    "priced_pct": 72.5,
     "dropped_variants": {
-      "condor_0.7sd": 19,
-      "condor_1.0sd": 24,
-      "condor_1.3sd": 33,
-      "fly": 8,
-      "straddle": 4
+      "condor_0.7sd": 27,
+      "condor_1.0sd": 37,
+      "condor_1.3sd": 48,
+      "fly": 16,
+      "straddle": 15
     }
   },
   "implied_vs_realized": {
@@ -1058,7 +1098,7 @@
       "wins": 2,
       "win_rate": 100.0,
       "total_pnl": 1340.0,
-      "open": 1,
+      "open": 3,
       "pending": 0
     },
     "iv_gate_comparison": {
@@ -1165,11 +1205,11 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-10-19T21:23:32.305267",
-    "age_minutes": 1026.2,
-    "stale": true,
+    "last_seen": "2026-10-21T11:55:48.078545",
+    "age_minutes": 10.2,
+    "stale": false,
     "threshold_minutes": 180,
-    "note": "hourly loop last wrote 17.1h ago \u2014 expected hourly"
+    "note": "hourly loop is current"
   },
   "by_strategy": [],
   "by_hour": [],
@@ -1178,30 +1218,86 @@
     {
       "symbol": "IBM261023C00250000",
       "qty": -2.0,
-      "pnl": -250.0,
-      "pnl_pct": -35.71,
-      "market_val": -950.0
+      "pnl": -430.0,
+      "pnl_pct": -61.43,
+      "market_val": -1130.0
     },
     {
       "symbol": "IBM261023C00257500",
       "qty": 2.0,
-      "pnl": 88.0,
-      "pnl_pct": 21.46,
-      "market_val": 498.0
+      "pnl": 250.0,
+      "pnl_pct": 60.98,
+      "market_val": 660.0
     },
     {
       "symbol": "IBM261023P00207500",
       "qty": 2.0,
-      "pnl": -76.0,
-      "pnl_pct": -45.24,
-      "market_val": 92.0
+      "pnl": -96.0,
+      "pnl_pct": -57.14,
+      "market_val": 72.0
     },
     {
       "symbol": "IBM261023P00215000",
       "qty": -2.0,
-      "pnl": 52.0,
-      "pnl_pct": 16.99,
-      "market_val": -254.0
+      "pnl": 88.0,
+      "pnl_pct": 28.76,
+      "market_val": -218.0
+    },
+    {
+      "symbol": "NFLX261023C00076000",
+      "qty": -9.0,
+      "pnl": 126.0,
+      "pnl_pct": 14.0,
+      "market_val": -774.0
+    },
+    {
+      "symbol": "NFLX261023C00078000",
+      "qty": 9.0,
+      "pnl": -108.0,
+      "pnl_pct": -17.91,
+      "market_val": 495.0
+    },
+    {
+      "symbol": "NFLX261023P00060000",
+      "qty": 9.0,
+      "pnl": 36.0,
+      "pnl_pct": 10.0,
+      "market_val": 396.0
+    },
+    {
+      "symbol": "NFLX261023P00062000",
+      "qty": -9.0,
+      "pnl": -90.0,
+      "pnl_pct": -14.49,
+      "market_val": -711.0
+    },
+    {
+      "symbol": "TSLA261023C00400000",
+      "qty": -1.0,
+      "pnl": -5.0,
+      "pnl_pct": -1.41,
+      "market_val": -360.0
+    },
+    {
+      "symbol": "TSLA261023C00410000",
+      "qty": 1.0,
+      "pnl": -5.0,
+      "pnl_pct": -2.42,
+      "market_val": 202.0
+    },
+    {
+      "symbol": "TSLA261023P00337500",
+      "qty": 1.0,
+      "pnl": -2.0,
+      "pnl_pct": -1.38,
+      "market_val": 143.0
+    },
+    {
+      "symbol": "TSLA261023P00347500",
+      "qty": -1.0,
+      "pnl": -10.0,
+      "pnl_pct": -3.47,
+      "market_val": -298.0
     }
   ],
   "proposals": [
