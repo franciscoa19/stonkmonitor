@@ -1,23 +1,23 @@
 {
-  "generated": "2026-10-21T12:05:58.941439+00:00",
+  "generated": "2026-10-22T21:05:47.517465+00:00",
   "account": {
-    "equity": 50533.41,
-    "cash": 52056.41,
-    "buying_power": 191025.64,
+    "equity": 51259.86,
+    "cash": 51991.86,
+    "buying_power": 197967.44,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": 533.4100000000035,
-    "total_pnl_pct": 1.066820000000007,
-    "open_positions": 12,
+    "total_pnl": 1259.8600000000006,
+    "total_pnl_pct": 2.5197200000000013,
+    "open_positions": 8,
     "days_running": 43,
     "error": null
   },
   "metrics": {
     "closed_trades": 0,
-    "closed_condors": 4,
-    "closed_all": 4,
+    "closed_condors": 5,
+    "closed_all": 5,
     "wins": 0,
     "losses": 0,
     "win_rate": 0.0,
@@ -30,28 +30,28 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 50533.41,
+    "equity": 51259.86,
     "max_risk_pct": 0.3,
-    "risk_cap": 15160.023,
-    "open_risk": 3023.0,
-    "open_risk_pct": 0.0598,
-    "condor_risk": 3023.0,
+    "risk_cap": 15377.958,
+    "open_risk": 2581.0,
+    "open_risk_pct": 0.0504,
+    "condor_risk": 2581.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 12137.023,
+    "risk_headroom": 12796.958,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 10106.682,
-    "free_cash": 47756.41,
-    "free_cash_pct": 0.945,
-    "unlisted_reserved": 0.0,
-    "cash_available": 37649.728
+    "cash_reserve": 10251.972,
+    "free_cash": 49491.86,
+    "free_cash_pct": 0.9655,
+    "unlisted_reserved": 1000.0,
+    "cash_available": 38239.888
   },
   "account_risk_error": null,
   "activity": {
     "tag": "MEASURED",
-    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 4 closed, 3 open."
+    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 5 closed, 2 open."
   },
   "equity_curve": [
     {
@@ -224,7 +224,7 @@
     },
     {
       "date": "2026-10-21",
-      "equity": 50533.41
+      "equity": 51027.51
     }
   ],
   "iv_rv": {
@@ -235,12 +235,12 @@
     "open": 11
   },
   "iv_condors": {
-    "closed": 4,
-    "wins": 2,
-    "win_rate": 50.0,
-    "total_pnl": -1360.0,
-    "open": 3,
-    "pending": 0,
+    "closed": 5,
+    "wins": 3,
+    "win_rate": 60.0,
+    "total_pnl": -865.0,
+    "open": 2,
+    "pending": 1,
     "open_detail": [
       {
         "ticker": "IBM",
@@ -252,8 +252,8 @@
         "strikes": "207.5/215.0 \u2014 250.0/257.5",
         "credit_collected": 428.0,
         "max_risk": 1072.0,
-        "unrealized_pnl": -188.0,
-        "pct_of_max_risk": -17.5,
+        "unrealized_pnl": -288.0,
+        "pct_of_max_risk": -26.9,
         "legs_matched": 4,
         "legs_expected": 4,
         "partial": false
@@ -268,27 +268,27 @@
         "strikes": "337.5/347.5 \u2014 400.0/410.0",
         "credit_collected": 291.0,
         "max_risk": 709.0,
-        "unrealized_pnl": -22.0,
-        "pct_of_max_risk": -3.1,
+        "unrealized_pnl": 275.0,
+        "pct_of_max_risk": 38.8,
         "legs_matched": 4,
         "legs_expected": 4,
         "partial": false
       },
       {
-        "ticker": "NFLX",
-        "status": "open",
+        "ticker": "CMCSA",
+        "status": "pending_entry",
         "settlement_note": null,
-        "qty": 9,
+        "qty": 20,
         "expiry": "2026-10-23",
-        "earnings_date": "2026-10-20",
-        "strikes": "60.0/62.0 \u2014 76.0/78.0",
-        "credit_collected": 558.0,
-        "max_risk": 1242.0,
-        "unrealized_pnl": -36.0,
-        "pct_of_max_risk": -2.9,
-        "legs_matched": 4,
+        "earnings_date": "2026-10-22",
+        "strikes": "19.5/20.0 \u2014 23.5/24.0",
+        "credit_collected": 200.0,
+        "max_risk": 800.0,
+        "unrealized_pnl": null,
+        "pct_of_max_risk": null,
+        "legs_matched": 0,
         "legs_expected": 4,
-        "partial": false
+        "partial": true
       }
     ]
   },
@@ -733,15 +733,15 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 104,
-    "structures_attempted": 520,
-    "structures_priced": 377,
-    "priced_pct": 72.5,
+    "events": 125,
+    "structures_attempted": 625,
+    "structures_priced": 461,
+    "priced_pct": 73.8,
     "dropped_variants": {
-      "condor_0.7sd": 27,
-      "condor_1.0sd": 37,
-      "condor_1.3sd": 48,
-      "fly": 16,
+      "condor_0.7sd": 33,
+      "condor_1.0sd": 39,
+      "condor_1.3sd": 55,
+      "fly": 22,
       "straddle": 15
     }
   },
@@ -1068,14 +1068,14 @@
     }
   },
   "risk_state": {
-    "multiplier": 0.25,
-    "loss_streak": 2,
+    "multiplier": 0.5,
+    "loss_streak": 0,
     "halt_streak": 3,
     "halted": false,
     "halted_at": null,
     "halted_reason": null,
     "rearmed_at": null,
-    "closes_counted": 4
+    "closes_counted": 5
   },
   "market_events": [
     {
@@ -1094,12 +1094,12 @@
       "open": 11
     },
     "iv_condors": {
-      "closed": 2,
-      "wins": 2,
+      "closed": 3,
+      "wins": 3,
       "win_rate": 100.0,
-      "total_pnl": 1340.0,
-      "open": 3,
-      "pending": 0
+      "total_pnl": 1835.0,
+      "open": 2,
+      "pending": 1
     },
     "iv_gate_comparison": {
       "gated": {
@@ -1205,11 +1205,11 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-10-21T11:55:48.078545",
-    "age_minutes": 10.2,
-    "stale": false,
+    "last_seen": "2026-10-21T17:55:53.341067",
+    "age_minutes": 1629.9,
+    "stale": true,
     "threshold_minutes": 180,
-    "note": "hourly loop is current"
+    "note": "hourly loop last wrote 27.2h ago \u2014 expected hourly"
   },
   "by_strategy": [],
   "by_hour": [],
@@ -1218,86 +1218,58 @@
     {
       "symbol": "IBM261023C00250000",
       "qty": -2.0,
-      "pnl": -430.0,
-      "pnl_pct": -61.43,
-      "market_val": -1130.0
+      "pnl": -230.0,
+      "pnl_pct": -32.86,
+      "market_val": -930.0
     },
     {
       "symbol": "IBM261023C00257500",
       "qty": 2.0,
-      "pnl": 250.0,
-      "pnl_pct": 60.98,
-      "market_val": 660.0
+      "pnl": -190.0,
+      "pnl_pct": -46.34,
+      "market_val": 220.0
     },
     {
       "symbol": "IBM261023P00207500",
       "qty": 2.0,
-      "pnl": -96.0,
-      "pnl_pct": -57.14,
-      "market_val": 72.0
+      "pnl": -168.0,
+      "pnl_pct": -100.0,
+      "market_val": 0.0
     },
     {
       "symbol": "IBM261023P00215000",
       "qty": -2.0,
-      "pnl": 88.0,
-      "pnl_pct": 28.76,
-      "market_val": -218.0
-    },
-    {
-      "symbol": "NFLX261023C00076000",
-      "qty": -9.0,
-      "pnl": 126.0,
-      "pnl_pct": 14.0,
-      "market_val": -774.0
-    },
-    {
-      "symbol": "NFLX261023C00078000",
-      "qty": 9.0,
-      "pnl": -108.0,
-      "pnl_pct": -17.91,
-      "market_val": 495.0
-    },
-    {
-      "symbol": "NFLX261023P00060000",
-      "qty": 9.0,
-      "pnl": 36.0,
-      "pnl_pct": 10.0,
-      "market_val": 396.0
-    },
-    {
-      "symbol": "NFLX261023P00062000",
-      "qty": -9.0,
-      "pnl": -90.0,
-      "pnl_pct": -14.49,
-      "market_val": -711.0
+      "pnl": 300.0,
+      "pnl_pct": 98.04,
+      "market_val": -6.0
     },
     {
       "symbol": "TSLA261023C00400000",
       "qty": -1.0,
-      "pnl": -5.0,
-      "pnl_pct": -1.41,
-      "market_val": -360.0
+      "pnl": 341.0,
+      "pnl_pct": 96.06,
+      "market_val": -14.0
     },
     {
       "symbol": "TSLA261023C00410000",
       "qty": 1.0,
-      "pnl": -5.0,
-      "pnl_pct": -2.42,
-      "market_val": 202.0
+      "pnl": -202.0,
+      "pnl_pct": -97.58,
+      "market_val": 5.0
     },
     {
       "symbol": "TSLA261023P00337500",
       "qty": 1.0,
-      "pnl": -2.0,
-      "pnl_pct": -1.38,
-      "market_val": 143.0
+      "pnl": -141.0,
+      "pnl_pct": -97.24,
+      "market_val": 4.0
     },
     {
       "symbol": "TSLA261023P00347500",
       "qty": -1.0,
-      "pnl": -10.0,
-      "pnl_pct": -3.47,
-      "market_val": -298.0
+      "pnl": 277.0,
+      "pnl_pct": 96.18,
+      "market_val": -11.0
     }
   ],
   "proposals": [
