@@ -1,17 +1,17 @@
 {
-  "generated": "2026-10-22T21:05:47.517465+00:00",
+  "generated": "2026-10-23T12:17:53.082927+00:00",
   "account": {
-    "equity": 51259.86,
+    "equity": 50996.86,
     "cash": 51991.86,
     "buying_power": 197967.44,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": 1259.8600000000006,
-    "total_pnl_pct": 2.5197200000000013,
+    "total_pnl": 996.8600000000006,
+    "total_pnl_pct": 1.9937200000000013,
     "open_positions": 8,
-    "days_running": 43,
+    "days_running": 44,
     "error": null
   },
   "metrics": {
@@ -30,23 +30,23 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 51259.86,
+    "equity": 50996.86,
     "max_risk_pct": 0.3,
-    "risk_cap": 15377.958,
-    "open_risk": 2581.0,
-    "open_risk_pct": 0.0504,
-    "condor_risk": 2581.0,
+    "risk_cap": 15299.058,
+    "open_risk": 1781.0,
+    "open_risk_pct": 0.0349,
+    "condor_risk": 1781.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 12796.958,
+    "risk_headroom": 13518.058,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 10251.972,
+    "cash_reserve": 10199.372,
     "free_cash": 49491.86,
-    "free_cash_pct": 0.9655,
-    "unlisted_reserved": 1000.0,
-    "cash_available": 38239.888
+    "free_cash_pct": 0.9705,
+    "unlisted_reserved": 0.0,
+    "cash_available": 39292.488
   },
   "account_risk_error": null,
   "activity": {
@@ -225,14 +225,18 @@
     {
       "date": "2026-10-21",
       "equity": 51027.51
+    },
+    {
+      "date": "2026-10-22",
+      "equity": 51259.86
     }
   ],
   "iv_rv": {
-    "resolved": 9,
+    "resolved": 11,
     "wins": 4,
-    "win_rate": 44.4,
-    "avg_edge_pct": -0.22,
-    "open": 11
+    "win_rate": 36.4,
+    "avg_edge_pct": -0.83,
+    "open": 9
   },
   "iv_condors": {
     "closed": 5,
@@ -240,7 +244,7 @@
     "win_rate": 60.0,
     "total_pnl": -865.0,
     "open": 2,
-    "pending": 1,
+    "pending": 0,
     "open_detail": [
       {
         "ticker": "IBM",
@@ -268,27 +272,11 @@
         "strikes": "337.5/347.5 \u2014 400.0/410.0",
         "credit_collected": 291.0,
         "max_risk": 709.0,
-        "unrealized_pnl": 275.0,
-        "pct_of_max_risk": 38.8,
+        "unrealized_pnl": 12.0,
+        "pct_of_max_risk": 1.7,
         "legs_matched": 4,
         "legs_expected": 4,
         "partial": false
-      },
-      {
-        "ticker": "CMCSA",
-        "status": "pending_entry",
-        "settlement_note": null,
-        "qty": 20,
-        "expiry": "2026-10-23",
-        "earnings_date": "2026-10-22",
-        "strikes": "19.5/20.0 \u2014 23.5/24.0",
-        "credit_collected": 200.0,
-        "max_risk": 800.0,
-        "unrealized_pnl": null,
-        "pct_of_max_risk": null,
-        "legs_matched": 0,
-        "legs_expected": 4,
-        "partial": true
       }
     ]
   },
@@ -733,16 +721,16 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 125,
-    "structures_attempted": 625,
-    "structures_priced": 461,
-    "priced_pct": 73.8,
+    "events": 139,
+    "structures_attempted": 695,
+    "structures_priced": 534,
+    "priced_pct": 76.8,
     "dropped_variants": {
       "condor_0.7sd": 33,
-      "condor_1.0sd": 39,
-      "condor_1.3sd": 55,
+      "condor_1.0sd": 40,
+      "condor_1.3sd": 57,
       "fly": 22,
-      "straddle": 15
+      "straddle": 9
     }
   },
   "implied_vs_realized": {
@@ -1087,11 +1075,11 @@
   ],
   "excluding_market_events": {
     "iv_rv": {
-      "resolved": 1,
+      "resolved": 2,
       "wins": 1,
-      "win_rate": 100.0,
-      "avg_edge_pct": 1.88,
-      "open": 11
+      "win_rate": 50.0,
+      "avg_edge_pct": -1.27,
+      "open": 9
     },
     "iv_condors": {
       "closed": 3,
@@ -1099,7 +1087,7 @@
       "win_rate": 100.0,
       "total_pnl": 1835.0,
       "open": 2,
-      "pending": 1
+      "pending": 0
     },
     "iv_gate_comparison": {
       "gated": {
@@ -1205,11 +1193,11 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-10-21T17:55:53.341067",
-    "age_minutes": 1629.9,
+    "last_seen": "2026-10-23T03:34:20.995057",
+    "age_minutes": 523.6,
     "stale": true,
     "threshold_minutes": 180,
-    "note": "hourly loop last wrote 27.2h ago \u2014 expected hourly"
+    "note": "hourly loop last wrote 8.7h ago \u2014 expected hourly"
   },
   "by_strategy": [],
   "by_hour": [],
@@ -1246,30 +1234,30 @@
     {
       "symbol": "TSLA261023C00400000",
       "qty": -1.0,
-      "pnl": 341.0,
-      "pnl_pct": 96.06,
-      "market_val": -14.0
+      "pnl": 325.0,
+      "pnl_pct": 91.55,
+      "market_val": -30.0
     },
     {
       "symbol": "TSLA261023C00410000",
       "qty": 1.0,
-      "pnl": -202.0,
-      "pnl_pct": -97.58,
-      "market_val": 5.0
+      "pnl": -206.0,
+      "pnl_pct": -99.52,
+      "market_val": 1.0
     },
     {
       "symbol": "TSLA261023P00337500",
       "qty": 1.0,
-      "pnl": -141.0,
-      "pnl_pct": -97.24,
-      "market_val": 4.0
+      "pnl": -145.0,
+      "pnl_pct": -100.0,
+      "market_val": 0.0
     },
     {
       "symbol": "TSLA261023P00347500",
       "qty": -1.0,
-      "pnl": 277.0,
-      "pnl_pct": 96.18,
-      "market_val": -11.0
+      "pnl": 38.0,
+      "pnl_pct": 13.19,
+      "market_val": -250.0
     }
   ],
   "proposals": [
