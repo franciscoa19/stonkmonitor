@@ -21,6 +21,7 @@ import urllib.error
 from datetime import date, timedelta
 from typing import Iterable, Optional
 
+import tls_trust
 from market_time import et_today
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ def _fetch_nasdaq_day(d: date) -> list[dict]:
     url = f"https://api.nasdaq.com/api/calendar/earnings?date={d.isoformat()}"
     try:
         req = urllib.request.Request(url, headers=_HEADERS)
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=15, context=tls_trust.context()) as r:
             body = json.loads(r.read())
         rows = ((body.get("data") or {}).get("rows")) or []
         out = []

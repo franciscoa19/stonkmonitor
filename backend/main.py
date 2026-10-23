@@ -3,6 +3,10 @@ StonkMonitor — Main FastAPI Application
 Streams Unusual Whales feed, scores signals, fires notifications,
 and broadcasts everything to the Next.js frontend via WebSocket.
 """
+# Before anything that builds a default TLS context at import (aiohttp does).
+import tls_trust
+tls_trust.use_certifi_by_default()
+
 import asyncio
 import logging
 import json

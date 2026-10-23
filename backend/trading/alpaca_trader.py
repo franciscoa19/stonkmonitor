@@ -16,7 +16,13 @@ from alpaca.trading.requests import (
 )
 from alpaca.trading.enums import OrderSide, TimeInForce, AssetClass, OrderClass
 
+import tls_trust
+
 logger = logging.getLogger(__name__)
+
+# Orders and order lookups go through urllib, not the SDK: give them the same
+# certifi trust store the SDK uses rather than the operating system's file.
+_TLS = tls_trust.context()
 
 
 def _client_id_conflict(message) -> bool:
@@ -495,7 +501,7 @@ class AlpacaTrader:
         last_err = None
         for i in range(attempts):
             try:
-                with urllib.request.urlopen(req, timeout=20) as r:
+                with urllib.request.urlopen(req, timeout=20, context=_TLS) as r:
                     txt = r.read().decode()
                     return r.status, (json.loads(txt) if txt else {})
             except urllib.error.HTTPError as e:
