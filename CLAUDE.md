@@ -122,6 +122,7 @@ and place the RSA private key at the path in `KALSHI_PRIVATE_KEY`.
 | `notifications/pushover.py` | Pushover push notifications |
 | `trading/alpaca_trader.py` | Alpaca order execution |
 | `backtest/stop_study.py` | Read-only replay of condors under different exit rules (hold, policy, strike-breach stop, loss stop) |
+| `tls_trust.py` | CA bundle for outbound HTTPS: certifi everywhere (explicit context for raw REST; process default for the rest) |
 | `signals/iv_research.py` | Which historical session settles an IV/RV observation (shared by the resolver and the market-event filter); no execution |
 | `trading/account_risk.py` | Account-wide limits on new risk: percent cap on everything open or pending, and a free-cash reserve |
 | `api/routes.py` | FastAPI REST routes |

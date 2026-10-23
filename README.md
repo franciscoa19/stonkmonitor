@@ -1,364 +1,188 @@
-# ⚡ StonkMonitor
+# StonkMonitor
 
-A real-time market signal monitor and semi-automated trader across **two markets**: traditional equities/options via Alpaca and prediction markets via Kalshi. Ingests Unusual Whales live feed, scores every event 1–10, detects cross-feed patterns, and fires actionable Telegram alerts with one-tap execution.
+A self-hosted bot that **sells defined-risk iron condors into earnings announcements** on an
+Alpaca **paper** account, and measures whether that edge is real. It runs on a Mac as two
+local services (a FastAPI backend and a Next.js dashboard) and trades without anyone tapping
+a button.
 
-![dark terminal dashboard](https://img.shields.io/badge/UI-dark%20terminal-00ff88?style=flat-square) ![python](https://img.shields.io/badge/backend-Python%203.13-3776AB?style=flat-square&logo=python) ![nextjs](https://img.shields.io/badge/frontend-Next.js%2014-black?style=flat-square&logo=next.js) ![alpaca](https://img.shields.io/badge/broker-Alpaca-FFCE00?style=flat-square) ![kalshi](https://img.shields.io/badge/predictions-Kalshi-8B5CF6?style=flat-square)
+The project started as a real-time signal monitor (Unusual Whales flow, Kalshi prediction
+markets, Telegram one-tap trades). That code is still here, but it is **switched off**: the flow
+strategy lost money and was paused in September 2026. What runs today is described below.
+
+> Paper trading only. Nothing here is investment advice. See [Before real money](#before-real-money).
 
 ---
 
 ## What it does
 
-### 📡 Market Signal Monitor (Unusual Whales feeds)
+### 1. Finds earnings setups
+Every few minutes during the trading day it scans a curated watchlist of 78 liquid names
+(`signals/earnings_universe.py`) whose earnings are within 7 days, and scores each with a
+Yang-Zhang implied-vs-realized volatility screen (`signals/earnings_scanner.py`):
 
-| Feed | What it catches |
-|------|----------------|
-| **Options Flow** | Sweeps, golden sweeps, large block bets |
-| **Dark Pool** | Large institutional off-exchange prints |
-| **Insider Trades** | Open-market buys/sells by officers & directors |
-| **Congress Trades** | Congressional disclosures (STOCK Act filings) |
+| Gate | Threshold | Meaning |
+|------|-----------|---------|
+| Liquidity | 30-day average volume ≥ 1.5M | tight enough markets to trade |
+| Rich options | 30-day implied vol ÷ Yang-Zhang realized vol ≥ 1.25 | options price a bigger move than the stock has been making |
+| Earnings bump | term structure slope 0–45 days ≤ −0.00406 | front-month volatility inflated by the print |
 
-Every event is scored **1–10** based on premium size, sweep type, insider role, Vol/OI ratio, and IV conviction.
+All three → **SELL_PREMIUM**. The slope plus one other → **CONSIDER** (borderline). Otherwise **AVOID**.
+Earnings dates come from yfinance and the Nasdaq earnings calendar.
 
----
+### 2. Opens an iron condor (SELL_PREMIUM only)
+`signals/iv_executor.py`, `main.maybe_execute_condor`:
 
-### 🧠 Pattern Engine (9 cross-feed patterns)
+- **When:** earnings within 2 days, in regular hours, not in the first 15 minutes after the open
+  (opening quotes are not prices). Same-day entry only before a confirmed after-close report.
+- **Structure:** short put and short call at the options' implied move (1.0×), protective wings
+  3% beyond, in the first expiry after the print that is 1–10 days out. One multi-leg order.
+- **Price:** a limit at 90% of the mid credit; skipped if the credit is under $0.10.
+- **Size:** maximum loss = 10% of *current* account equity × the risk throttle; at most 4 contracts
+  per $10k of equity.
+- **Limits:** at most 3 condors open (pending entries count), 4 new per day, one per ticker, one
+  attempt per ticker per day.
+- **Borderline setups** (CONSIDER) are logged and scored but not traded (`IV_EXEC_ALLOW_CONSIDER=false`).
 
-Correlates signals across all feeds for the same ticker within rolling time windows:
+**Account-wide limits** (`trading/account_risk.py`) apply to every automated entry: everything at
+risk (condors, other holdings, pending orders) stays under 30% of equity, and at least 20% of
+equity stays as free cash. They only shrink or skip an entry; they never close a position.
 
-| Pattern | Score | What it means |
-|---------|-------|---------------|
-| `triple_confluence` | 10.0 | Sweep + dark pool + insider all aligned |
-| `insider_buy_plus_sweep` | 9.5 | CEO open-market buy + bullish sweep |
-| `sweep_plus_darkpool` | 9.0 | Institutions loading derivatives AND shares |
-| `golden_sweep_cluster` | 9.0 | 2+ golden sweeps on same ticker in 3 days |
-| `insider_cluster_buy` | 9.0 | 3+ insiders buying within 30 days |
-| `congress_plus_sweep` | 8.5 | Congress buy + unusual options sweep |
-| `size_sweep` | 8.5 | Single sweep > $1M |
-| `congress_plus_darkpool` | 8.0 | Congress buy + dark pool accumulation |
-| `size_darkpool` | 8.0 | Single dark pool print > $10M |
+**Risk throttle:** size halves after a loss and doubles back after a win (never above normal,
+never below 25%); three losses in a row halt new condors until a person re-arms them.
 
----
+### 3. Manages and closes it
+`main._manage_condor`, every few minutes:
 
-### 💹 Alpaca Auto-Trade Flow
+- **Unfilled entry:** cancelled after 60 minutes so it does not hold a slot all day (a partial fill
+  is kept). An entry whose submission never reached the broker is voided once its session closes.
+- **Profit target:** buy back at half the credit or less. The limit never exceeds the target.
+- **After the print:** close from 09:45 ET the morning after the earnings date. Each unfilled
+  retry raises the limit a step, up to what the two short legs cost on their own.
+- **Expiry day:** hold to expiry if the stock is at least 3% inside both short strikes; otherwise
+  close, with a forced close at 15:00 ET (12:00 on a 13:00 half day).
+- Worthless long wings are left out of the close (they cannot be sold) and expire on their own.
+- Settlement is booked from the broker's own expiry records (`OPEXP`); an assignment halts new entries.
 
-```
-Signal ≥ 8.5 or Pattern ≥ 9.0
-        ↓
-Auto-Trade Engine
-  • fetches live bid/ask from Alpaca data API
-  • builds OCC options symbol automatically
-  • sizes position: min(2% equity, $2,500 hard cap)
-  • DTE guard: rejects <2d or >21d expiries
-        ↓
-Telegram card on your phone
-  [✅ EXECUTE $840]  [❌ SKIP]
-        ↓ tap
-Alpaca **bracket order** placed instantly
-  • Server-side TP limit + SL stop from the moment of entry
-  • Options: TP +80%, SL -40%  |  Equity: TP +15%, SL -5%
-  • Falls back to plain limit if bracket not supported
-```
+### 4. Measures whether the edge is real
+None of this trades; it builds the evidence.
 
-**Position Monitor (TP/SL/Trailing)** — runs every 2 min during market hours:
+- **Hypothetical structures** (`iv_variant_evals`): for every setup, and for up to 25 extra large
+  companies every 6 hours from the Nasdaq calendar, it prices condors at 0.7, 1.0 and 1.3 standard
+  deviations, a butterfly and a straddle, and settles them at the expiry close.
+- **IV/RV observations** (`iv_rv_evals`): the move the options priced against the move that happened.
+- **Gates vs baseline:** whether setups that pass all three gates do better than all events.
+- **Market-event tags:** days the whole market moved on news (e.g. a hot CPI print) can be tagged;
+  the report then shows its figures with and without records open on those days. Nothing is deleted.
+- **Stop what-if study** (`backtest/stop_study.py`): replays closed condors on five-minute history
+  under hold-to-expiry, the bot's own rules, a strike-breach stop and a half-max-loss stop.
 
-| Trigger | Action | Notification |
-|---------|--------|--------------|
-| **+80% gain** | Sell 50% (TP1), activate trailing stop | 🎯 TAKE PROFIT → Telegram |
-| **Peak - 20pp** | Trailing stop: sell remaining runner | 📉 TRAILING STOP → Telegram |
-| **-35% loss** | Sell 50% (trim) | ✂️ TRIM → Telegram |
-| **-40% loss** | Liquidate 100% | 🛑 STOP LOSS → Telegram |
-
-After TP1 sells half, the remaining "runner" is managed by a **ratcheting trailing stop** that tracks the high watermark of P&L% and sells when it drops 20pp below the peak (floor never goes below +60%). Example: if position peaks at +150%, the floor ratchets to +130%. If it drops to +129%, runner is closed.
-
-All thresholds configurable via `.env` (`POS_TP_PCT`, `POS_TRAIL_PCT`, `POS_SL_PCT`, etc). Each action fires once per position — no double-triggers. Pauses overnight and weekends.
-
-**Performance Tracking** — Alpaca order history synced to `trade_performance` table every 15 min. Position monitor records exit reason and realized P&L on every TP/trailing/trim/SL action. API: `/api/performance/summary` returns win rate, profit factor, avg win/loss.
-
----
-
-### 🎰 Kalshi Prediction Market Scanner
-
-Scans **all open Kalshi markets** (paginated, 5000+ markets) every 5 minutes. Surfaces six types of opportunities for human evaluation — the scanner doesn't claim to beat efficiently priced markets, it finds the *interesting* ones:
-
-| Type | Criteria | Play |
-|------|----------|------|
-| 🔒 **Near Certain** | DTE ≤ 30d, price ≤ 5¢ or ≥ 95¢ | Buy cheap side for lotto upside on a catalyst, or farm near-guaranteed yield on the certain side |
-| 🌾 **Yield Farm** | price 88–94.9¢, DTE ≤ 3d, annualized yield ≥ 100% | Short-dated almost-certain contracts where the bid/ask implies triple-digit annualized return |
-| 🐋 **Smart Money** | volume Z-score ≥ 2.5 vs 20-scan rolling mean + price move ≥ 3¢ | Unusual size hitting a market against a visible price move — someone knows something |
-| 🔥 **High Vol Extreme** | vol > 100k, price ≤ 8¢ or ≥ 92¢ | Crowd has made a strong call — fade or follow |
-| 📈 **Mover** | price moved ≥ 8¢, vol > 10k | Momentum or mean-reversion on a catalyst |
-| ⚖️ **Active** | vol > 500k, price 30–70¢ | Active debate — research and take a side |
-
-**Maker pricing**: when the spread is fat enough, the scanner proposes a limit at the bid-side instead of crossing the spread, so you earn the spread instead of paying it. The Telegram card shows both the ask and the maker limit.
-
-**Telegram alert flow:**
-```
-Scanner finds score ≥ 7.0 opportunity
-        ↓
-Telegram card (1-hour cooldown per ticker)
-  [✅ EXECUTE $X.XX]  [❌ SKIP]
-        ↓ tap Execute
-Kalshi limit order placed instantly
-        ↓
-Position registered for monitoring
-
-Every 2 minutes:
-  Price check on all held positions
-  3x gain → [✅ SELL ALL]  [✂️ SELL HALF]  [🚫 HOLD]
-  5x gain → alert again
-  10x gain → 🚀 MOON alert
-```
+### 5. Reports
+A daily check-in at 08:00 ET on weekdays (`daily_report.py`): equity, condor results, open risk
+against the account limits, research hit rates, and proposals (a weekly watchlist review on
+Mondays). View it at <http://localhost:8000/api/report/daily?format=html>. With
+`REPORT_GIT_PUSH=true` the evaluation data (`backend/reports/history.jsonl`, `latest.json`,
+`trades.csv`) is also committed to GitHub as an off-machine backup.
 
 ---
 
-### ⚖️ Kalshi Arbitrage Scanners
+## Safety rails
 
-Two independent scanners run every Kalshi scan cycle and surface guaranteed-edge trades. Both are silent most of the time by design — efficient markets mean real arbs are rare, and false positives are worse than misses.
-
-**1. Internal monotonicity arb** (`signals/kalshi_arb.py`)
-
-Kalshi events group related threshold markets (`"above $50k"`, `"above $60k"`, …). For mutually consistent thresholds the YES prices *must* be monotonic: pricier thresholds can't be cheaper. When they're not, it's a mechanical arb.
-
-- Groups markets by `event_ticker`, then by `(direction, normalized_title_prefix)` so *only* true threshold siblings are compared (Janet Mills vs Graham Platner never cross).
-- Regex parser handles `above $X`, `at least $X`, `below $X`, `X or more`, `by end of X`, `between $X and $Y`, plus punctuated numbers (`$1,000,000`, `100000`, `3.5%`).
-- Requires both legs to have tight spreads (< 10¢) and non-zero bids before flagging — wide stale books are ignored.
-- Conservative edge calc: sell the rich leg at its bid, buy the cheap leg at its ask. Minimum 3¢ edge to fire.
-- Sum-violation (MECE bucket set totaling < $1) check is present but **disabled** because Kalshi doesn't flag mutual exclusivity in the API — it fires on cumulative brackets.
-
-**2. Cross-platform Kalshi ↔ Polymarket arb** (`signals/kalshi_poly_arb.py`)
-
-Uses the [Dome API](https://domeapi.io) to find Polymarket markets that likely resolve the same question as a high-volume Kalshi market, then fetches live Polymarket prices from the public CLOB and compares.
-
-- Scans top 30 Kalshi markets by volume per cycle (avoids spamming Dome).
-- Title-match via Jaccard overlap **+** SequenceMatcher on sorted keyword stream. Short keyword sets are hard-capped at 0.5 so they always reject.
-- Similarity threshold **0.70** — deliberately aggressive. Verified against real Polymarket titles (Newsom 0.73 ✅, Bulgarian president 0.63 ❌, Walz 0.33 ❌).
-- 1-hour match cache per Kalshi ticker (dedupes Dome lookups).
-- Both edge directions considered: `buy_poly_sell_kalshi` when Poly YES ask < Kalshi YES bid, `buy_kalshi_sell_poly` when Kalshi YES ask < Poly YES bid.
-- Always surfaces with `match_confidence` and **both** full titles so the operator can sanity-check resolution criteria before executing.
-
-> **Polymarket CLOB quirk** (learned the hard way): `/price?side=BUY` returns the best *bid*, not the ask, because prices are quoted from a book-maker perspective. `feeds/polymarket.py` swaps the labels and validates against `/midpoint`.
+- **One ledger per broker account.** The database is bound to a fingerprint of the Alpaca account
+  on first use; the bot refuses to start against a different account (`bind_account.py`).
+- **Restart-safe orders.** Every order carries a client order ID saved before it is sent; an
+  ambiguous submission is looked up, never resent.
+- **Ownership checks.** Broker positions and orders are reconciled against the ledger; anything
+  unknown is quarantined and blocks new automated entries.
+- **Local only.** Both services listen on 127.0.0.1; the API also checks the Host and Origin headers.
+- **Secrets** live in `backend/.env` (owner-only, never committed). Outbound HTTPS trusts certifi's
+  CA bundle on every path (`tls_trust.py`).
+- **Backups:** `venv/bin/python backup_db.py stonkmonitor.db backups/<name>.db` (online, verified,
+  never overwrites).
 
 ---
 
-### 🎯 Earnings IV/RV Scanner
+## Switched off (still in the code)
 
-Runs on every watchlist ticker every 30 minutes. Adapted from a Yang-Zhang volatility calculator — identifies when options are expensive relative to realized vol with an inverted term structure (classic pre-earnings setup):
+| Feature | Setting | Notes |
+|---------|---------|-------|
+| Unusual Whales flow, dark pool, insider and congress feeds; signal scoring; 9 cross-feed patterns | `UW_ENABLED=false` | subscription not needed for the condor strategy |
+| Flow/pattern auto-trades (options and stock, bracket orders, trailing stops) | `AUTO_TRADE_FLOW_ENABLED=false` | paused after `triple_confluence` went 0-for-5 |
+| Kalshi scanner, Kalshi arbitrage, Kalshi ↔ Polymarket arbitrage | no Kalshi / Dome key | |
+| Telegram, Discord, Pushover alerts | `TELEGRAM_ALERTS_ENABLED=false`, `DISCORD_ALERTS_ENABLED=false`, no Pushover key | |
 
-| Condition | Threshold | Meaning |
-|-----------|-----------|---------|
-| `avg_volume` | ≥ 1.5M (30d) | Enough liquidity to trade |
-| `iv30_rv30` | ≥ 1.25 | IV is 25%+ above Yang-Zhang realized vol → rich premium |
-| `ts_slope_0_45` | ≤ -0.00406 | Term structure inverted (front-month spike = earnings approaching) |
-
-**All 3 pass → SELL_PREMIUM signal (score 8.0+)** → sell ATM straddle before earnings, collect IV crush.
-**ts_slope + 1 other → CONSIDER signal (score 6.0)**
-
-Yang-Zhang HV uses OHLC data (handles overnight gaps) — more accurate than close-to-close standard deviation.
+The dashboard's tabs (Watch, History, Patterns, Trade, Kalshi) date from that era. The Trade tab
+shows the live Alpaca account and positions, including condor legs; the condor strategy itself is
+followed through the daily report.
 
 ---
 
-### 📊 UW API Budget Governor
+## Running it
 
-The Unusual Whales API caps at 15,000 requests/day on the Standard tier and nothing on the feed updates overnight or on weekends. A budget governor tracks usage and adapts poll cadence to the current market session:
-
-| Session | Hours (ET) | Options Flow | Dark Pool | Insider | Congress |
-|---------|-----------|--------------|-----------|---------|----------|
-| **RTH** | Mon–Fri 09:30–16:00 | 15s | 15s | 60s | 60s |
-| **Extended** | Mon–Fri 04:00–09:30 + 16:00–20:00 | 60s | 60s | 5 min | 5 min |
-| **Overnight** | Mon–Fri 20:00–04:00 | *off* | *off* | 15 min | 30 min |
-| **Weekend** | Sat + Sun | *off* | *off* | 1 hr | 1 hr |
-
-- `feeds/uw_budget.py` parses the `x-uw-daily-req-count` and `x-uw-token-req-limit` headers off every response and tracks daily usage live.
-- **Throttle** (≥ 80%): all channel intervals double automatically.
-- **Pause** (≥ 95%): the feed idles 5 min at a time; `uw_client._get()` hard-blocks any stray caller (IV scanner, REST endpoints) from burning more calls.
-- `uw_budget_monitor_loop` logs + broadcasts status every 10 min and fires a Telegram warning the first time you cross 80% / 95% each day.
-- `GET /api/uw/budget` exposes a live snapshot (count, limit, usage %, session, throttle/pause flags).
-
-Projected daily burn: **~5,300 calls weekday**, **~48 calls weekend day** (was ~11,250 round the clock).
-
----
-
-## Stack
-
-```
-backend/
-  feeds/
-    unusual_whales.py   UW REST polling, session-aware per-channel schedule + budget gating
-    uw_budget.py        Daily-call-budget tracker + US/Eastern session classifier
-    kalshi.py           Kalshi REST client (RSA-PSS signed, full pagination)
-    dome.py             Dome API client (Polymarket + Kalshi metadata lookup)
-    polymarket.py       Polymarket CLOB client (public, no auth; /midpoint, /price, /book)
-    alpaca_feed.py      Alpaca market data
-  signals/
-    engine.py           Signal scorer (1-10), all signal types
-    patterns.py         Cross-feed pattern detector (9 patterns)
-    auto_trade.py       Alpaca trade sizing + queue + execution
-    kalshi_scanner.py   Kalshi opportunity surfacer (6 types incl. yield_farm, smart_money)
-    kalshi_arb.py       Internal monotonicity arb (same-event threshold inversions)
-    kalshi_poly_arb.py  Cross-platform Kalshi ↔ Polymarket arb via Dome
-    earnings_scanner.py Yang-Zhang IV/RV earnings premium screener
-  notifications/
-    telegram.py         Bot with inline Execute/Skip/Sell buttons + long-poll
-    discord.py          Rich embed webhooks
-    pushover.py         Phone push notifications
-  trading/
-    alpaca_trader.py    Order execution (paper + live)
-  db.py                 SQLite (7 tables via aiosqlite)
-  main.py               FastAPI app + WebSocket broadcast + all background tasks
-  config.py             Pydantic settings from .env
-
-frontend/               Next.js 14 + Tailwind CSS (dark terminal theme)
-  components/
-    SignalFeed          Live scored signal stream (with Earnings filter)
-    Analytics           Pattern hits + ticker deep-dives
-    History             Persisted signal DB browser
-    TradeQueue          Pending Alpaca trades with countdown timers
-    TradePanel          Positions + manual order entry
-    Watchlist           IV + earnings scanner watchlist
-    KalshiPanel         Live Kalshi opportunities with execute buttons
-```
-
----
-
-## Quick Start
-
-### Prerequisites
-- Python 3.13 (the backend venv is built with [uv](https://docs.astral.sh/uv/))
-- Node.js 20 LTS
-- [Unusual Whales API key](https://unusualwhales.com) (paid)
-- [Alpaca account](https://alpaca.markets) (free paper trading)
-- [Kalshi account + API key pair](https://kalshi.com/profile/api-keys) (optional)
-- Telegram bot token from [@BotFather](https://t.me/BotFather) (optional but recommended)
-
-### 1. Clone & configure
+macOS (Apple Silicon), Python 3.13 via [uv](https://docs.astral.sh/uv/), Node 20 LTS.
 
 ```bash
-git clone https://github.com/franciscoa19/stonkmonitor
-cd stonkmonitor
+git clone https://github.com/franciscoa19/stonkmonitor && cd stonkmonitor
+cp backend/.env.example backend/.env          # add Alpaca paper keys; keep ALPACA_PAPER=true
 
-cp backend/.env.example backend/.env
-# Edit backend/.env with your keys
-```
-
-### 2. Backend
-
-```bash
 cd backend
 uv venv --python 3.13 venv
 uv pip install --python venv/bin/python -r requirements.txt -r requirements-dev.txt
-venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+venv/bin/python -m pytest -q                  # the full suite runs offline
+
+cd ../frontend
+npm ci --ignore-scripts && npm run build
 ```
 
-### 3. Frontend
+Both services run as launchd agents that start at login, restart on a crash and listen on
+127.0.0.1 only; install steps are in [`deploy/README.md`](deploy/README.md).
 
 ```bash
-cd frontend
-npm ci
-npm run dev
+launchctl kickstart -k gui/$(id -u)/com.stonkmonitor.backend    # restart (or .frontend)
+tail -f backend/logs/backend.log
+curl http://localhost:8000/health
 ```
 
-Open [http://localhost:3000](http://localhost:3000)
-
-### 4. Telegram setup
-1. Message [@BotFather](https://t.me/BotFather) → `/newbot` → get token
-2. Add token to `.env` as `TELEGRAM_BOT_TOKEN`
-3. Open your bot in Telegram → send `/start`
-4. Bot resolves your chat ID automatically on startup
-
-### 5. Kalshi API key (optional)
-1. Go to [kalshi.com/profile/api-keys](https://kalshi.com/profile/api-keys)
-2. Generate a key pair → save private key as `backend/kalshi_private.pem`
-3. Add to `.env`:
-```env
-KALSHI_KEY_ID=your-key-uuid
-KALSHI_PRIVATE_KEY=/path/to/kalshi_private.pem
-KALSHI_DEMO=false
-```
+**The Mac must stay awake during market hours.** The backend holds a sleep assertion
+(`caffeinate -i`), but a closed lid or a drained battery still puts the Mac to sleep, and a sleeping
+Mac runs nothing: no entries, no profit targets, no post-earnings or expiry-day closes. Keep it on
+power with the lid open.
 
 ---
 
-## Configuration
+## Main settings (`backend/.env`)
 
-All thresholds in `backend/.env` — no code changes needed:
+| Setting | Default | |
+|---------|---------|---|
+| `ALPACA_PAPER` | `true` | paper account |
+| `IV_EXEC_ENABLED` | `false` | trade condors (the live setup turns this on) |
+| `IV_EXEC_ALLOW_CONSIDER` | `false` | also trade borderline setups |
+| `IV_EXEC_RISK_PCT` | `0.10` | max loss per condor as a share of equity |
+| `IV_EXEC_MAX_POSITIONS` / `IV_EXEC_MAX_PER_DAY` | `3` / `4` | open condors / new per day |
+| `IV_EXEC_ENTRY_DAYS_BEFORE` | `2` | enter this many days before earnings at most |
+| `IV_EXEC_OPEN_DELAY_MINUTES` | `15` | wait after the opening bell |
+| `IV_EXEC_ENTRY_TIMEOUT_MINUTES` | `60` | cancel an unfilled entry (0 = wait for the close) |
+| `IV_EXEC_TP_PCT` | `0.5` | profit target as a share of the credit |
+| `IV_EXEC_FORCE_CLOSE_HOUR` | `15` | expiry-day forced close (ET) |
+| `ACCOUNT_MAX_RISK_PCT` / `ACCOUNT_CASH_RESERVE_PCT` | `0.30` / `0.20` | account-wide limits |
+| `IV_RISK_THROTTLE_ENABLED` | `true` | loss throttle and halt after 3 losses |
+| `IV_VARIANTS_LOG_ENABLED`, `IV_MEASURE_UNIVERSE_ENABLED` | | research logging |
+| `REPORT_HOUR_ET` / `REPORT_GIT_PUSH` | `8` / `false` | daily report; publish evaluation data to GitHub |
 
-### Signal / Alpaca
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MIN_PREMIUM_ALERT` | 50000 | Min options premium ($) to process |
-| `SWEEP_SCORE_THRESHOLD` | 7.0 | Min score for Discord/Pushover alert |
-| `AUTO_TRADE_SCORE_THRESHOLD` | 8.5 | Min score to queue Alpaca trade |
-| `AUTO_TRADE_MAX_RISK_PCT` | 0.02 | Max % of equity per trade |
-| `AUTO_TRADE_MAX_RISK_USD` | 2500 | Hard cap $ per trade |
-| `AUTO_TRADE_MIN_DTE` | 2 | Min days to expiry |
-| `AUTO_TRADE_MAX_DTE` | 21 | Max days to expiry (no LEAPS) |
-
-### Kalshi
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `KALSHI_DEMO` | false | Use demo sandbox |
-| `KALSHI_SCAN_INTERVAL` | 300 | Seconds between market scans |
-| `KALSHI_AUTO_EXECUTE` | false | Auto-execute Kalshi buys without Telegram confirmation |
-| `KALSHI_MIN_EDGE` | 0.05 | Minimum probability edge (5%) |
-| `KALSHI_MAX_BET_USD` | 500 | Hard cap $ per market |
-
-### Cross-Platform Arb (optional)
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DOME_API_KEY` | *empty* | Dome API key — leave blank to disable cross-platform arb scanner |
-| `DOME_BASE_URL` | `https://api.domeapi.io` | Dome API base URL |
-| `POLYMARKET_CLOB_URL` | `https://clob.polymarket.com` | Polymarket CLOB base URL (public, no auth) |
-| `CROSS_ARB_MIN_EDGE` | 0.05 | Minimum spread (dollars) to surface a Kalshi↔Polymarket arb |
+Every setting is in `backend/config.py`. History of the strategy, its bugs and fixes:
+[`CLAUDE.md`](CLAUDE.md). Operations: [`deploy/README.md`](deploy/README.md). Research:
+[`backend/backtest/README.md`](backend/backtest/README.md).
 
 ---
 
-## Dashboard Tabs
+## Before real money
 
-| Tab | What's there |
-|-----|-------------|
-| **📡 Watch** | Live signal feed — filter by type (Sweeps / Dark Pool / Insider / Congress / IV / Earnings) + min score slider |
-| **🗄️ History** | Persisted signals from DB, top tickers leaderboard |
-| **🎯 Patterns** | Pattern hits with evidence, ticker deep-dives |
-| **💹 Trade** | Alpaca trade queue with countdown timers + trade history |
-| **🎰 Kalshi** | Prediction market opportunities — filter by type, one-click execute |
-
----
-
-## Telegram Alert Types
-
-| Alert | Buttons | Action |
-|-------|---------|--------|
-| Alpaca trade | ✅ EXECUTE / ❌ SKIP | Places Alpaca limit order |
-| Kalshi buy | ✅ EXECUTE / ❌ SKIP | Places Kalshi limit order |
-| Kalshi position spike | ✅ SELL ALL / ✂️ SELL HALF / 🚫 HOLD | Sells contracts at current bid |
-
----
-
-## Running as a Service (macOS launchd)
-
-Both the backend and the dashboard run as launchd agents: they start at login, restart on crash,
-and listen on 127.0.0.1 only. Install steps and details are in [`deploy/README.md`](deploy/README.md).
-
-**Manage:**
-- **Restart**: `launchctl kickstart -k gui/$(id -u)/com.stonkmonitor.backend` (or `.frontend`)
-- **Stop / disable**: `launchctl bootout gui/$(id -u)/com.stonkmonitor.backend`
-- **View logs**: `tail -f backend/logs/backend.log` / `frontend/logs/frontend.log`
-- **Health check**: `curl http://localhost:8000/health`
-- **After frontend edits**: `cd frontend && npm run build`, then kickstart the frontend agent
-
-The old Windows watchdogs (`start_service.bat`, `start_frontend.bat`) are still in the repo but unused.
-
-------|----------|------|
-| `start_service.bat` | `backend/` | Restart loop — if uvicorn exits, waits 10s and relaunches. Logs to `backend/logs/service.log` |
-| `StonkMonitor.vbs` | Windows `Startup` folder | Launches the bat file hidden (no CMD window) on every Windows login |
-
-**Manage:**
-- **Stop**: `taskkill /F /IM python.exe` or find the process in Task Manager → Details
-- **Disable auto-start**: delete `StonkMonitor.vbs` from `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\`
-- **View logs**: `type backend\logs\service.log`
-- **Health check**: `curl http://localhost:8000/api/uw/budget`
-
----
+- `REPORT_GIT_PUSH=true` publishes account equity and trades to this **public** repository.
+  Turn it off, or point it at a private one.
+- A few weeks of paper results are an anecdote, and paper fills are kinder than a live market:
+  a live account pays more of the spread on every entry and exit.
+- The bot needs a machine that does not sleep or travel.
 
 ## Disclaimer
 
-This is a personal research tool, not financial advice. Auto-trading real money carries significant risk. Always start with **paper trading** (`ALPACA_PAPER=true`) and Kalshi demo mode (`KALSHI_DEMO=true`) before going live. Past signal performance does not guarantee future results.
+A personal research project, not financial advice. Options can lose more than expected even when
+defined-risk. Use paper trading.
