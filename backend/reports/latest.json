@@ -1,17 +1,17 @@
 {
-  "generated": "2026-10-29T02:11:36.967993+00:00",
+  "generated": "2026-10-29T12:15:45.780181+00:00",
   "account": {
-    "equity": 53727.69,
+    "equity": 47997.69,
     "cash": 54817.69,
     "buying_power": 171270.76,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": 3727.6900000000023,
-    "total_pnl_pct": 7.455380000000004,
+    "total_pnl": -2002.3099999999977,
+    "total_pnl_pct": -4.004619999999996,
     "open_positions": 8,
-    "days_running": 50,
+    "days_running": 51,
     "error": null
   },
   "metrics": {
@@ -30,23 +30,23 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 53727.69,
+    "equity": 47997.69,
     "max_risk_pct": 0.3,
-    "risk_cap": 16118.307,
+    "risk_cap": 14399.307,
     "open_risk": 8882.0,
-    "open_risk_pct": 0.1653,
+    "open_risk_pct": 0.1851,
     "condor_risk": 8882.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 7236.307,
+    "risk_headroom": 5517.307,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 10745.538,
+    "cash_reserve": 9599.538,
     "free_cash": 42817.69,
-    "free_cash_pct": 0.7969,
+    "free_cash_pct": 0.8921,
     "unlisted_reserved": 0.0,
-    "cash_available": 32072.152
+    "cash_available": 33218.152
   },
   "account_risk_error": null,
   "activity": {
@@ -253,6 +253,10 @@
     {
       "date": "2026-10-28",
       "equity": 53727.69
+    },
+    {
+      "date": "2026-10-29",
+      "equity": 47347.69
     }
   ],
   "iv_rv": {
@@ -260,7 +264,7 @@
     "wins": 7,
     "win_rate": 35.0,
     "avg_edge_pct": -1.56,
-    "open": 17
+    "open": 22
   },
   "iv_condors": {
     "closed": 7,
@@ -280,8 +284,8 @@
         "strikes": "485.0/500.0 \u2014 555.0/570.0",
         "credit_collected": 1624.0,
         "max_risk": 4376.0,
-        "unrealized_pnl": 408.0,
-        "pct_of_max_risk": 9.3,
+        "unrealized_pnl": 276.0,
+        "pct_of_max_risk": 6.3,
         "legs_matched": 4,
         "legs_expected": 4,
         "partial": false
@@ -296,8 +300,8 @@
         "strikes": "290.0/300.0 \u2014 340.0/350.0",
         "credit_collected": 1494.0,
         "max_risk": 4506.0,
-        "unrealized_pnl": 1620.0,
-        "pct_of_max_risk": 36.0,
+        "unrealized_pnl": -3978.0,
+        "pct_of_max_risk": -88.3,
         "legs_matched": 4,
         "legs_expected": 4,
         "partial": false
@@ -745,16 +749,16 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 148,
-    "structures_attempted": 740,
-    "structures_priced": 563,
-    "priced_pct": 76.1,
+    "events": 179,
+    "structures_attempted": 895,
+    "structures_priced": 639,
+    "priced_pct": 71.4,
     "dropped_variants": {
-      "condor_0.7sd": 36,
-      "condor_1.0sd": 46,
-      "condor_1.3sd": 66,
-      "fly": 18,
-      "straddle": 11
+      "condor_0.7sd": 54,
+      "condor_1.0sd": 63,
+      "condor_1.3sd": 87,
+      "fly": 32,
+      "straddle": 20
     }
   },
   "implied_vs_realized": {
@@ -1544,7 +1548,7 @@
       "wins": 4,
       "win_rate": 40.0,
       "avg_edge_pct": -0.67,
-      "open": 17
+      "open": 22
     },
     "iv_condors": {
       "closed": 5,
@@ -1658,8 +1662,8 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-10-29T02:13:26.280521",
-    "age_minutes": 0.3,
+    "last_seen": "2026-10-29T11:56:39.722601",
+    "age_minutes": 19.1,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -1671,58 +1675,58 @@
     {
       "symbol": "GOOGL261030C00340000",
       "qty": -6.0,
-      "pnl": 606.0,
-      "pnl_pct": 40.24,
-      "market_val": -900.0
+      "pnl": 1416.0,
+      "pnl_pct": 94.02,
+      "market_val": -90.0
     },
     {
       "symbol": "GOOGL261030C00350000",
       "qty": 6.0,
-      "pnl": 930.0,
-      "pnl_pct": 123.02,
-      "market_val": 1686.0
+      "pnl": -738.0,
+      "pnl_pct": -97.62,
+      "market_val": 18.0
     },
     {
       "symbol": "GOOGL261030P00290000",
       "qty": 6.0,
-      "pnl": -408.0,
-      "pnl_pct": -60.18,
-      "market_val": 270.0
+      "pnl": 2022.0,
+      "pnl_pct": 298.23,
+      "market_val": 2700.0
     },
     {
       "symbol": "GOOGL261030P00300000",
       "qty": -6.0,
-      "pnl": 492.0,
-      "pnl_pct": 34.6,
-      "market_val": -930.0
+      "pnl": -6678.0,
+      "pnl_pct": -469.62,
+      "market_val": -8100.0
     },
     {
       "symbol": "MSFT261030C00555000",
       "qty": -4.0,
-      "pnl": -620.0,
-      "pnl_pct": -41.33,
-      "market_val": -2120.0
+      "pnl": 220.0,
+      "pnl_pct": 14.67,
+      "market_val": -1280.0
     },
     {
       "symbol": "MSFT261030C00570000",
       "qty": 4.0,
-      "pnl": 440.0,
-      "pnl_pct": 64.71,
-      "market_val": 1120.0
+      "pnl": -560.0,
+      "pnl_pct": -82.35,
+      "market_val": 120.0
     },
     {
       "symbol": "MSFT261030P00485000",
       "qty": 4.0,
-      "pnl": -632.0,
-      "pnl_pct": -85.87,
-      "market_val": 104.0
+      "pnl": -724.0,
+      "pnl_pct": -98.37,
+      "market_val": 12.0
     },
     {
       "symbol": "MSFT261030P00500000",
       "qty": -4.0,
-      "pnl": 1220.0,
-      "pnl_pct": 79.22,
-      "market_val": -320.0
+      "pnl": 1340.0,
+      "pnl_pct": 87.01,
+      "market_val": -200.0
     }
   ],
   "proposals": [
