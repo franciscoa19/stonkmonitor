@@ -3,7 +3,10 @@ Alpaca market data feed — real-time quotes, bars, options chains.
 Uses alpaca-py SDK.
 """
 import logging
+from time import sleep
 from typing import Optional
+
+import requests
 from alpaca.data import StockHistoricalDataClient, OptionHistoricalDataClient
 from alpaca.data.requests import (
     StockLatestQuoteRequest,
@@ -78,6 +81,23 @@ def spot_from(trade: Optional[dict], quote: Optional[dict], *, now: Optional[dat
     return mid
 
 
+def _retry_dropped_connection(fn, delay: float = 0.5):
+    """fn(), called once more if the connection drops.
+
+    The SDK retries only HTTP 429/504. A pooled connection the server dropped
+    while the Mac slept answers its next request with a reset: on 2026-10-30
+    the first stock-price read after a brief wake failed nine times, and twice
+    AMZN's expiry-day hold-or-close check had to wait for the next wake. The
+    retry goes out on a fresh connection. An error Alpaca actually returned is
+    not retried. Reads only.
+    """
+    try:
+        return fn()
+    except requests.exceptions.ConnectionError:
+        sleep(delay)
+        return fn()
+
+
 class AlpacaFeed:
     def __init__(self, api_key: str, secret_key: str):
         self.api_key = api_key
@@ -89,7 +109,7 @@ class AlpacaFeed:
         """Get latest bid/ask/last for a stock."""
         try:
             req = StockLatestQuoteRequest(symbol_or_symbols=ticker.upper())
-            result = self.stock_client.get_stock_latest_quote(req)
+            result = _retry_dropped_connection(lambda: self.stock_client.get_stock_latest_quote(req))
             quote = result.get(ticker.upper())
             if not quote:
                 return {}
@@ -109,7 +129,8 @@ class AlpacaFeed:
         """The most recent trade print: {price, timestamp}, or {} if unavailable."""
         try:
             req = StockLatestTradeRequest(symbol_or_symbols=ticker.upper())
-            trade = self.stock_client.get_stock_latest_trade(req).get(ticker.upper())
+            result = _retry_dropped_connection(lambda: self.stock_client.get_stock_latest_trade(req))
+            trade = result.get(ticker.upper())
             if not trade:
                 return {}
             return {"ticker": ticker.upper(), "price": float(trade.price),
@@ -143,7 +164,7 @@ class AlpacaFeed:
                 start=start,
                 end=end,
             )
-            bars = self.stock_client.get_stock_bars(req)
+            bars = _retry_dropped_connection(lambda: self.stock_client.get_stock_bars(req))
             bar_list = bars.data.get(ticker.upper(), [])
             return [
                 {
@@ -193,7 +214,7 @@ class AlpacaFeed:
             # get_stock_bars returns a BarSet — dict-like through .data, with
             # no .get() of its own. Reaching for .get() on the BarSet silently
             # raised and left every expiry-based evaluation unresolved.
-            resp = self.stock_client.get_stock_bars(req)
+            resp = _retry_dropped_connection(lambda: self.stock_client.get_stock_bars(req))
             data = getattr(resp, "data", resp) or {}
             bars = data.get(ticker.upper(), []) if hasattr(data, "get") else []
             for bar in reversed(bars):
@@ -212,7 +233,7 @@ class AlpacaFeed:
                 underlying_symbol=ticker.upper(),
                 expiration_date_lte=exp_date,
             )
-            chain = self.option_client.get_option_chain(req)
+            chain = _retry_dropped_connection(lambda: self.option_client.get_option_chain(req))
             results = []
             for symbol, snapshot in chain.items():
                 try:
