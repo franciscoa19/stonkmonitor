@@ -1,23 +1,23 @@
 {
-  "generated": "2026-10-29T12:15:45.780181+00:00",
+  "generated": "2026-10-30T12:04:20.696481+00:00",
   "account": {
-    "equity": 47997.69,
-    "cash": 54817.69,
-    "buying_power": 171270.76,
+    "equity": 48349.41,
+    "cash": 49909.41,
+    "buying_power": 187637.64,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": -2002.3099999999977,
-    "total_pnl_pct": -4.004619999999996,
-    "open_positions": 8,
-    "days_running": 51,
+    "total_pnl": -1650.5899999999965,
+    "total_pnl_pct": -3.3011799999999933,
+    "open_positions": 5,
+    "days_running": 52,
     "error": null
   },
   "metrics": {
     "closed_trades": 0,
-    "closed_condors": 7,
-    "closed_all": 7,
+    "closed_condors": 9,
+    "closed_all": 9,
     "wins": 0,
     "losses": 0,
     "win_rate": 0.0,
@@ -30,28 +30,28 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 47997.69,
-    "max_risk_pct": 0.3,
-    "risk_cap": 14399.307,
-    "open_risk": 8882.0,
-    "open_risk_pct": 0.1851,
-    "condor_risk": 8882.0,
+    "equity": 48349.41,
+    "max_risk_pct": 0.06,
+    "risk_cap": 2900.9646,
+    "open_risk": 2048.0,
+    "open_risk_pct": 0.0424,
+    "condor_risk": 2048.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 5517.307,
+    "risk_headroom": 852.9646,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 9599.538,
-    "free_cash": 42817.69,
-    "free_cash_pct": 0.8921,
+    "cash_reserve": 9669.882,
+    "free_cash": 46909.41,
+    "free_cash_pct": 0.9702,
     "unlisted_reserved": 0.0,
-    "cash_available": 33218.152
+    "cash_available": 37239.528
   },
   "account_risk_error": null,
   "activity": {
     "tag": "MEASURED",
-    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 7 closed, 2 open."
+    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 9 closed, 1 open."
   },
   "equity_curve": [
     {
@@ -256,52 +256,40 @@
     },
     {
       "date": "2026-10-29",
-      "equity": 47347.69
+      "equity": 49334.44
+    },
+    {
+      "date": "2026-10-30",
+      "equity": 47501.41
     }
   ],
   "iv_rv": {
-    "resolved": 20,
-    "wins": 7,
-    "win_rate": 35.0,
-    "avg_edge_pct": -1.56,
-    "open": 22
+    "resolved": 24,
+    "wins": 10,
+    "win_rate": 41.7,
+    "avg_edge_pct": -1.07,
+    "open": 19
   },
   "iv_condors": {
-    "closed": 7,
-    "wins": 5,
-    "win_rate": 71.4,
-    "total_pnl": -436.0,
-    "open": 2,
+    "closed": 9,
+    "wins": 6,
+    "win_rate": 66.7,
+    "total_pnl": -3176.0,
+    "open": 1,
     "pending": 0,
     "open_detail": [
       {
-        "ticker": "MSFT",
+        "ticker": "AMZN",
         "status": "open",
         "settlement_note": null,
         "qty": 4,
         "expiry": "2026-10-30",
-        "earnings_date": "2026-10-28",
-        "strikes": "485.0/500.0 \u2014 555.0/570.0",
-        "credit_collected": 1624.0,
-        "max_risk": 4376.0,
-        "unrealized_pnl": 276.0,
-        "pct_of_max_risk": 6.3,
-        "legs_matched": 4,
-        "legs_expected": 4,
-        "partial": false
-      },
-      {
-        "ticker": "GOOGL",
-        "status": "open",
-        "settlement_note": null,
-        "qty": 6,
-        "expiry": "2026-10-30",
-        "earnings_date": "2026-10-28",
-        "strikes": "290.0/300.0 \u2014 340.0/350.0",
-        "credit_collected": 1494.0,
-        "max_risk": 4506.0,
-        "unrealized_pnl": -3978.0,
-        "pct_of_max_risk": -88.3,
+        "earnings_date": "2026-10-29",
+        "strikes": "217.5/225.0 \u2014 267.5/275.0",
+        "credit_collected": 952.0,
+        "max_risk": 2048.0,
+        "unrealized_pnl": -608.0,
+        "pct_of_max_risk": -29.7,
         "legs_matched": 4,
         "legs_expected": 4,
         "partial": false
@@ -749,16 +737,16 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 179,
-    "structures_attempted": 895,
-    "structures_priced": 639,
-    "priced_pct": 71.4,
+    "events": 199,
+    "structures_attempted": 995,
+    "structures_priced": 684,
+    "priced_pct": 68.7,
     "dropped_variants": {
-      "condor_0.7sd": 54,
-      "condor_1.0sd": 63,
-      "condor_1.3sd": 87,
-      "fly": 32,
-      "straddle": 20
+      "condor_0.7sd": 66,
+      "condor_1.0sd": 75,
+      "condor_1.3sd": 100,
+      "fly": 40,
+      "straddle": 30
     }
   },
   "implied_vs_realized": {
@@ -1525,14 +1513,14 @@
     }
   },
   "risk_state": {
-    "multiplier": 1.0,
-    "loss_streak": 0,
+    "multiplier": 0.5,
+    "loss_streak": 1,
     "halt_streak": 3,
     "halted": false,
     "halted_at": null,
     "halted_reason": null,
     "rearmed_at": null,
-    "closes_counted": 7
+    "closes_counted": 9
   },
   "market_events": [
     {
@@ -1544,18 +1532,18 @@
   ],
   "excluding_market_events": {
     "iv_rv": {
-      "resolved": 10,
-      "wins": 4,
-      "win_rate": 40.0,
-      "avg_edge_pct": -0.67,
-      "open": 22
+      "resolved": 14,
+      "wins": 7,
+      "win_rate": 50.0,
+      "avg_edge_pct": -0.08,
+      "open": 19
     },
     "iv_condors": {
-      "closed": 5,
-      "wins": 5,
-      "win_rate": 100.0,
-      "total_pnl": 2264.0,
-      "open": 2,
+      "closed": 7,
+      "wins": 6,
+      "win_rate": 85.7,
+      "total_pnl": -476.0,
+      "open": 1,
       "pending": 0
     },
     "iv_gate_comparison": {
@@ -1662,8 +1650,8 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-10-29T11:56:39.722601",
-    "age_minutes": 19.1,
+    "last_seen": "2026-10-30T11:49:36.583919",
+    "age_minutes": 14.8,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -1673,60 +1661,39 @@
   "recent": [],
   "open_positions": [
     {
-      "symbol": "GOOGL261030C00340000",
-      "qty": -6.0,
-      "pnl": 1416.0,
-      "pnl_pct": 94.02,
-      "market_val": -90.0
+      "symbol": "AMZN261030C00267500",
+      "qty": -4.0,
+      "pnl": 584.0,
+      "pnl_pct": 55.73,
+      "market_val": -464.0
+    },
+    {
+      "symbol": "AMZN261030C00275000",
+      "qty": 4.0,
+      "pnl": -568.0,
+      "pnl_pct": -100.0,
+      "market_val": 0.0
+    },
+    {
+      "symbol": "AMZN261030P00217500",
+      "qty": 4.0,
+      "pnl": -228.0,
+      "pnl_pct": -44.53,
+      "market_val": 284.0
+    },
+    {
+      "symbol": "AMZN261030P00225000",
+      "qty": -4.0,
+      "pnl": -396.0,
+      "pnl_pct": -40.24,
+      "market_val": -1380.0
     },
     {
       "symbol": "GOOGL261030C00350000",
       "qty": 6.0,
-      "pnl": -738.0,
-      "pnl_pct": -97.62,
-      "market_val": 18.0
-    },
-    {
-      "symbol": "GOOGL261030P00290000",
-      "qty": 6.0,
-      "pnl": 2022.0,
-      "pnl_pct": 298.23,
-      "market_val": 2700.0
-    },
-    {
-      "symbol": "GOOGL261030P00300000",
-      "qty": -6.0,
-      "pnl": -6678.0,
-      "pnl_pct": -469.62,
-      "market_val": -8100.0
-    },
-    {
-      "symbol": "MSFT261030C00555000",
-      "qty": -4.0,
-      "pnl": 220.0,
-      "pnl_pct": 14.67,
-      "market_val": -1280.0
-    },
-    {
-      "symbol": "MSFT261030C00570000",
-      "qty": 4.0,
-      "pnl": -560.0,
-      "pnl_pct": -82.35,
-      "market_val": 120.0
-    },
-    {
-      "symbol": "MSFT261030P00485000",
-      "qty": 4.0,
-      "pnl": -724.0,
-      "pnl_pct": -98.37,
-      "market_val": 12.0
-    },
-    {
-      "symbol": "MSFT261030P00500000",
-      "qty": -4.0,
-      "pnl": 1340.0,
-      "pnl_pct": 87.01,
-      "market_val": -200.0
+      "pnl": -756.0,
+      "pnl_pct": -100.0,
+      "market_val": 0.0
     }
   ],
   "proposals": [
