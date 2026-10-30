@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     # the close; the fills came after 10-149 minutes. A partial fill is kept,
     # and the ticker is not tried again that day. 0 = wait for the close.
     iv_exec_entry_timeout_minutes: int = Field(60, ge=0, le=390)
+    # Open nothing unless the bot has run this long without the Mac sleeping.
+    # A shut lid still wakes the Mac for a minute every ~15 and the bot runs in
+    # those wakes; a condor opened there goes unmanaged until the next one
+    # (MSFT/GOOGL, 2026-10-26). Also applies after a restart. 0 = off.
+    iv_exec_require_awake_minutes: int = Field(60, ge=0, le=390)
     iv_exec_max_per_day: int = Field(4)               # new condors per day (entries that never filled excluded)
     iv_exec_tp_pct: float = Field(0.5)                     # close at 50% of max credit captured
     # Expiry day: after this ET hour, close on whatever the book offers rather

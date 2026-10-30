@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from awake_clock import clock as awake_clock
 from config import get_settings
 from db import AccountMismatch, Database, DatabaseError, resolve_db_path
 from feeds.unusual_whales import UnusualWhalesClient
@@ -1005,6 +1006,19 @@ async def wait_for_broker_account() -> None:
         await asyncio.sleep(10)
 
 
+_asleep_logged_at = 0.0
+
+
+def _log_asleep_block(awake: float, need: int) -> None:
+    """Say why entries are paused, at most every 15 minutes (the scan asks per setup)."""
+    global _asleep_logged_at
+    import time as _time
+    if _time.time() - _asleep_logged_at >= 900:
+        _asleep_logged_at = _time.time()
+        logger.info(f"IV-exec: no new entries — running unbroken for {awake:.0f} min, "
+                    f"{need} required (the Mac was asleep, or the bot just started)")
+
+
 async def maybe_execute_condor(setup):
     """Phase 2: sell a defined-risk iron condor into an imminent earnings print.
 
@@ -1033,6 +1047,15 @@ async def maybe_execute_condor(setup):
         logger.debug("IV-exec %s: entry deferred until the opening quotes settle",
                      getattr(setup, "ticker", "?"))
         return
+    # A shut lid still wakes the Mac for a minute every ~15 and the bot runs in
+    # those wakes. Risk opened there goes unmanaged until the next one, so new
+    # entries need an unbroken run. Exits never wait for this.
+    need = s.iv_exec_require_awake_minutes
+    if need:
+        awake = awake_clock.awake_minutes()
+        if awake < need:
+            _log_asleep_block(awake, need)
+            return
     # A same-day BMO print has already happened. Fail closed when report timing
     # is unknown, and permit same-day entries only before a confirmed post-close
     # report. This must remain independent of the broader alert/eval gate.
@@ -2559,6 +2582,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Pushover: {'enabled' if pushover.enabled else 'disabled'}")
     logger.info("=" * 60)
 
+    # Count unbroken running time from now; new condors wait for enough of it.
+    awake_clock.start()
+
     # Start background tasks
     # UW stream + budget monitor are gated on uw_enabled: the earnings IV/RV
     # edge runs on yfinance + Alpaca only, so UW can be cleanly disabled (e.g.
@@ -2711,6 +2737,7 @@ async def health():
     return {
         "status": "ok",
         "paper_mode": settings.alpaca_paper,
+        "awake_minutes": round(awake_clock.awake_minutes(), 1),
         "signals_stored": len(signal_store),
         "ws_clients": len(manager.active),
     }

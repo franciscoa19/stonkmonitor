@@ -34,6 +34,9 @@ Earnings dates come from yfinance and the Nasdaq earnings calendar.
 
 - **When:** earnings within 2 days, in regular hours, not in the first 15 minutes after the open
   (opening quotes are not prices). Same-day entry only before a confirmed after-close report.
+  Nothing is opened until the bot has run for an hour without the Mac sleeping (also after a
+  restart): a shut lid still wakes the Mac briefly every ~15 minutes, and a condor opened in one of
+  those wakes would go unmanaged until the next.
 - **Structure:** short put and short call at the options' implied move (1.0×), protective wings
   3% beyond, in the first expiry after the print that is 1–10 days out. One multi-leg order.
 - **Price:** a limit at 90% of the mid credit; skipped if the credit is under $0.10.
@@ -161,6 +164,7 @@ power with the lid open.
 | `IV_EXEC_ENTRY_DAYS_BEFORE` | `2` | enter this many days before earnings at most |
 | `IV_EXEC_OPEN_DELAY_MINUTES` | `15` | wait after the opening bell |
 | `IV_EXEC_ENTRY_TIMEOUT_MINUTES` | `60` | cancel an unfilled entry (0 = wait for the close) |
+| `IV_EXEC_REQUIRE_AWAKE_MINUTES` | `60` | unbroken running time needed before a new entry (0 = off) |
 | `IV_EXEC_TP_PCT` | `0.5` | profit target as a share of the credit |
 | `IV_EXEC_FORCE_CLOSE_HOUR` | `15` | expiry-day forced close (ET) |
 | `ACCOUNT_MAX_RISK_PCT` / `ACCOUNT_CASH_RESERVE_PCT` | `0.30` / `0.20` | account-wide limits |
