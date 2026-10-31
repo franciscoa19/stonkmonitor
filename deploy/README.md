@@ -104,6 +104,25 @@ keeps its own history. Note that `backend/reports/` and `REPORT_GIT_PUSH` are
 not per-account: with a live account they would publish its balances and trades
 to this repository.
 
+## Entry readiness after sleep
+
+New condors require `IV_EXEC_REQUIRE_AWAKE_MINUTES` of uninterrupted running
+(default 60; 0 explicitly disables the guard). macOS and Linux use paired host
+clocks that include/exclude suspension. Their difference resets the wait even
+for short sleeps; one second of cumulative divergence is tolerated for sampling
+jitter. A missing clock or a heartbeat stalled for over five minutes also
+blocks readiness. Other platforms block guarded entries until supported.
+
+Readiness is checked again inside the submission worker. A plan from an earlier
+awake period is discarded, even if another full hour has since elapsed. An
+already-saved reservation that was never sent is voided and can retry after
+the next warmup. A real/ambiguous POST stays tracked. Existing-position exits
+never wait for this guard. `/health` reports `awake_minutes`.
+
+This does not keep the host awake or guarantee future availability. Use an
+always-on host and an external trading-loop heartbeat. Preserve the intended
+local risk settings when moving hosts; code defaults can differ from `.env`.
+
 ## Account-wide limits
 
 Two settings in `backend/.env` bound the whole account, whatever the per-trade

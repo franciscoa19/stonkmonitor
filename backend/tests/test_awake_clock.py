@@ -16,54 +16,188 @@ from test_account_limits import settings
 T0 = 1_800_000_000.0
 
 
-def beats(clock, minutes, every=60, start=T0):
-    """Beat every `every` seconds for `minutes`; returns the last time."""
-    t = start
-    for _ in range(int(minutes * 60 / every) + 1):
-        clock.beat(t)
-        t += every
-    return t - every
+class HostTimes:
+    """Independent clocks: suspension advances only the inclusive clock."""
+    def __init__(self):
+        self.continuous = T0
+        self.uptime = T0
+
+    def __call__(self):
+        return self.continuous, self.uptime
+
+    def advance(self, seconds, *, asleep=False):
+        self.continuous += seconds
+        if not asleep:
+            self.uptime += seconds
+
+
+def beats(clock, times, minutes, every=60):
+    clock.beat()
+    for _ in range(int(minutes * 60 / every)):
+        times.advance(every)
+        clock.beat()
 
 
 # ── The clock ───────────────────────────────────────────────────────────────
 def test_an_unbroken_hour_counts_as_an_hour():
-    c = AwakeClock()
-    last = beats(c, 61)
-    assert c.awake_minutes(last) == pytest.approx(61, abs=0.1)
+    times = HostTimes()
+    c = AwakeClock(times)
+    beats(c, times, 61)
+    assert c.awake_minutes() == pytest.approx(61, abs=0.1)
+    assert c.entry_token(60) is not None
 
 
-def test_a_sleep_starts_the_count_again():
-    c = AwakeClock()
-    last = beats(c, 50)
-    woke = last + 16 * 60                                       # asleep 16 minutes
-    c.beat(woke)
-    assert c.awake_minutes(woke) == 0
-    assert c.awake_minutes(woke + 30) == pytest.approx(0.5)
+@pytest.mark.parametrize("sleep_seconds", [2, 30, 180, 16 * 60])
+def test_a_sleep_starts_the_count_again(sleep_seconds):
+    times = HostTimes()
+    c = AwakeClock(times)
+    beats(c, times, 61)
+    times.advance(sleep_seconds, asleep=True)
+    c.beat()
+    assert c.awake_minutes() == 0
+    assert c.entry_token(60) is None
+    times.advance(30)
+    assert c.awake_minutes() == pytest.approx(0.5)
 
 
-def test_brief_wakes_every_fifteen_minutes_never_add_up():
-    """The pattern in the power log: about a minute awake every quarter hour."""
-    c = AwakeClock()
-    t = T0
-    for _ in range(40):                                         # ten hours of it
-        c.beat(t)
-        c.beat(t + 60)
-        t += 15 * 60
-    assert c.awake_minutes(T0 + 39 * 15 * 60 + 60) <= 1
+def test_a_read_detects_sleep_before_the_heartbeat_thread_runs():
+    times = HostTimes()
+    c = AwakeClock(times)
+    beats(c, times, 61)
+    times.advance(3, asleep=True)
+    assert c.entry_token(60) is None
+    assert c.awake_minutes() == 0
+    c.beat()
+    beats(c, times, 61)
+    assert c.entry_token(60) is not None
+
+
+@pytest.mark.parametrize("sleep_seconds", [3, 180, 14 * 60])
+def test_brief_wakes_never_add_up(sleep_seconds):
+    times = HostTimes()
+    c = AwakeClock(times)
+    for _ in range(70):
+        c.beat()
+        times.advance(60)
+        c.beat()
+        assert c.awake_minutes() <= 1
+        assert c.entry_token(60) is None
+        times.advance(sleep_seconds, asleep=True)
+
+
+def test_sub_tolerance_sleeps_are_detected_cumulatively():
+    times = HostTimes()
+    c = AwakeClock(times)
+    beats(c, times, 61)
+    for _ in range(3):
+        times.advance(0.4, asleep=True)
+        c.beat()
+    assert c.awake_minutes() == 0
+
+
+def test_scheduling_delay_without_suspend_is_not_sleep():
+    times = HostTimes()
+    c = AwakeClock(times)
+    beats(c, times, 61)
+    token = c.entry_token(60)
+    times.advance(240)
+    c.beat()
+    assert c.awake_minutes() == 65
+    assert c.entry_token(60) == token
+
+
+def test_reset_invalidates_old_plans_even_after_another_full_hour():
+    times = HostTimes()
+    c = AwakeClock(times)
+    beats(c, times, 61)
+    token = c.entry_token(60)
+    times.advance(3, asleep=True)
+    c.beat()
+    beats(c, times, 61)
+    assert c.entry_token(60) is not None
+    assert c.entry_token(60) != token
 
 
 def test_no_recent_beat_is_no_time_awake():
-    c = AwakeClock()
-    assert c.awake_minutes(T0) == 0                             # never beat
-    last = beats(c, 90)
-    assert c.awake_minutes(last + GAP_SECONDS + 1) == 0         # the beats stopped
+    times = HostTimes()
+    c = AwakeClock(times)
+    assert c.awake_minutes() == 0
+    beats(c, times, 90)
+    times.advance(GAP_SECONDS + 1)
+    assert c.awake_minutes() == 0
+    assert c.entry_token(60) is None
 
 
-def test_a_clock_that_goes_backwards_starts_again():
+@pytest.mark.parametrize("fields", [["continuous"], ["uptime"], ["continuous", "uptime"]])
+def test_a_clock_that_goes_backwards_starts_again(fields):
+    times = HostTimes()
+    c = AwakeClock(times)
+    beats(c, times, 90)
+    for field in fields:                     # both together leave their difference unchanged
+        setattr(times, field, getattr(times, field) - 600)
+    c.beat()
+    assert c.awake_minutes() == 0
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1])
+@pytest.mark.parametrize("field", ["continuous", "uptime"])
+def test_invalid_clock_readings_block_entries(bad, field):
+    times = HostTimes()
+    c = AwakeClock(times)
+    beats(c, times, 61)
+    setattr(times, field, bad)
+    assert c.entry_token(60) is None
+    assert c.awake_minutes() == 0
+
+
+def test_clock_failure_requires_a_new_warmup(monkeypatch):
+    times = HostTimes()
+    c = AwakeClock(times)
+    beats(c, times, 61)
+    def failed():
+        raise OSError("clock unavailable")
+    monkeypatch.setattr(c, "_read_times", failed)
+    c.beat()  # a source error must not kill the heartbeat thread
+    assert c.entry_token(60) is None
+    monkeypatch.setattr(c, "_read_times", times)
+    c.beat()
+    assert c.awake_minutes() == 0
+    assert c.entry_token(60) is None
+    beats(c, times, 61)
+    assert c.entry_token(60) is not None
+
+
+@pytest.mark.parametrize("platform,continuous_id,uptime_id", [
+    ("darwin", 11, 12), ("linux", 13, 14),
+])
+def test_platform_clock_pair(platform, continuous_id, uptime_id, monkeypatch):
+    calls = []
+    def gettime(clock_id):
+        calls.append(clock_id)
+        return 100 if clock_id == continuous_id else 80
+    monkeypatch.setattr(awake_clock, "sys", NS(platform=platform))
+    monkeypatch.setattr(awake_clock, "time", NS(clock_gettime=gettime,
+        CLOCK_MONOTONIC_RAW=11, CLOCK_UPTIME_RAW=12, CLOCK_BOOTTIME=13, CLOCK_MONOTONIC=14))
+    assert awake_clock._clock_times() == (100, 80)
+    assert calls == [continuous_id, uptime_id, continuous_id]
+
+
+def test_interrupted_clock_sampling_blocks_readiness(monkeypatch):
+    readings = iter([100, 80, 103])
+    monkeypatch.setattr(awake_clock, "sys", NS(platform="darwin"))
+    monkeypatch.setattr(awake_clock, "time", NS(clock_gettime=lambda _: next(readings),
+        CLOCK_MONOTONIC_RAW=11, CLOCK_UPTIME_RAW=12))
     c = AwakeClock()
-    last = beats(c, 90)
-    c.beat(last - 600)
-    assert c.awake_minutes(last - 600) == 0
+    c.beat()
+    assert c.since is None
+
+
+def test_unsupported_platform_blocks_readiness(monkeypatch):
+    monkeypatch.setattr(awake_clock, "sys", NS(platform="unsupported"))
+    c = AwakeClock()
+    c.beat()
+    assert c.awake_minutes() == 0
+    assert c.entry_token(60) is None
 
 
 def test_start_beats_at_once_and_only_once():
@@ -99,7 +233,8 @@ def entry(database, session, monkeypatch):
 
 def awake_for(minutes):
     c = AwakeClock()
-    c.awake_minutes = lambda now=None: float(minutes)
+    c.awake_minutes = lambda: float(minutes)
+    c.entry_token = lambda required: 0 if minutes >= required else None
     return c
 
 

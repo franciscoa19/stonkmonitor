@@ -9,6 +9,7 @@ def awake_for_hours(monkeypatch):
     import awake_clock
     clock = awake_clock.AwakeClock()
     monkeypatch.setattr(clock, "awake_minutes", lambda now=None: 10_000.0)
+    monkeypatch.setattr(clock, "entry_token", lambda required_minutes: 0)
     monkeypatch.setattr(awake_clock, "clock", clock)
     try:
         import main

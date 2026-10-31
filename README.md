@@ -36,7 +36,9 @@ Earnings dates come from yfinance and the Nasdaq earnings calendar.
   (opening quotes are not prices). Same-day entry only before a confirmed after-close report.
   Nothing is opened until the bot has run for an hour without the Mac sleeping (also after a
   restart): a shut lid still wakes the Mac briefly every ~15 minutes, and a condor opened in one of
-  those wakes would go unmanaged until the next.
+  those wakes would go unmanaged until the next. Short system sleeps also reset the wait. If the
+  machine sleeps during order preparation, the plan is discarded before submission; an unsent
+  reservation is voided. Existing-position exits never wait for entry readiness.
 - **Structure:** short put and short call at the options' implied move (1.0×), protective wings
   3% beyond, in the first expiry after the print that is 1–10 days out. One multi-leg order.
 - **Price:** a limit at 90% of the mid credit; skipped if the credit is under $0.10.

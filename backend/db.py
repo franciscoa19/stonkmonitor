@@ -1045,9 +1045,11 @@ class Database:
 
     async def condor_tried_today(self, ticker: str, today: str) -> bool:
         """Any entry for this ticker sent today, filled or not. An entry that
-        timed out is not sent again the same day."""
+        timed out is not sent again the same day. A reservation voided before
+        the broker was called is not a submission attempt."""
         r = await self._query(
-            "SELECT id FROM iv_condors WHERE ticker=? AND substr(opened_at,1,10)=? LIMIT 1",
+            """SELECT id FROM iv_condors WHERE ticker=? AND substr(opened_at,1,10)=?
+               AND NOT (status='void' AND COALESCE(entry_status, '')='not_submitted_asleep') LIMIT 1""",
             (ticker, today), strict=True)
         return bool(r)
 

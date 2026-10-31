@@ -1019,6 +1019,17 @@ def _log_asleep_block(awake: float, need: int) -> None:
                     f"{need} required (the Mac was asleep, or the bot just started)")
 
 
+def _condor_awake_token(s):
+    """None blocks entry; -1 explicitly disables the awake requirement."""
+    need = s.iv_exec_require_awake_minutes
+    if not need:
+        return -1
+    token = awake_clock.entry_token(need)
+    if token is None:
+        _log_asleep_block(awake_clock.awake_minutes(), need)
+    return token
+
+
 async def maybe_execute_condor(setup):
     """Phase 2: sell a defined-risk iron condor into an imminent earnings print.
 
@@ -1050,12 +1061,8 @@ async def maybe_execute_condor(setup):
     # A shut lid still wakes the Mac for a minute every ~15 and the bot runs in
     # those wakes. Risk opened there goes unmanaged until the next one, so new
     # entries need an unbroken run. Exits never wait for this.
-    need = s.iv_exec_require_awake_minutes
-    if need:
-        awake = awake_clock.awake_minutes()
-        if awake < need:
-            _log_asleep_block(awake, need)
-            return
+    if _condor_awake_token(s) is None:
+        return
     # A same-day BMO print has already happened. Fail closed when report timing
     # is unknown, and permit same-day entries only before a confirmed post-close
     # report. This must remain independent of the broader alert/eval gate.
@@ -1115,6 +1122,19 @@ async def _open_condor(setup, s, ticker: str):
     from signals.iv_executor import build_iron_condor
     from trading.account_risk import account_limits, describe, read_risk_snapshot
     from trading.ownership import option_ownership
+
+    # The caller may have waited on the shared entry lock. A fresh token also
+    # ties this plan to one continuous awake period, even if a later sleep is
+    # followed by another full hour before preparation finishes.
+    awake_token = _condor_awake_token(s)
+    if awake_token is None:
+        return
+
+    def still_awake() -> bool:
+        if _condor_awake_token(s) == awake_token:
+            return True
+        logger.info("IV-exec %s: entry readiness changed; discarding plan", ticker)
+        return False
 
     def verified_equity(account) -> float:
         try:
@@ -1198,6 +1218,8 @@ async def _open_condor(setup, s, ticker: str):
     # Resolve the order namespace before a row exists: if it fails, nothing is
     # persisted or submitted.
     ns = await db.order_namespace()
+    if not still_awake():
+        return
     # Persist before submitting: an ambiguous POST must remain tracked and must
     # not be repeated as a new condor on the next scan.
     cid = await db.record_condor(
@@ -1205,9 +1227,21 @@ async def _open_condor(setup, s, ticker: str):
         legs_json=plan["legs_json"], strikes=plan["strikes"], qty=plan["qty"],
         credit=plan["credit"], max_loss=plan["max_loss"],
         entry_order_id=None, entry_status="submitting")
-    res = await loop.run_in_executor(
-        None, lambda: trader.multileg_order(plan["legs"], plan["qty"], plan["limit_price"],
-                                            client_order_id=_condor_entry_client_id(ns, cid)))
+    not_submitted = object()
+
+    def submit():
+        # Check in the worker, after DB persistence and any executor queueing.
+        # No await separates this gate from the broker call. The unique sentinel
+        # cannot be confused with an unexpected/ambiguous broker response.
+        if not still_awake():
+            return not_submitted
+        return trader.multileg_order(plan["legs"], plan["qty"], plan["limit_price"],
+                                     client_order_id=_condor_entry_client_id(ns, cid))
+
+    res = await loop.run_in_executor(None, submit)
+    if res is not_submitted:
+        await db.void_condor(cid, "not_submitted_asleep")
+        return
     if res.get("error"):
         if not res.get("ambiguous", True):
             await db.void_condor(cid, "rejected")

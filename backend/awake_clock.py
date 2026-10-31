@@ -1,57 +1,117 @@
-"""How long this process has been running without the Mac going to sleep.
+"""Entry readiness from host clocks that include and exclude suspended time.
 
-With the lid shut the Mac still wakes for 10-60 s about every 15 minutes, and
-the bot runs in those wakes: on 2026-10-26 it opened MSFT and GOOGL in one and
-could not look at them again until the next. A thread notes the wall-clock time
-every minute; while the Mac sleeps nothing runs, so the next note lands late and
-the count starts again. Brief wakes never add up to a long run. New entries
-require one (IV_EXEC_REQUIRE_AWAKE_MINUTES); exits never wait for it.
-
-A thread rather than the event loop, so a busy loop is not mistaken for sleep.
+macOS: CLOCK_MONOTONIC_RAW includes sleep; CLOCK_UPTIME_RAW excludes it.
+Linux: CLOCK_BOOTTIME includes suspend; CLOCK_MONOTONIC excludes it.
+Their difference detects short sleeps even between regular heartbeat samples.
+Wall-clock adjustments do not affect the count. Unknown/failed clocks block
+readiness; exits never use this guard.
 """
+import logging
+import math
+import sys
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 BEAT_SECONDS = 60
-GAP_SECONDS = 300          # a beat this late means the machine was not running
+GAP_SECONDS = 300          # a stalled heartbeat also invalidates readiness
+SUSPEND_TOLERANCE_SECONDS = 1.0   # clock-read jitter; cumulative since the reset
+logger = logging.getLogger(__name__)
+
+
+def _clock_times() -> tuple[float, float]:
+    """Return (including suspend, excluding suspend), without adjustable clocks.
+
+    Bracket the uptime read: a pause during sampling must not return an old
+    inclusive timestamp alongside a newer uptime timestamp to the final gate.
+    """
+    if sys.platform == "darwin":
+        continuous_id, uptime_id = time.CLOCK_MONOTONIC_RAW, time.CLOCK_UPTIME_RAW
+    elif sys.platform.startswith("linux"):
+        continuous_id, uptime_id = time.CLOCK_BOOTTIME, time.CLOCK_MONOTONIC
+    else:
+        raise NotImplementedError("No suspend-aware clock pair on this platform")
+    before = time.clock_gettime(continuous_id)
+    uptime = time.clock_gettime(uptime_id)
+    after = time.clock_gettime(continuous_id)
+    if not 0 <= after - before <= SUSPEND_TOLERANCE_SECONDS:
+        raise ValueError("Clock sampling was interrupted")
+    return after, uptime
 
 
 class AwakeClock:
-    def __init__(self):
+    def __init__(self, read_times: Optional[Callable[[], tuple[float, float]]] = None):
         self._lock = threading.Lock()
-        self.since: Optional[float] = None     # wall time the current run began
-        self.last: Optional[float] = None      # wall time of the latest beat
+        self._read_times = read_times or _clock_times
+        self.since: Optional[float] = None     # uptime at the start of this run
+        self.last: Optional[float] = None      # inclusive time of the latest beat
+        self._last_sample: Optional[tuple[float, float]] = None
+        self._offset: Optional[float] = None
+        self._generation = 0
+        self._source_failed = False
         self._thread: Optional[threading.Thread] = None
 
-    def _broken(self, now: float) -> bool:
-        return self.last is None or now < self.last or now - self.last > GAP_SECONDS
+    def _invalidate(self) -> None:
+        if self.since is not None:
+            self._generation += 1
+        self.since = self.last = self._offset = None
+        self._last_sample = None
 
-    def beat(self, now: Optional[float] = None) -> None:
-        now = time.time() if now is None else now
-        with self._lock:
-            if self._broken(now):              # first beat, a gap, or the clock went back
-                self.since = now
-            self.last = now
+    def _observe(self, *, beat: bool) -> float:
+        """Sample under the lock; reads detect suspension before the next beat."""
+        try:
+            continuous, uptime = self._read_times()
+            if not all(math.isfinite(t) and t >= 0 for t in (continuous, uptime)):
+                raise ValueError("Invalid host clock")
+        except Exception:
+            self._invalidate()
+            if not self._source_failed:
+                logger.warning("Awake clock unavailable; new entries remain paused")
+            self._source_failed = True
+            return 0.0
+        self._source_failed = False
+        if self.since is not None:
+            previous_continuous, previous_uptime = self._last_sample
+            if (continuous < previous_continuous or uptime < previous_uptime
+                    or continuous - self.last > GAP_SECONDS
+                    or abs((continuous - uptime) - self._offset) > SUSPEND_TOLERANCE_SECONDS):
+                self._invalidate()
+        if beat:
+            if self.since is None:
+                self._generation += 1
+                self.since = uptime
+                self._offset = continuous - uptime
+            self.last = continuous
+        self._last_sample = continuous, uptime
+        return 0.0 if self.since is None else (uptime - self.since) / 60
 
-    def awake_minutes(self, now: Optional[float] = None) -> float:
-        """Minutes of the current unbroken run; 0 when the last beat is stale."""
-        now = time.time() if now is None else now
+    def beat(self) -> None:
         with self._lock:
-            return 0.0 if self._broken(now) else (now - self.since) / 60
+            self._observe(beat=True)
+
+    def awake_minutes(self) -> float:
+        """Zero until a beat, after suspension, or when the heartbeat is stale."""
+        with self._lock:
+            return self._observe(beat=False)
+
+    def entry_token(self, required_minutes: float) -> Optional[int]:
+        """An epoch for an eligible plan; a reset permanently invalidates it."""
+        with self._lock:
+            minutes = self._observe(beat=False)
+            return self._generation if self.since is not None and minutes >= required_minutes else None
 
     def start(self) -> None:
-        """Beat now, then every minute in a daemon thread. Idempotent."""
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self.beat()
-
+        """Beat now, then every minute independently of the event loop."""
         def run():
             while True:
                 time.sleep(BEAT_SECONDS)
                 self.beat()
-        self._thread = threading.Thread(target=run, name="awake-clock", daemon=True)
-        self._thread.start()
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._observe(beat=True)
+            self._thread = threading.Thread(target=run, name="awake-clock", daemon=True)
+            self._thread.start()
 
 
 clock = AwakeClock()
