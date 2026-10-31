@@ -1733,6 +1733,11 @@ def _expiry_force_close_due(expiry, now=None) -> bool:
     The configured 15:00 ET deadline is preserved on a normal 16:00 session.
     A 13:00 early-close session instead forces at 12:00, rather than discovering
     the assignment risk after the market has already shut.
+
+    Not once the session has closed: the options no longer trade, and settlement
+    takes over half an hour later. AMZN #24 (2026-10-30) sent six closes between
+    16:18 and 16:28, after its last trade grew too old to be a price, and Alpaca
+    refused each one as "contract is expired".
     """
     from datetime import date as _date
     from feeds.uw_budget import market_close_minute
@@ -1749,7 +1754,7 @@ def _expiry_force_close_due(expiry, now=None) -> bool:
         return False
     configured_minute = max(0, int(settings.iv_exec_force_close_hour)) * 60
     force_minute = min(configured_minute, max(0, close_minute - 60))
-    return n.hour * 60 + n.minute >= force_minute
+    return force_minute <= n.hour * 60 + n.minute < close_minute
 
 
 ENTRY_SESSION_GRACE = 15          # minutes after the close before a missing entry counts as never sent

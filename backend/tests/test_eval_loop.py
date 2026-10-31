@@ -1963,6 +1963,21 @@ def test_force_close_moves_before_an_early_market_close():
     assert _expiry_force_close_due(early, datetime(2026, 11, 27, 12, 0, tzinfo=ET)) is True
 
 
+def test_no_forced_close_once_the_expiry_session_has_closed():
+    """The options have stopped trading; settlement takes over (AMZN #24, 2026-10-30)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from main import _expiry_force_close_due
+    ET = ZoneInfo("America/New_York")
+    early = "2026-11-27"
+
+    assert _expiry_force_close_due("2026-10-30", datetime(2026, 10, 30, 15, 59, tzinfo=ET)) is True
+    assert _expiry_force_close_due("2026-10-30", datetime(2026, 10, 30, 16, 0, tzinfo=ET)) is False
+    assert _expiry_force_close_due("2026-10-30", datetime(2026, 10, 30, 16, 18, tzinfo=ET)) is False
+    assert _expiry_force_close_due(early, datetime(2026, 11, 27, 12, 59, tzinfo=ET)) is True
+    assert _expiry_force_close_due(early, datetime(2026, 11, 27, 13, 0, tzinfo=ET)) is False
+
+
 async def test_expiry_settlement_does_not_require_an_option_chain(db, monkeypatch):
     """Expired options disappear from the live chain; confirmed broker expiry
     must settle without first requiring a quote that cannot exist."""

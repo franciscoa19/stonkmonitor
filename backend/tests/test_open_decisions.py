@@ -181,6 +181,23 @@ def clock(monkeypatch, hour, minute, second=0, day=27):
     monkeypatch.setattr(market_time, "et_now", lambda *a: now)
 
 
+@pytest.mark.parametrize("hour,minute,closes", [(12, 59, True), (13, 0, False), (13, 18, False), (13, 29, False)])
+async def test_after_the_expiry_close_it_waits_for_settlement(database, desk, monkeypatch, hour, minute, closes):
+    """AMZN #24, 2026-10-30: from 16:18 to 16:28, with the last trade too old to be
+    a price, the bot sent closes for options that had stopped trading and Alpaca
+    refused each as expired. The fixture's day closes at 13:00; settlement starts
+    at 13:30."""
+    await condor(database, expiry=TODAY)
+    broker = Broker()
+    main = desk(broker)
+    priced(main, monkeypatch, None)
+    clock(monkeypatch, hour, minute)
+    monkeypatch.setattr(main, "is_rth_now", lambda: (hour, minute) < (13, 0))
+    await manage(main, database)
+    assert bool(broker.sent) is closes
+    assert (await the_condor(database))["status"] == ("closing" if closes else "open")
+
+
 @pytest.mark.parametrize("hour,minute,second,settling", [
     (9, 29, 59, False), (9, 30, 0, True), (9, 30, 25, True), (9, 44, 59, True),
     (9, 45, 0, False), (12, 30, 0, False), (15, 59, 0, False), (4, 0, 0, False)])
