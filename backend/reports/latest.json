@@ -1,23 +1,23 @@
 {
-  "generated": "2026-11-03T13:00:56.825075+00:00",
+  "generated": "2026-11-04T13:04:42.699728+00:00",
   "account": {
-    "equity": 49529.03,
-    "cash": 50229.03,
-    "buying_power": 196916.12,
+    "equity": 49997.67,
+    "cash": 50363.67,
+    "buying_power": 196654.68,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": -470.97000000000116,
-    "total_pnl_pct": -0.9419400000000024,
+    "total_pnl": -2.3300000000017462,
+    "total_pnl_pct": -0.004660000000003493,
     "open_positions": 4,
-    "days_running": 56,
+    "days_running": 57,
     "error": null
   },
   "metrics": {
     "closed_trades": 0,
-    "closed_condors": 10,
-    "closed_all": 10,
+    "closed_condors": 11,
+    "closed_all": 11,
     "wins": 0,
     "losses": 0,
     "win_rate": 0.0,
@@ -30,28 +30,28 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 49529.03,
+    "equity": 49997.67,
     "max_risk_pct": 0.06,
-    "risk_cap": 2971.7418,
-    "open_risk": 680.0,
-    "open_risk_pct": 0.0137,
-    "condor_risk": 680.0,
+    "risk_cap": 2999.8602,
+    "open_risk": 888.0,
+    "open_risk_pct": 0.0178,
+    "condor_risk": 888.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 2291.7418,
+    "risk_headroom": 2111.8602,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 9905.806,
-    "free_cash": 49229.03,
-    "free_cash_pct": 0.9939,
+    "cash_reserve": 9999.534,
+    "free_cash": 49163.67,
+    "free_cash_pct": 0.9833,
     "unlisted_reserved": 0.0,
-    "cash_available": 39323.224
+    "cash_available": 39164.136
   },
   "account_risk_error": null,
   "activity": {
     "tag": "MEASURED",
-    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 10 closed, 1 open."
+    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 11 closed, 1 open."
   },
   "equity_curve": [
     {
@@ -276,7 +276,11 @@
     },
     {
       "date": "2026-11-03",
-      "equity": 49489.03
+      "equity": 49998.23
+    },
+    {
+      "date": "2026-11-04",
+      "equity": 49997.67
     }
   ],
   "iv_rv": {
@@ -287,25 +291,25 @@
     "open": 12
   },
   "iv_condors": {
-    "closed": 10,
-    "wins": 7,
-    "win_rate": 70.0,
-    "total_pnl": -2224.0,
+    "closed": 11,
+    "wins": 8,
+    "win_rate": 72.7,
+    "total_pnl": -2080.0,
     "open": 1,
     "pending": 0,
     "open_detail": [
       {
-        "ticker": "PLTR",
+        "ticker": "UBER",
         "status": "open",
         "settlement_note": null,
-        "qty": 2,
+        "qty": 6,
         "expiry": "2026-11-06",
-        "earnings_date": "2026-11-02",
-        "strikes": "155.0/160.0 \u2014 210.0/215.0",
-        "credit_collected": 320.0,
-        "max_risk": 680.0,
-        "unrealized_pnl": -380.0,
-        "pct_of_max_risk": -55.9,
+        "earnings_date": "2026-11-04",
+        "strikes": "59.0/61.0 \u2014 72.0/74.0",
+        "credit_collected": 312.0,
+        "max_risk": 888.0,
+        "unrealized_pnl": -54.0,
+        "pct_of_max_risk": -6.1,
         "legs_matched": 4,
         "legs_expected": 4,
         "partial": false
@@ -755,14 +759,14 @@
   "iv_quote_coverage": {
     "events": 216,
     "structures_attempted": 1080,
-    "structures_priced": 789,
-    "priced_pct": 73.1,
+    "structures_priced": 826,
+    "priced_pct": 76.5,
     "dropped_variants": {
-      "condor_0.7sd": 64,
-      "condor_1.0sd": 80,
-      "condor_1.3sd": 105,
-      "fly": 26,
-      "straddle": 16
+      "condor_0.7sd": 54,
+      "condor_1.0sd": 72,
+      "condor_1.3sd": 98,
+      "fly": 20,
+      "straddle": 10
     }
   },
   "implied_vs_realized": {
@@ -2248,7 +2252,7 @@
     "halted_at": null,
     "halted_reason": null,
     "rearmed_at": null,
-    "closes_counted": 10
+    "closes_counted": 11
   },
   "market_events": [
     {
@@ -2267,10 +2271,10 @@
       "open": 12
     },
     "iv_condors": {
-      "closed": 8,
-      "wins": 7,
-      "win_rate": 87.5,
-      "total_pnl": 476.0,
+      "closed": 9,
+      "wins": 8,
+      "win_rate": 88.9,
+      "total_pnl": 620.0,
       "open": 1,
       "pending": 0
     },
@@ -2378,8 +2382,8 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-11-03T12:34:35.439582",
-    "age_minutes": 26.4,
+    "last_seen": "2026-11-04T12:49:27.207163",
+    "age_minutes": 15.3,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -2389,32 +2393,32 @@
   "recent": [],
   "open_positions": [
     {
-      "symbol": "PLTR261106C00210000",
-      "qty": -2.0,
-      "pnl": 538.0,
-      "pnl_pct": 91.5,
-      "market_val": -50.0
+      "symbol": "UBER261106C00072000",
+      "qty": -6.0,
+      "pnl": 6.0,
+      "pnl_pct": 1.52,
+      "market_val": -390.0
     },
     {
-      "symbol": "PLTR261106C00215000",
-      "qty": 2.0,
-      "pnl": -430.0,
-      "pnl_pct": -100.0,
-      "market_val": 0.0
+      "symbol": "UBER261106C00074000",
+      "qty": 6.0,
+      "pnl": -42.0,
+      "pnl_pct": -17.5,
+      "market_val": 198.0
     },
     {
-      "symbol": "PLTR261106P00155000",
-      "qty": 2.0,
-      "pnl": -340.0,
-      "pnl_pct": -79.07,
-      "market_val": 90.0
+      "symbol": "UBER261106P00059000",
+      "qty": 6.0,
+      "pnl": -48.0,
+      "pnl_pct": -24.24,
+      "market_val": 150.0
     },
     {
-      "symbol": "PLTR261106P00160000",
-      "qty": -2.0,
-      "pnl": -148.0,
-      "pnl_pct": -25.0,
-      "market_val": -740.0
+      "symbol": "UBER261106P00061000",
+      "qty": -6.0,
+      "pnl": 30.0,
+      "pnl_pct": 8.48,
+      "market_val": -324.0
     }
   ],
   "proposals": [
