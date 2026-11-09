@@ -1,5 +1,5 @@
 {
-  "generated": "2026-11-06T13:00:09.349656+00:00",
+  "generated": "2026-11-09T13:07:34.935043+00:00",
   "account": {
     "equity": 50284.91,
     "cash": 50284.91,
@@ -10,8 +10,8 @@
     "net_deposits": 50000.0,
     "total_pnl": 284.9100000000035,
     "total_pnl_pct": 0.569820000000007,
-    "open_positions": 1,
-    "days_running": 59,
+    "open_positions": 0,
+    "days_running": 62,
     "error": null
   },
   "metrics": {
@@ -289,14 +289,26 @@
     {
       "date": "2026-11-06",
       "equity": 50284.91
+    },
+    {
+      "date": "2026-11-07",
+      "equity": 50284.91
+    },
+    {
+      "date": "2026-11-08",
+      "equity": 50284.91
+    },
+    {
+      "date": "2026-11-09",
+      "equity": 50284.91
     }
   ],
   "iv_rv": {
-    "resolved": 46,
-    "wins": 20,
-    "win_rate": 43.5,
-    "avg_edge_pct": -1.86,
-    "open": 7
+    "resolved": 52,
+    "wins": 22,
+    "win_rate": 42.3,
+    "avg_edge_pct": -2.01,
+    "open": 2
   },
   "iv_condors": {
     "closed": 12,
@@ -309,216 +321,216 @@
   },
   "iv_variants": [
     {
-      "n_events": 67,
-      "n_wins": 39,
-      "win_rate": 58.2,
-      "total_pnl": 3281.8,
-      "expectancy": 48.98,
-      "profit_factor": 1.2,
-      "avg_win": 500.25,
-      "avg_loss": -579.56,
-      "largest_single_loss": -2651.6,
-      "max_drawdown": 8024.6,
-      "sharpe": 0.06,
-      "sortino": 0.08,
-      "tail_ratio": -11.55,
+      "n_events": 94,
+      "n_wins": 55,
+      "win_rate": 58.5,
+      "total_pnl": -1849.9,
+      "expectancy": -19.68,
+      "profit_factor": 0.93,
+      "avg_win": 466.79,
+      "avg_loss": -705.73,
+      "largest_single_loss": -7464.6,
+      "max_drawdown": 12459.3,
+      "sharpe": -0.02,
+      "sortino": -0.02,
+      "tail_ratio": -20.05,
+      "tail_events": 5,
+      "tail_pct_effective": 5.3,
+      "pct_events_exceeding_implied": 39.4,
+      "sufficient_sample": false,
+      "events_needed": 6,
+      "variant": "straddle",
+      "avg_pnl": -19.68,
+      "avg_ror_pct": null,
+      "n": 94,
+      "pin_events": 19,
+      "collapsed_n": 0
+    },
+    {
+      "n_events": 56,
+      "n_wins": 40,
+      "win_rate": 71.4,
+      "total_pnl": -1878.2,
+      "expectancy": -33.54,
+      "profit_factor": 0.54,
+      "avg_win": 55.42,
+      "avg_loss": -255.95,
+      "largest_single_loss": -838.2,
+      "max_drawdown": 2716.6,
+      "sharpe": -0.15,
+      "sortino": -0.16,
+      "tail_ratio": -93.88,
+      "tail_events": 3,
+      "tail_pct_effective": 5.4,
+      "pct_events_exceeding_implied": 37.5,
+      "sufficient_sample": false,
+      "events_needed": 44,
+      "variant": "condor_1.3sd",
+      "avg_pnl": -33.54,
+      "avg_ror_pct": -9.1,
+      "n": 56,
+      "pin_events": 8,
+      "collapsed_n": 3
+    },
+    {
+      "n_events": 70,
+      "n_wins": 43,
+      "win_rate": 61.4,
+      "total_pnl": -2578.0,
+      "expectancy": -36.83,
+      "profit_factor": 0.58,
+      "avg_win": 81.22,
+      "avg_loss": -224.83,
+      "largest_single_loss": -755.2,
+      "max_drawdown": 3155.8,
+      "sharpe": -0.17,
+      "sortino": -0.18,
+      "tail_ratio": -284.37,
       "tail_events": 4,
-      "tail_pct_effective": 6.0,
+      "tail_pct_effective": 5.7,
+      "pct_events_exceeding_implied": 40.0,
+      "sufficient_sample": false,
+      "events_needed": 30,
+      "variant": "condor_1.0sd",
+      "avg_pnl": -36.83,
+      "avg_ror_pct": -12.3,
+      "n": 70,
+      "pin_events": 15,
+      "collapsed_n": 3
+    },
+    {
+      "n_events": 77,
+      "n_wins": 45,
+      "win_rate": 58.4,
+      "total_pnl": -3118.9,
+      "expectancy": -40.51,
+      "profit_factor": 0.6,
+      "avg_win": 104.63,
+      "avg_loss": -244.61,
+      "largest_single_loss": -824.2,
+      "max_drawdown": 3706.5,
+      "sharpe": -0.17,
+      "sortino": -0.19,
+      "tail_ratio": 182.1,
+      "tail_events": 4,
+      "tail_pct_effective": 5.2,
       "pct_events_exceeding_implied": 40.3,
       "sufficient_sample": false,
-      "events_needed": 33,
-      "variant": "straddle",
-      "avg_pnl": 48.98,
-      "avg_ror_pct": null,
-      "n": 67,
-      "pin_events": 14,
-      "collapsed_n": 0
-    },
-    {
-      "n_events": 64,
-      "n_wins": 25,
-      "win_rate": 39.1,
-      "total_pnl": -2338.8,
-      "expectancy": -36.54,
-      "profit_factor": 0.77,
-      "avg_win": 318.44,
-      "avg_loss": -264.1,
-      "largest_single_loss": -967.2,
-      "max_drawdown": 4619.6,
-      "sharpe": -0.09,
-      "sortino": -0.13,
-      "tail_ratio": -56.37,
-      "tail_events": 4,
-      "tail_pct_effective": 6.2,
-      "pct_events_exceeding_implied": 40.6,
-      "sufficient_sample": false,
-      "events_needed": 36,
-      "variant": "fly",
-      "avg_pnl": -36.54,
-      "avg_ror_pct": -22.6,
-      "n": 64,
-      "pin_events": 13,
-      "collapsed_n": 0
-    },
-    {
-      "n_events": 53,
-      "n_wins": 30,
-      "win_rate": 56.6,
-      "total_pnl": -1979.6,
-      "expectancy": -37.35,
-      "profit_factor": 0.65,
-      "avg_win": 122.7,
-      "avg_loss": -246.11,
-      "largest_single_loss": -824.2,
-      "max_drawdown": 2547.2,
-      "sharpe": -0.15,
-      "sortino": -0.18,
-      "tail_ratio": -259.26,
-      "tail_events": 3,
-      "tail_pct_effective": 5.7,
-      "pct_events_exceeding_implied": 43.4,
-      "sufficient_sample": false,
-      "events_needed": 47,
+      "events_needed": 23,
       "variant": "condor_0.7sd",
-      "avg_pnl": -37.35,
-      "avg_ror_pct": -16.3,
-      "n": 53,
-      "pin_events": 15,
+      "avg_pnl": -40.51,
+      "avg_ror_pct": -15.6,
+      "n": 77,
+      "pin_events": 22,
       "collapsed_n": 0
     },
     {
-      "n_events": 39,
-      "n_wins": 27,
-      "win_rate": 69.2,
-      "total_pnl": -1640.8,
-      "expectancy": -42.07,
-      "profit_factor": 0.5,
-      "avg_win": 60.06,
-      "avg_loss": -271.87,
-      "largest_single_loss": -838.2,
-      "max_drawdown": 2476.2,
-      "sharpe": -0.18,
-      "sortino": -0.19,
-      "tail_ratio": -895.81,
-      "tail_events": 2,
-      "tail_pct_effective": 5.1,
-      "pct_events_exceeding_implied": 41.0,
+      "n_events": 90,
+      "n_wins": 35,
+      "win_rate": 38.9,
+      "total_pnl": -5419.5,
+      "expectancy": -60.22,
+      "profit_factor": 0.67,
+      "avg_win": 307.71,
+      "avg_loss": -294.35,
+      "largest_single_loss": -1365.2,
+      "max_drawdown": 7296.5,
+      "sharpe": -0.14,
+      "sortino": -0.18,
+      "tail_ratio": 319.86,
+      "tail_events": 5,
+      "tail_pct_effective": 5.6,
+      "pct_events_exceeding_implied": 38.9,
       "sufficient_sample": false,
-      "events_needed": 61,
-      "variant": "condor_1.3sd",
-      "avg_pnl": -42.07,
-      "avg_ror_pct": -11.4,
-      "n": 39,
-      "pin_events": 8,
-      "collapsed_n": 2
-    },
-    {
-      "n_events": 52,
-      "n_wins": 32,
-      "win_rate": 61.5,
-      "total_pnl": -2248.4,
-      "expectancy": -43.24,
-      "profit_factor": 0.54,
-      "avg_win": 83.58,
-      "avg_loss": -246.15,
-      "largest_single_loss": -755.2,
-      "max_drawdown": 2805.2,
-      "sharpe": -0.18,
-      "sortino": -0.2,
-      "tail_ratio": 340.9,
-      "tail_events": 3,
-      "tail_pct_effective": 5.8,
-      "pct_events_exceeding_implied": 42.3,
-      "sufficient_sample": false,
-      "events_needed": 48,
-      "variant": "condor_1.0sd",
-      "avg_pnl": -43.24,
-      "avg_ror_pct": -15.5,
-      "n": 52,
-      "pin_events": 12,
-      "collapsed_n": 3
+      "events_needed": 10,
+      "variant": "fly",
+      "avg_pnl": -60.22,
+      "avg_ror_pct": -19.4,
+      "n": 90,
+      "pin_events": 18,
+      "collapsed_n": 0
     }
   ],
   "iv_gate_comparison": {
     "gated": {
-      "n_events": 52,
-      "n_wins": 32,
-      "win_rate": 61.5,
-      "total_pnl": -2248.4,
-      "expectancy": -43.24,
-      "profit_factor": 0.54,
-      "avg_win": 83.58,
-      "avg_loss": -246.15,
+      "n_events": 70,
+      "n_wins": 43,
+      "win_rate": 61.4,
+      "total_pnl": -2578.0,
+      "expectancy": -36.83,
+      "profit_factor": 0.58,
+      "avg_win": 81.22,
+      "avg_loss": -224.83,
       "largest_single_loss": -755.2,
-      "max_drawdown": 2805.2,
-      "sharpe": -0.18,
-      "sortino": -0.2,
-      "tail_ratio": 340.9,
-      "tail_events": 3,
-      "tail_pct_effective": 5.8,
+      "max_drawdown": 3155.8,
+      "sharpe": -0.17,
+      "sortino": -0.18,
+      "tail_ratio": -284.37,
+      "tail_events": 4,
+      "tail_pct_effective": 5.7,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": false,
-      "events_needed": 48
+      "events_needed": 30
     },
     "ungated": {
-      "n_events": 135,
-      "n_wins": 71,
-      "win_rate": 52.6,
-      "total_pnl": -17353.0,
-      "expectancy": -128.54,
-      "profit_factor": 0.32,
-      "avg_win": 116.17,
-      "avg_loss": -400.01,
-      "largest_single_loss": -2813.2,
-      "max_drawdown": 20027.4,
-      "sharpe": -0.26,
-      "sortino": -0.26,
-      "tail_ratio": 50.27,
-      "tail_events": 7,
-      "tail_pct_effective": 5.2,
+      "n_events": 169,
+      "n_wins": 92,
+      "win_rate": 54.4,
+      "total_pnl": -22210.8,
+      "expectancy": -131.42,
+      "profit_factor": 0.31,
+      "avg_win": 107.32,
+      "avg_loss": -416.68,
+      "largest_single_loss": -3322.2,
+      "max_drawdown": 24452.4,
+      "sharpe": -0.25,
+      "sortino": -0.25,
+      "tail_ratio": 55.22,
+      "tail_events": 9,
+      "tail_pct_effective": 5.3,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": true,
       "events_needed": 0
     },
     "failed_gates": {
-      "n_events": 80,
-      "n_wins": 38,
-      "win_rate": 47.5,
-      "total_pnl": -14757.0,
-      "expectancy": -184.46,
-      "profit_factor": 0.27,
-      "avg_win": 145.35,
-      "avg_loss": -482.87,
-      "largest_single_loss": -2813.2,
-      "max_drawdown": 17572.2,
-      "sharpe": -0.3,
+      "n_events": 96,
+      "n_wins": 48,
+      "win_rate": 50.0,
+      "total_pnl": -19285.2,
+      "expectancy": -200.89,
+      "profit_factor": 0.25,
+      "avg_win": 131.9,
+      "avg_loss": -533.68,
+      "largest_single_loss": -3322.2,
+      "max_drawdown": 21687.4,
+      "sharpe": -0.31,
       "sortino": -0.3,
-      "tail_ratio": 35.12,
-      "tail_events": 4,
-      "tail_pct_effective": 5.0,
+      "tail_ratio": 36.75,
+      "tail_events": 5,
+      "tail_pct_effective": 5.2,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": false,
-      "events_needed": 20
+      "events_needed": 4
     },
     "consider": {
-      "n_events": 36,
-      "n_wins": 17,
-      "win_rate": 47.2,
-      "total_pnl": -6646.2,
-      "expectancy": -184.62,
-      "profit_factor": 0.22,
-      "avg_win": 111.51,
-      "avg_loss": -449.57,
+      "n_events": 48,
+      "n_wins": 26,
+      "win_rate": 54.2,
+      "total_pnl": -7374.6,
+      "expectancy": -153.64,
+      "profit_factor": 0.26,
+      "avg_win": 99.61,
+      "avg_loss": -452.93,
       "largest_single_loss": -2813.2,
-      "max_drawdown": 7314.6,
-      "sharpe": -0.33,
-      "sortino": -0.32,
-      "tail_ratio": 32.11,
-      "tail_events": 2,
-      "tail_pct_effective": 5.6,
+      "max_drawdown": 7630.0,
+      "sharpe": -0.3,
+      "sortino": -0.3,
+      "tail_ratio": 33.41,
+      "tail_events": 3,
+      "tail_pct_effective": 6.2,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": false,
-      "events_needed": 64
+      "events_needed": 52
     },
     "unknown_gates": {
       "n_events": 3,
@@ -544,84 +556,84 @@
   "iv_gate_comparison_by_source": {
     "watchlist": {
       "gated": {
-        "n_events": 17,
-        "n_wins": 13,
-        "win_rate": 76.5,
-        "total_pnl": 426.6,
-        "expectancy": 25.09,
-        "profit_factor": 1.29,
-        "avg_win": 145.42,
-        "avg_loss": -365.95,
+        "n_events": 23,
+        "n_wins": 18,
+        "win_rate": 78.3,
+        "total_pnl": 881.4,
+        "expectancy": 38.32,
+        "profit_factor": 1.6,
+        "avg_win": 130.41,
+        "avg_loss": -293.2,
         "largest_single_loss": -755.2,
         "max_drawdown": 786.6,
-        "sharpe": 0.08,
-        "sortino": 0.1,
-        "tail_ratio": -10.22,
-        "tail_events": 1,
-        "tail_pct_effective": 5.9,
+        "sharpe": 0.15,
+        "sortino": 0.18,
+        "tail_ratio": -6.44,
+        "tail_events": 2,
+        "tail_pct_effective": 8.7,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 83
+        "events_needed": 77
       },
       "ungated": {
-        "n_events": 43,
-        "n_wins": 27,
-        "win_rate": 62.8,
-        "total_pnl": -4875.6,
-        "expectancy": -113.39,
-        "profit_factor": 0.45,
-        "avg_win": 145.28,
-        "avg_loss": -549.89,
+        "n_events": 56,
+        "n_wins": 36,
+        "win_rate": 64.3,
+        "total_pnl": -5262.2,
+        "expectancy": -93.97,
+        "profit_factor": 0.47,
+        "avg_win": 131.69,
+        "avg_loss": -500.15,
         "largest_single_loss": -2308.2,
-        "max_drawdown": 6854.4,
-        "sharpe": -0.21,
-        "sortino": -0.22,
-        "tail_ratio": -955.48,
+        "max_drawdown": 7211.2,
+        "sharpe": -0.2,
+        "sortino": -0.2,
+        "tail_ratio": 275.05,
         "tail_events": 3,
-        "tail_pct_effective": 7.0,
+        "tail_pct_effective": 5.4,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 57
+        "events_needed": 44
       },
       "failed_gates": {
-        "n_events": 25,
-        "n_wins": 13,
-        "win_rate": 52.0,
-        "total_pnl": -5352.0,
-        "expectancy": -214.08,
+        "n_events": 32,
+        "n_wins": 17,
+        "win_rate": 53.1,
+        "total_pnl": -6193.4,
+        "expectancy": -193.54,
         "profit_factor": 0.27,
-        "avg_win": 152.49,
-        "avg_loss": -611.2,
+        "avg_win": 137.86,
+        "avg_loss": -569.13,
         "largest_single_loss": -2308.2,
-        "max_drawdown": 6923.2,
+        "max_drawdown": 7325.6,
         "sharpe": -0.34,
         "sortino": -0.33,
-        "tail_ratio": 41.44,
+        "tail_ratio": 31.36,
         "tail_events": 2,
-        "tail_pct_effective": 8.0,
+        "tail_pct_effective": 6.2,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 75
+        "events_needed": 68
       },
       "consider": {
-        "n_events": 13,
-        "n_wins": 4,
-        "win_rate": 30.8,
-        "total_pnl": -2403.6,
-        "expectancy": -184.89,
-        "profit_factor": 0.22,
-        "avg_win": 172.8,
-        "avg_loss": -343.87,
+        "n_events": 19,
+        "n_wins": 8,
+        "win_rate": 42.1,
+        "total_pnl": -2852.8,
+        "expectancy": -150.15,
+        "profit_factor": 0.27,
+        "avg_win": 131.55,
+        "avg_loss": -355.02,
         "largest_single_loss": -744.2,
-        "max_drawdown": 3072.0,
-        "sharpe": -0.59,
-        "sortino": -0.56,
-        "tail_ratio": 5.38,
+        "max_drawdown": 3082.2,
+        "sharpe": -0.5,
+        "sortino": -0.49,
+        "tail_ratio": 6.35,
         "tail_events": 1,
-        "tail_pct_effective": 7.7,
+        "tail_pct_effective": 5.3,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 87
+        "events_needed": 81
       },
       "unknown_gates": {
         "n_events": 1,
@@ -646,84 +658,84 @@
     },
     "measurement": {
       "gated": {
-        "n_events": 35,
-        "n_wins": 19,
-        "win_rate": 54.3,
-        "total_pnl": -2675.0,
-        "expectancy": -76.43,
-        "profit_factor": 0.23,
-        "avg_win": 41.27,
-        "avg_loss": -216.2,
+        "n_events": 47,
+        "n_wins": 25,
+        "win_rate": 53.2,
+        "total_pnl": -3459.4,
+        "expectancy": -73.6,
+        "profit_factor": 0.25,
+        "avg_win": 45.8,
+        "avg_loss": -209.29,
         "largest_single_loss": -745.2,
-        "max_drawdown": 2818.2,
-        "sharpe": -0.4,
-        "sortino": -0.39,
-        "tail_ratio": 14.4,
-        "tail_events": 2,
-        "tail_pct_effective": 5.7,
+        "max_drawdown": 3545.0,
+        "sharpe": -0.38,
+        "sortino": -0.37,
+        "tail_ratio": 16.62,
+        "tail_events": 3,
+        "tail_pct_effective": 6.4,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 65
+        "events_needed": 53
       },
       "ungated": {
-        "n_events": 92,
-        "n_wins": 44,
-        "win_rate": 47.8,
-        "total_pnl": -12477.4,
-        "expectancy": -135.62,
-        "profit_factor": 0.26,
-        "avg_win": 98.3,
-        "avg_loss": -350.05,
-        "largest_single_loss": -2813.2,
-        "max_drawdown": 13861.4,
+        "n_events": 113,
+        "n_wins": 56,
+        "win_rate": 49.6,
+        "total_pnl": -16948.6,
+        "expectancy": -149.99,
+        "profit_factor": 0.23,
+        "avg_win": 91.66,
+        "avg_loss": -387.39,
+        "largest_single_loss": -3322.2,
+        "max_drawdown": 18275.0,
         "sharpe": -0.28,
         "sortino": -0.28,
-        "tail_ratio": 37.67,
-        "tail_events": 5,
-        "tail_pct_effective": 5.4,
+        "tail_ratio": 41.53,
+        "tail_events": 6,
+        "tail_pct_effective": 5.3,
         "pct_events_exceeding_implied": null,
-        "sufficient_sample": false,
-        "events_needed": 8
+        "sufficient_sample": true,
+        "events_needed": 0
       },
       "failed_gates": {
-        "n_events": 55,
-        "n_wins": 25,
-        "win_rate": 45.5,
-        "total_pnl": -9405.0,
-        "expectancy": -171.0,
-        "profit_factor": 0.27,
-        "avg_win": 141.64,
-        "avg_loss": -431.53,
-        "largest_single_loss": -2813.2,
-        "max_drawdown": 11393.2,
-        "sharpe": -0.28,
-        "sortino": -0.28,
-        "tail_ratio": 48.23,
-        "tail_events": 3,
-        "tail_pct_effective": 5.5,
+        "n_events": 64,
+        "n_wins": 31,
+        "win_rate": 48.4,
+        "total_pnl": -13091.8,
+        "expectancy": -204.56,
+        "profit_factor": 0.23,
+        "avg_win": 128.64,
+        "avg_loss": -517.56,
+        "largest_single_loss": -3322.2,
+        "max_drawdown": 15120.8,
+        "sharpe": -0.29,
+        "sortino": -0.29,
+        "tail_ratio": 53.88,
+        "tail_events": 4,
+        "tail_pct_effective": 6.2,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 45
+        "events_needed": 36
       },
       "consider": {
-        "n_events": 23,
-        "n_wins": 13,
-        "win_rate": 56.5,
-        "total_pnl": -4242.6,
-        "expectancy": -184.46,
-        "profit_factor": 0.22,
-        "avg_win": 92.65,
-        "avg_loss": -544.7,
+        "n_events": 29,
+        "n_wins": 18,
+        "win_rate": 62.1,
+        "total_pnl": -4521.8,
+        "expectancy": -155.92,
+        "profit_factor": 0.25,
+        "avg_win": 85.41,
+        "avg_loss": -550.84,
         "largest_single_loss": -2813.2,
-        "max_drawdown": 4923.4,
-        "sharpe": -0.27,
-        "sortino": -0.27,
-        "tail_ratio": -443.84,
+        "max_drawdown": 5243.4,
+        "sharpe": -0.26,
+        "sortino": -0.25,
+        "tail_ratio": 332.56,
         "tail_events": 2,
-        "tail_pct_effective": 8.7,
+        "tail_pct_effective": 6.9,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 77
+        "events_needed": 71
       },
       "unknown_gates": {
         "n_events": 2,
@@ -762,12 +774,12 @@
   },
   "implied_vs_realized": {
     "watchlist": {
-      "n_events": 38,
-      "pct_exceeding_implied": 42.1,
-      "n_exceeding": 16,
-      "avg_implied_pct": 5.79,
-      "avg_realized_pct": 6.25,
-      "avg_edge_pct": -0.45,
+      "n_events": 51,
+      "pct_exceeding_implied": 39.2,
+      "n_exceeding": 20,
+      "avg_implied_pct": 6.26,
+      "avg_realized_pct": 6.24,
+      "avg_edge_pct": 0.02,
       "events": [
         {
           "ticker": "NOW",
@@ -806,6 +818,15 @@
           "lead_days": 1
         },
         {
+          "ticker": "XOM",
+          "earnings_date": "2026-10-30",
+          "implied_pct": 2.56,
+          "realized_pct": 8.73,
+          "edge_pct": -6.17,
+          "exceeded": true,
+          "lead_days": 1
+        },
+        {
           "ticker": "LRCX",
           "earnings_date": "2026-10-21",
           "implied_pct": 7.27,
@@ -822,6 +843,15 @@
           "edge_pct": -5.87,
           "exceeded": true,
           "lead_days": 2
+        },
+        {
+          "ticker": "CVX",
+          "earnings_date": "2026-10-30",
+          "implied_pct": 2.63,
+          "realized_pct": 7.9,
+          "edge_pct": -5.27,
+          "exceeded": true,
+          "lead_days": 1
         },
         {
           "ticker": "COIN",
@@ -856,6 +886,15 @@
           "implied_pct": 6.09,
           "realized_pct": 8.2,
           "edge_pct": -2.11,
+          "exceeded": true,
+          "lead_days": 1
+        },
+        {
+          "ticker": "MCD",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 3.69,
+          "realized_pct": 5.32,
+          "edge_pct": -1.63,
           "exceeded": true,
           "lead_days": 1
         },
@@ -896,6 +935,15 @@
           "lead_days": 1
         },
         {
+          "ticker": "PLTR",
+          "earnings_date": "2026-11-02",
+          "implied_pct": 12.66,
+          "realized_pct": 13.11,
+          "edge_pct": -0.45,
+          "exceeded": true,
+          "lead_days": 0
+        },
+        {
           "ticker": "V",
           "earnings_date": "2026-10-27",
           "implied_pct": 3.24,
@@ -932,11 +980,29 @@
           "lead_days": 1
         },
         {
+          "ticker": "ARM",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 9.78,
+          "realized_pct": 8.7,
+          "edge_pct": 1.08,
+          "exceeded": false,
+          "lead_days": 0
+        },
+        {
           "ticker": "JNJ",
           "earnings_date": "2026-10-13",
           "implied_pct": 3.61,
           "realized_pct": 2.52,
           "edge_pct": 1.09,
+          "exceeded": false,
+          "lead_days": 1
+        },
+        {
+          "ticker": "CVS",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 7.1,
+          "realized_pct": 5.82,
+          "edge_pct": 1.28,
           "exceeded": false,
           "lead_days": 1
         },
@@ -959,6 +1025,15 @@
           "lead_days": 1
         },
         {
+          "ticker": "ABNB",
+          "earnings_date": "2026-11-05",
+          "implied_pct": 7.56,
+          "realized_pct": 6.01,
+          "edge_pct": 1.55,
+          "exceeded": false,
+          "lead_days": 1
+        },
+        {
           "ticker": "JPM",
           "earnings_date": "2026-10-13",
           "implied_pct": 3.5,
@@ -975,6 +1050,15 @@
           "edge_pct": 1.98,
           "exceeded": false,
           "lead_days": 0
+        },
+        {
+          "ticker": "PFE",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 5.28,
+          "realized_pct": 3.26,
+          "edge_pct": 2.02,
+          "exceeded": false,
+          "lead_days": 1
         },
         {
           "ticker": "PEP",
@@ -1022,6 +1106,15 @@
           "lead_days": 0
         },
         {
+          "ticker": "ABBV",
+          "earnings_date": "2026-10-30",
+          "implied_pct": 4.01,
+          "realized_pct": 0.76,
+          "edge_pct": 3.25,
+          "exceeded": false,
+          "lead_days": 1
+        },
+        {
           "ticker": "NFLX",
           "earnings_date": "2026-10-20",
           "implied_pct": 9.42,
@@ -1067,11 +1160,29 @@
           "lead_days": 2
         },
         {
+          "ticker": "UBER",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 7.58,
+          "realized_pct": 3.38,
+          "edge_pct": 4.2,
+          "exceeded": false,
+          "lead_days": 1
+        },
+        {
           "ticker": "SBUX",
           "earnings_date": "2026-10-29",
           "implied_pct": 5.25,
           "realized_pct": 1.04,
           "edge_pct": 4.21,
+          "exceeded": false,
+          "lead_days": 0
+        },
+        {
+          "ticker": "SMCI",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 13.7,
+          "realized_pct": 9.45,
+          "edge_pct": 4.25,
           "exceeded": false,
           "lead_days": 0
         },
@@ -1094,6 +1205,15 @@
           "lead_days": 0
         },
         {
+          "ticker": "QCOM",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 9.06,
+          "realized_pct": 2.42,
+          "edge_pct": 6.64,
+          "exceeded": false,
+          "lead_days": 1
+        },
+        {
           "ticker": "TXN",
           "earnings_date": "2026-10-21",
           "implied_pct": 7.72,
@@ -1110,6 +1230,15 @@
           "edge_pct": 6.94,
           "exceeded": false,
           "lead_days": 0
+        },
+        {
+          "ticker": "SHOP",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 13.61,
+          "realized_pct": 6.04,
+          "edge_pct": 7.57,
+          "exceeded": false,
+          "lead_days": 1
         }
       ],
       "lead_cutoff_days": 2,
@@ -1170,13 +1299,31 @@
       }
     },
     "measurement": {
-      "n_events": 85,
-      "pct_exceeding_implied": 45.9,
-      "n_exceeding": 39,
-      "avg_implied_pct": 6.37,
-      "avg_realized_pct": 6.18,
-      "avg_edge_pct": 0.19,
+      "n_events": 111,
+      "pct_exceeding_implied": 46.8,
+      "n_exceeding": 52,
+      "avg_implied_pct": 6.75,
+      "avg_realized_pct": 6.88,
+      "avg_edge_pct": -0.13,
       "events": [
+        {
+          "ticker": "APP",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 15.9,
+          "realized_pct": 42.69,
+          "edge_pct": -26.79,
+          "exceeded": true,
+          "lead_days": 0
+        },
+        {
+          "ticker": "FIS",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 8.25,
+          "realized_pct": 27.67,
+          "edge_pct": -19.42,
+          "exceeded": true,
+          "lead_days": 1
+        },
         {
           "ticker": "RDDT",
           "earnings_date": "2026-10-29",
@@ -1203,6 +1350,15 @@
           "edge_pct": -9.53,
           "exceeded": true,
           "lead_days": 2
+        },
+        {
+          "ticker": "BP",
+          "earnings_date": "2026-10-30",
+          "implied_pct": 3.11,
+          "realized_pct": 11.44,
+          "edge_pct": -8.33,
+          "exceeded": true,
+          "lead_days": 1
         },
         {
           "ticker": "LNG",
@@ -1232,6 +1388,15 @@
           "lead_days": 2
         },
         {
+          "ticker": "WMB",
+          "earnings_date": "2026-11-02",
+          "implied_pct": 4.73,
+          "realized_pct": 10.94,
+          "edge_pct": -6.21,
+          "exceeded": true,
+          "lead_days": 0
+        },
+        {
           "ticker": "SOFI",
           "earnings_date": "2026-10-27",
           "implied_pct": 9.18,
@@ -1239,6 +1404,15 @@
           "edge_pct": -6.17,
           "exceeded": true,
           "lead_days": 1
+        },
+        {
+          "ticker": "ALAB",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 13.36,
+          "realized_pct": 18.96,
+          "edge_pct": -5.6,
+          "exceeded": true,
+          "lead_days": 0
         },
         {
           "ticker": "LMT",
@@ -1268,6 +1442,15 @@
           "lead_days": 1
         },
         {
+          "ticker": "SU",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 4.15,
+          "realized_pct": 8.7,
+          "edge_pct": -4.55,
+          "exceeded": true,
+          "lead_days": 0
+        },
+        {
           "ticker": "NDAQ",
           "earnings_date": "2026-10-22",
           "implied_pct": 3.98,
@@ -1277,6 +1460,15 @@
           "lead_days": 2
         },
         {
+          "ticker": "DDOG",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 14.38,
+          "realized_pct": 18.39,
+          "edge_pct": -4.01,
+          "exceeded": true,
+          "lead_days": 1
+        },
+        {
           "ticker": "DOW",
           "earnings_date": "2026-10-22",
           "implied_pct": 5.64,
@@ -1284,6 +1476,15 @@
           "edge_pct": -3.42,
           "exceeded": true,
           "lead_days": 2
+        },
+        {
+          "ticker": "DOCN",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 15.87,
+          "realized_pct": 19.28,
+          "edge_pct": -3.41,
+          "exceeded": true,
+          "lead_days": 1
         },
         {
           "ticker": "MO",
@@ -1340,6 +1541,15 @@
           "lead_days": 1
         },
         {
+          "ticker": "MELI",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 7.14,
+          "realized_pct": 9.77,
+          "edge_pct": -2.63,
+          "exceeded": true,
+          "lead_days": 1
+        },
+        {
           "ticker": "PPG",
           "earnings_date": "2026-10-27",
           "implied_pct": 4.97,
@@ -1392,6 +1602,15 @@
           "edge_pct": -1.97,
           "exceeded": true,
           "lead_days": 2
+        },
+        {
+          "ticker": "XYZ",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 9.95,
+          "realized_pct": 11.88,
+          "edge_pct": -1.93,
+          "exceeded": true,
+          "lead_days": 0
         },
         {
           "ticker": "TMUS",
@@ -1466,6 +1685,24 @@
           "lead_days": 0
         },
         {
+          "ticker": "ON",
+          "earnings_date": "2026-11-02",
+          "implied_pct": 9.95,
+          "realized_pct": 10.63,
+          "edge_pct": -0.68,
+          "exceeded": true,
+          "lead_days": 0
+        },
+        {
+          "ticker": "EXPE",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 9.56,
+          "realized_pct": 10.19,
+          "edge_pct": -0.63,
+          "exceeded": true,
+          "lead_days": 1
+        },
+        {
           "ticker": "NEE",
           "earnings_date": "2026-10-21",
           "implied_pct": 3.31,
@@ -1500,6 +1737,15 @@
           "edge_pct": -0.31,
           "exceeded": true,
           "lead_days": 1
+        },
+        {
+          "ticker": "AIG",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 4.09,
+          "realized_pct": 4.26,
+          "edge_pct": -0.17,
+          "exceeded": true,
+          "lead_days": 0
         },
         {
           "ticker": "MMM",
@@ -1556,6 +1802,15 @@
           "lead_days": 2
         },
         {
+          "ticker": "ROKU",
+          "earnings_date": "2026-11-02",
+          "implied_pct": 3.75,
+          "realized_pct": 3.15,
+          "edge_pct": 0.6,
+          "exceeded": false,
+          "lead_days": 0
+        },
+        {
           "ticker": "STT",
           "earnings_date": "2026-10-14",
           "implied_pct": 4.77,
@@ -1601,6 +1856,15 @@
           "lead_days": 2
         },
         {
+          "ticker": "BKNG",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 6.93,
+          "realized_pct": 5.6,
+          "edge_pct": 1.33,
+          "exceeded": false,
+          "lead_days": 0
+        },
+        {
           "ticker": "GSK",
           "earnings_date": "2026-10-28",
           "implied_pct": 4.5,
@@ -1635,6 +1899,15 @@
           "edge_pct": 1.64,
           "exceeded": false,
           "lead_days": 1
+        },
+        {
+          "ticker": "CPNG",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 9.32,
+          "realized_pct": 7.24,
+          "edge_pct": 2.08,
+          "exceeded": false,
+          "lead_days": 0
         },
         {
           "ticker": "PNC",
@@ -1763,6 +2036,15 @@
           "lead_days": 1
         },
         {
+          "ticker": "EMR",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 5.71,
+          "realized_pct": 2.49,
+          "edge_pct": 3.22,
+          "exceeded": false,
+          "lead_days": 1
+        },
+        {
           "ticker": "JBHT",
           "earnings_date": "2026-10-15",
           "implied_pct": 5.74,
@@ -1777,6 +2059,15 @@
           "implied_pct": 4.41,
           "realized_pct": 1.07,
           "edge_pct": 3.34,
+          "exceeded": false,
+          "lead_days": 1
+        },
+        {
+          "ticker": "AFL",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 3.62,
+          "realized_pct": 0.24,
+          "edge_pct": 3.38,
           "exceeded": false,
           "lead_days": 1
         },
@@ -1799,6 +2090,24 @@
           "lead_days": 2
         },
         {
+          "ticker": "AMGN",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 4.15,
+          "realized_pct": 0.58,
+          "edge_pct": 3.57,
+          "exceeded": false,
+          "lead_days": 0
+        },
+        {
+          "ticker": "KHC",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 4.42,
+          "realized_pct": 0.65,
+          "edge_pct": 3.77,
+          "exceeded": false,
+          "lead_days": 1
+        },
+        {
           "ticker": "DXCM",
           "earnings_date": "2026-10-29",
           "implied_pct": 7.99,
@@ -1808,6 +2117,24 @@
           "lead_days": 0
         },
         {
+          "ticker": "NTR",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 4.86,
+          "realized_pct": 0.75,
+          "edge_pct": 4.11,
+          "exceeded": false,
+          "lead_days": 0
+        },
+        {
+          "ticker": "COHR",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 11.41,
+          "realized_pct": 7.2,
+          "edge_pct": 4.21,
+          "exceeded": false,
+          "lead_days": 1
+        },
+        {
           "ticker": "DHR",
           "earnings_date": "2026-10-21",
           "implied_pct": 6.64,
@@ -1815,6 +2142,15 @@
           "edge_pct": 4.29,
           "exceeded": false,
           "lead_days": 1
+        },
+        {
+          "ticker": "VRTX",
+          "earnings_date": "2026-11-02",
+          "implied_pct": 5.74,
+          "realized_pct": 1.45,
+          "edge_pct": 4.29,
+          "exceeded": false,
+          "lead_days": 0
         },
         {
           "ticker": "COF",
@@ -1916,6 +2252,15 @@
           "lead_days": 0
         },
         {
+          "ticker": "NVO",
+          "earnings_date": "2026-11-04",
+          "implied_pct": 6.69,
+          "realized_pct": 0.05,
+          "edge_pct": 6.64,
+          "exceeded": false,
+          "lead_days": 1
+        },
+        {
           "ticker": "GEV",
           "earnings_date": "2026-10-28",
           "implied_pct": 6.94,
@@ -1934,6 +2279,15 @@
           "lead_days": 2
         },
         {
+          "ticker": "ANET",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 9.31,
+          "realized_pct": 1.48,
+          "edge_pct": 7.83,
+          "exceeded": false,
+          "lead_days": 0
+        },
+        {
           "ticker": "GLW",
           "earnings_date": "2026-10-27",
           "implied_pct": 8.66,
@@ -1941,17 +2295,44 @@
           "edge_pct": 8.2,
           "exceeded": false,
           "lead_days": 1
+        },
+        {
+          "ticker": "TOST",
+          "earnings_date": "2026-11-03",
+          "implied_pct": 11.05,
+          "realized_pct": 2.06,
+          "edge_pct": 8.99,
+          "exceeded": false,
+          "lead_days": 0
         }
       ],
       "lead_cutoff_days": 2,
       "stale_capture": {
-        "n_events": 33,
-        "pct_exceeding_implied": 66.7,
-        "n_exceeding": 22,
-        "avg_implied_pct": 3.16,
-        "avg_realized_pct": 5.58,
-        "avg_edge_pct": -2.42,
+        "n_events": 45,
+        "pct_exceeding_implied": 55.6,
+        "n_exceeding": 25,
+        "avg_implied_pct": 4.65,
+        "avg_realized_pct": 6.27,
+        "avg_edge_pct": -1.62,
         "events": [
+          {
+            "ticker": "GRAB",
+            "earnings_date": "2026-11-02",
+            "implied_pct": 10.35,
+            "realized_pct": 25.83,
+            "edge_pct": -15.48,
+            "exceeded": true,
+            "lead_days": 3
+          },
+          {
+            "ticker": "FISV",
+            "earnings_date": "2026-11-03",
+            "implied_pct": 10.74,
+            "realized_pct": 26.21,
+            "edge_pct": -15.47,
+            "exceeded": true,
+            "lead_days": 4
+          },
           {
             "ticker": "KGC",
             "earnings_date": "2026-10-28",
@@ -2032,6 +2413,15 @@
             "edge_pct": -4.86,
             "exceeded": true,
             "lead_days": 7
+          },
+          {
+            "ticker": "TSEM",
+            "earnings_date": "2026-11-02",
+            "implied_pct": 10.22,
+            "realized_pct": 14.66,
+            "edge_pct": -4.44,
+            "exceeded": true,
+            "lead_days": 3
           },
           {
             "ticker": "HAL",
@@ -2169,6 +2559,15 @@
             "lead_days": 7
           },
           {
+            "ticker": "ETN",
+            "earnings_date": "2026-11-03",
+            "implied_pct": 7.18,
+            "realized_pct": 6.87,
+            "edge_pct": 0.31,
+            "exceeded": false,
+            "lead_days": 4
+          },
+          {
             "ticker": "SMMT",
             "earnings_date": "2026-10-26",
             "implied_pct": 3.54,
@@ -2176,6 +2575,15 @@
             "edge_pct": 0.45,
             "exceeded": false,
             "lead_days": 4
+          },
+          {
+            "ticker": "MAR",
+            "earnings_date": "2026-11-02",
+            "implied_pct": 4.48,
+            "realized_pct": 3.73,
+            "edge_pct": 0.75,
+            "exceeded": false,
+            "lead_days": 3
           },
           {
             "ticker": "HLT",
@@ -2194,6 +2602,15 @@
             "edge_pct": 1.22,
             "exceeded": false,
             "lead_days": 7
+          },
+          {
+            "ticker": "RACE",
+            "earnings_date": "2026-11-03",
+            "implied_pct": 6.78,
+            "realized_pct": 5.29,
+            "edge_pct": 1.49,
+            "exceeded": false,
+            "lead_days": 4
           },
           {
             "ticker": "TMO",
@@ -2232,6 +2649,15 @@
             "lead_days": 5
           },
           {
+            "ticker": "TEVA",
+            "earnings_date": "2026-11-03",
+            "implied_pct": 7.74,
+            "realized_pct": 2.26,
+            "edge_pct": 5.48,
+            "exceeded": false,
+            "lead_days": 4
+          },
+          {
             "ticker": "SMMT",
             "earnings_date": "2026-10-19",
             "implied_pct": 7.01,
@@ -2241,6 +2667,15 @@
             "lead_days": 6
           },
           {
+            "ticker": "APO",
+            "earnings_date": "2026-11-03",
+            "implied_pct": 6.25,
+            "realized_pct": 0.59,
+            "edge_pct": 5.66,
+            "exceeded": false,
+            "lead_days": 4
+          },
+          {
             "ticker": "DPZ",
             "earnings_date": "2026-10-13",
             "implied_pct": 7.6,
@@ -2248,6 +2683,42 @@
             "edge_pct": 5.77,
             "exceeded": false,
             "lead_days": 6
+          },
+          {
+            "ticker": "TEM",
+            "earnings_date": "2026-11-02",
+            "implied_pct": 12.53,
+            "realized_pct": 6.74,
+            "edge_pct": 5.79,
+            "exceeded": false,
+            "lead_days": 3
+          },
+          {
+            "ticker": "SMMT",
+            "earnings_date": "2026-11-02",
+            "implied_pct": 10.82,
+            "realized_pct": 3.95,
+            "edge_pct": 6.87,
+            "exceeded": false,
+            "lead_days": 3
+          },
+          {
+            "ticker": "TLN",
+            "earnings_date": "2026-11-03",
+            "implied_pct": 8.28,
+            "realized_pct": 0.68,
+            "edge_pct": 7.6,
+            "exceeded": false,
+            "lead_days": 4
+          },
+          {
+            "ticker": "EL",
+            "earnings_date": "2026-11-02",
+            "implied_pct": 9.28,
+            "realized_pct": 1.1,
+            "edge_pct": 8.18,
+            "exceeded": false,
+            "lead_days": 3
           }
         ]
       }
@@ -2273,11 +2744,11 @@
   ],
   "excluding_market_events": {
     "iv_rv": {
-      "resolved": 36,
-      "wins": 17,
-      "win_rate": 47.2,
-      "avg_edge_pct": -1.7,
-      "open": 7
+      "resolved": 42,
+      "wins": 19,
+      "win_rate": 45.2,
+      "avg_edge_pct": -1.91,
+      "open": 2
     },
     "iv_condors": {
       "closed": 10,
@@ -2289,84 +2760,84 @@
     },
     "iv_gate_comparison": {
       "gated": {
-        "n_events": 45,
-        "n_wins": 27,
-        "win_rate": 60.0,
-        "total_pnl": -2350.0,
-        "expectancy": -52.22,
-        "profit_factor": 0.47,
-        "avg_win": 76.24,
-        "avg_loss": -244.92,
+        "n_events": 63,
+        "n_wins": 38,
+        "win_rate": 60.3,
+        "total_pnl": -2679.6,
+        "expectancy": -42.53,
+        "profit_factor": 0.52,
+        "avg_win": 75.69,
+        "avg_loss": -222.24,
         "largest_single_loss": -755.2,
-        "max_drawdown": 2714.0,
-        "sharpe": -0.22,
-        "sortino": -0.24,
-        "tail_ratio": 146.96,
-        "tail_events": 3,
-        "tail_pct_effective": 6.7,
+        "max_drawdown": 3064.6,
+        "sharpe": -0.19,
+        "sortino": -0.2,
+        "tail_ratio": -705.73,
+        "tail_events": 4,
+        "tail_pct_effective": 6.3,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 55
+        "events_needed": 37
       },
       "ungated": {
-        "n_events": 105,
-        "n_wins": 53,
-        "win_rate": 50.5,
-        "total_pnl": -15757.0,
-        "expectancy": -150.07,
-        "profit_factor": 0.22,
-        "avg_win": 83.14,
-        "avg_loss": -387.76,
-        "largest_single_loss": -2813.2,
-        "max_drawdown": 16404.2,
-        "sharpe": -0.32,
-        "sortino": -0.31,
-        "tail_ratio": 29.88,
-        "tail_events": 6,
-        "tail_pct_effective": 5.7,
+        "n_events": 139,
+        "n_wins": 74,
+        "win_rate": 53.2,
+        "total_pnl": -20614.8,
+        "expectancy": -148.31,
+        "profit_factor": 0.23,
+        "avg_win": 81.52,
+        "avg_loss": -409.95,
+        "largest_single_loss": -3322.2,
+        "max_drawdown": 20829.2,
+        "sharpe": -0.29,
+        "sortino": -0.29,
+        "tail_ratio": 35.58,
+        "tail_events": 7,
+        "tail_pct_effective": 5.0,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": true,
         "events_needed": 0
       },
       "failed_gates": {
-        "n_events": 58,
-        "n_wins": 25,
-        "win_rate": 43.1,
-        "total_pnl": -13218.6,
-        "expectancy": -227.91,
+        "n_events": 74,
+        "n_wins": 35,
+        "win_rate": 47.3,
+        "total_pnl": -17746.8,
+        "expectancy": -239.82,
         "profit_factor": 0.15,
-        "avg_win": 91.92,
-        "avg_loss": -470.2,
-        "largest_single_loss": -2813.2,
-        "max_drawdown": 13959.6,
-        "sharpe": -0.39,
-        "sortino": -0.37,
-        "tail_ratio": 20.65,
-        "tail_events": 3,
-        "tail_pct_effective": 5.2,
+        "avg_win": 88.74,
+        "avg_loss": -534.69,
+        "largest_single_loss": -3322.2,
+        "max_drawdown": 18074.8,
+        "sharpe": -0.37,
+        "sortino": -0.35,
+        "tail_ratio": 24.34,
+        "tail_events": 4,
+        "tail_pct_effective": 5.4,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 42
+        "events_needed": 26
       },
       "consider": {
-        "n_events": 33,
-        "n_wins": 15,
-        "win_rate": 45.5,
-        "total_pnl": -6275.6,
-        "expectancy": -190.17,
-        "profit_factor": 0.2,
-        "avg_win": 101.47,
-        "avg_loss": -433.2,
+        "n_events": 45,
+        "n_wins": 24,
+        "win_rate": 53.3,
+        "total_pnl": -7004.0,
+        "expectancy": -155.64,
+        "profit_factor": 0.24,
+        "avg_win": 92.34,
+        "avg_loss": -439.06,
         "largest_single_loss": -2813.2,
-        "max_drawdown": 7251.2,
-        "sharpe": -0.33,
-        "sortino": -0.32,
-        "tail_ratio": 34.89,
-        "tail_events": 2,
-        "tail_pct_effective": 6.1,
+        "max_drawdown": 7566.6,
+        "sharpe": -0.31,
+        "sortino": -0.3,
+        "tail_ratio": 33.92,
+        "tail_events": 3,
+        "tail_pct_effective": 6.7,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 67
+        "events_needed": 55
       },
       "unknown_gates": {
         "n_events": 2,
@@ -2391,8 +2862,8 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-11-06T12:34:53.898275",
-    "age_minutes": 25.3,
+    "last_seen": "2026-11-09T12:35:40.368096",
+    "age_minutes": 31.9,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -2400,16 +2871,16 @@
   "by_strategy": [],
   "by_hour": [],
   "recent": [],
-  "open_positions": [
-    {
-      "symbol": "UBER261106P00059000",
-      "qty": 6.0,
-      "pnl": -198.0,
-      "pnl_pct": -100.0,
-      "market_val": 0.0
-    }
-  ],
+  "open_positions": [],
   "proposals": [
+    "Watchlist REMOVE?: ADBE \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: AMAT \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: AMD \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: ARM \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: AVGO \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: AXP \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: BA \u2014 0 signals & 0 trades in 14d.",
+    "Watchlist REMOVE?: BAC \u2014 0 signals & 0 trades in 14d.",
     "No changes proposed \u2014 baseline accruing. Keep collecting."
   ]
 }
