@@ -1,5 +1,5 @@
 {
-  "generated": "2026-11-09T13:07:34.935043+00:00",
+  "generated": "2026-11-10T13:10:36.952815+00:00",
   "account": {
     "equity": 50284.91,
     "cash": 50284.91,
@@ -11,7 +11,7 @@
     "total_pnl": 284.9100000000035,
     "total_pnl_pct": 0.569820000000007,
     "open_positions": 0,
-    "days_running": 62,
+    "days_running": 63,
     "error": null
   },
   "metrics": {
@@ -300,6 +300,10 @@
     },
     {
       "date": "2026-11-09",
+      "equity": 50284.91
+    },
+    {
+      "date": "2026-11-10",
       "equity": 50284.91
     }
   ],
@@ -760,16 +764,16 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 219,
-    "structures_attempted": 1095,
+    "events": 221,
+    "structures_attempted": 1105,
     "structures_priced": 832,
-    "priced_pct": 76.0,
+    "priced_pct": 75.3,
     "dropped_variants": {
-      "condor_0.7sd": 58,
-      "condor_1.0sd": 73,
-      "condor_1.3sd": 100,
-      "fly": 21,
-      "straddle": 11
+      "condor_0.7sd": 60,
+      "condor_1.0sd": 75,
+      "condor_1.3sd": 102,
+      "fly": 23,
+      "straddle": 13
     }
   },
   "implied_vs_realized": {
@@ -2862,8 +2866,8 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-11-09T12:35:40.368096",
-    "age_minutes": 31.9,
+    "last_seen": "2026-11-10T12:07:19.158754",
+    "age_minutes": 63.3,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -2873,14 +2877,6 @@
   "recent": [],
   "open_positions": [],
   "proposals": [
-    "Watchlist REMOVE?: ADBE \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: AMAT \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: AMD \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: ARM \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: AVGO \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: AXP \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: BA \u2014 0 signals & 0 trades in 14d.",
-    "Watchlist REMOVE?: BAC \u2014 0 signals & 0 trades in 14d.",
     "No changes proposed \u2014 baseline accruing. Keep collecting."
   ]
 }
