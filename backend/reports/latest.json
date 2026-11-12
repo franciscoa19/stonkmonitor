@@ -1,5 +1,5 @@
 {
-  "generated": "2026-11-11T13:00:37.558965+00:00",
+  "generated": "2026-11-12T13:02:19.248466+00:00",
   "account": {
     "equity": 50284.91,
     "cash": 50284.91,
@@ -11,7 +11,7 @@
     "total_pnl": 284.9100000000035,
     "total_pnl_pct": 0.569820000000007,
     "open_positions": 0,
-    "days_running": 64,
+    "days_running": 65,
     "error": null
   },
   "metrics": {
@@ -308,6 +308,10 @@
     },
     {
       "date": "2026-11-11",
+      "equity": 50284.91
+    },
+    {
+      "date": "2026-11-12",
       "equity": 50284.91
     }
   ],
@@ -768,16 +772,16 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 222,
-    "structures_attempted": 1110,
-    "structures_priced": 847,
+    "events": 226,
+    "structures_attempted": 1130,
+    "structures_priced": 862,
     "priced_pct": 76.3,
     "dropped_variants": {
-      "condor_0.7sd": 58,
-      "condor_1.0sd": 73,
-      "condor_1.3sd": 100,
-      "fly": 21,
-      "straddle": 11
+      "condor_0.7sd": 59,
+      "condor_1.0sd": 74,
+      "condor_1.3sd": 101,
+      "fly": 22,
+      "straddle": 12
     }
   },
   "implied_vs_realized": {
@@ -2870,8 +2874,8 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-11-11T12:10:43.190562",
-    "age_minutes": 49.9,
+    "last_seen": "2026-11-12T12:41:55.912654",
+    "age_minutes": 20.4,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
