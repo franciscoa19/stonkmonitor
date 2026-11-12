@@ -24,7 +24,7 @@ from typing import Optional
 import numpy as np
 from scipy.interpolate import interp1d
 
-from market_time import et_today
+from market_time import ET, et_today
 from signals.iv_executor import is_pre_earnings_entry_window
 
 logger = logging.getLogger(__name__)
@@ -173,6 +173,46 @@ class EarningsSetup:
 _ED_CACHE: dict = {}                # ticker -> (date_str_or_None, fetched_epoch)
 _ED_TTL_HIT = 5 * 86400            # 5 days for a resolved date
 _ED_TTL_MISS = 6 * 3600            # 6 h for a None (ETF or transient failure)
+_RT_CACHE: dict = {}                # ticker -> (earnings date, 'pre'|'post'|None, fetched_epoch)
+_RT_TTL = 3600
+
+
+def _announced_time(stock, edate: Optional[str]) -> Optional[str]:
+    """'pre'/'post' from the time Yahoo shows for a report due today, for when
+    Nasdaq gives none (it has refused every request since 2026-11-10).
+
+    Only a confirmed, single time counts — not an estimate or a range — on the
+    same date, in the pre-market (04:00–09:30 ET) or after the close
+    (16:00–20:00 ET). Anything else stays unknown, so a same-day entry stays
+    blocked. Checked against known timing: UBER, PEP, UNH at 08:30 (pre);
+    PLTR, AMZN, ABNB, MSFT at 16:00 (post).
+    """
+    import time as _t
+    if not edate or edate != et_today().isoformat():
+        return None                 # only a same-day entry needs it
+    sym = getattr(stock, "ticker", None) or ""
+    now = _t.time()
+    hit = _RT_CACHE.get(sym)
+    if hit is not None and hit[0] == edate and now - hit[2] < _RT_TTL:
+        return hit[1]
+    value = None
+    try:
+        info = stock.info or {}
+        start, end = info.get("earningsTimestampStart"), info.get("earningsTimestampEnd")
+        if (info.get("isEarningsDateEstimate") is False
+                and isinstance(start, (int, float)) and start == end):
+            at = datetime.fromtimestamp(start, ET)
+            minute = at.hour * 60 + at.minute
+            if at.date().isoformat() == edate:
+                if 4 * 60 <= minute < 9 * 60 + 30:
+                    value = "pre"
+                elif 16 * 60 <= minute < 20 * 60:
+                    value = "post"
+    except Exception:
+        value = None
+    if sym:
+        _RT_CACHE[sym] = (edate, value, now)
+    return value
 
 
 def _fetch_next_earnings_date(stock) -> Optional[str]:
@@ -272,9 +312,9 @@ def _next_earnings_info(stock) -> tuple[Optional[str], Optional[str]]:
       1. Nasdaq calendar (date-keyed, shared cache — no per-ticker rate limit),
       2. yfinance per-ticker (cached 5d + one retry) as fallback.
 
-    `report_time` is "pre"/"post" only when Nasdaq supplies it. The yfinance
-    fallback intentionally returns None rather than guessing, because same-day
-    execution must fail closed when the print timing is unknown.
+    `report_time` is "pre"/"post" from Nasdaq, else — for a print due today —
+    from the confirmed time Yahoo shows (`_announced_time`). Otherwise None,
+    never a guess: same-day execution must fail closed when the timing is unknown.
     """
     sym = getattr(stock, "ticker", None) or ""
 
@@ -283,7 +323,7 @@ def _next_earnings_info(stock) -> tuple[Optional[str], Optional[str]]:
         from feeds.earnings_calendar import get_next_earnings, get_report_time
         d = get_next_earnings(sym)
         if d:
-            return d, get_report_time(sym)
+            return d, get_report_time(sym) or _announced_time(stock, d)
     except Exception:
         pass
 
@@ -295,11 +335,11 @@ def _next_earnings_info(stock) -> tuple[Optional[str], Optional[str]]:
         val, ts = hit
         ttl = _ED_TTL_HIT if val else _ED_TTL_MISS
         if now - ts < ttl:
-            return val, None
+            return val, _announced_time(stock, val)
     val = _fetch_next_earnings_date(stock)
     if sym:
         _ED_CACHE[sym] = (val, now)
-    return val, None
+    return val, _announced_time(stock, val)
 
 
 def _next_earnings_date(stock) -> Optional[str]:

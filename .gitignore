@@ -14,6 +14,7 @@
 backend/*.db
 backend/*.db-shm
 backend/*.db-wal
+backend/earnings_calendar_cache.json*
 backend/backups/
 
 # ── Python ────────────────────────────────────────────────────────────

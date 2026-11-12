@@ -16,3 +16,12 @@ def awake_for_hours(monkeypatch):
     except Exception:          # a test without the app's settings never reaches the gate
         return
     monkeypatch.setattr(main, "awake_clock", clock)
+
+
+@pytest.fixture(autouse=True)
+def calendar_cache_in_tmp(monkeypatch, tmp_path):
+    """The saved earnings calendar is never read from or written to the real
+    backend folder by a test."""
+    from feeds import earnings_calendar
+    monkeypatch.setattr(earnings_calendar, "_CACHE_FILE", tmp_path / "earnings_calendar_cache.json")
+    monkeypatch.setitem(earnings_calendar._cache, "loaded", True)
