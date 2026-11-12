@@ -173,46 +173,45 @@ class EarningsSetup:
 _ED_CACHE: dict = {}                # ticker -> (date_str_or_None, fetched_epoch)
 _ED_TTL_HIT = 5 * 86400            # 5 days for a resolved date
 _ED_TTL_MISS = 6 * 3600            # 6 h for a None (ETF or transient failure)
-_RT_CACHE: dict = {}                # ticker -> (earnings date, 'pre'|'post'|None, fetched_epoch)
+_RT_CACHE: dict = {}                # ticker -> (lookup day, (confirmed date, timing), fetched_epoch)
 _RT_TTL = 3600
 
 
-def _announced_time(stock, edate: Optional[str]) -> Optional[str]:
-    """'pre'/'post' from the time Yahoo shows for a report due today, for when
-    Nasdaq gives none (it has refused every request since 2026-11-10).
-
-    Only a confirmed, single time counts — not an estimate or a range — on the
-    same date, in the pre-market (04:00–09:30 ET) or after the close
-    (16:00–20:00 ET). Anything else stays unknown, so a same-day entry stays
-    blocked. Checked against known timing: UBER, PEP, UNH at 08:30 (pre);
-    PLTR, AMZN, ABNB, MSFT at 16:00 (post).
-    """
+def _confirmed_yahoo_event(stock) -> tuple[Optional[str], Optional[str]]:
+    """A confirmed single Yahoo timestamp, split into Eastern date and timing."""
     import time as _t
-    if not edate or edate != et_today().isoformat():
-        return None                 # only a same-day entry needs it
+    today = et_today().isoformat()
     sym = getattr(stock, "ticker", None) or ""
     now = _t.time()
     hit = _RT_CACHE.get(sym)
-    if hit is not None and hit[0] == edate and now - hit[2] < _RT_TTL:
+    if hit is not None and hit[0] == today and 0 <= now - hit[2] < _RT_TTL:
         return hit[1]
-    value = None
+    value = (None, None)
     try:
         info = stock.info or {}
         start, end = info.get("earningsTimestampStart"), info.get("earningsTimestampEnd")
         if (info.get("isEarningsDateEstimate") is False
-                and isinstance(start, (int, float)) and start == end):
+                and type(start) in (int, float) and start == end):
             at = datetime.fromtimestamp(start, ET)
             minute = at.hour * 60 + at.minute
-            if at.date().isoformat() == edate:
-                if 4 * 60 <= minute < 9 * 60 + 30:
-                    value = "pre"
-                elif 16 * 60 <= minute < 20 * 60:
-                    value = "post"
+            timing = None
+            if 4 * 60 <= minute < 9 * 60 + 30:
+                timing = "pre"
+            elif 16 * 60 <= minute < 20 * 60:
+                timing = "post"
+            value = (at.date().isoformat(), timing)
     except Exception:
-        value = None
+        pass
     if sym:
-        _RT_CACHE[sym] = (edate, value, now)
+        _RT_CACHE[sym] = (today, value, now)
     return value
+
+
+def _announced_time(stock, edate: Optional[str]) -> Optional[str]:
+    if edate != et_today().isoformat():
+        return None
+    reported_date, timing = _confirmed_yahoo_event(stock)
+    return timing if reported_date == edate else None
 
 
 def _fetch_next_earnings_date(stock) -> Optional[str]:
@@ -312,20 +311,31 @@ def _next_earnings_info(stock) -> tuple[Optional[str], Optional[str]]:
       1. Nasdaq calendar (date-keyed, shared cache — no per-ticker rate limit),
       2. yfinance per-ticker (cached 5d + one retry) as fallback.
 
-    `report_time` is "pre"/"post" from Nasdaq, else — for a print due today —
-    from the confirmed time Yahoo shows (`_announced_time`). Otherwise None,
-    never a guess: same-day execution must fail closed when the timing is unknown.
+    Retained Nasdaq rows need a matching confirmed Yahoo date. A conflicting
+    source or missing confirmation of retained same-day timing cannot open a
+    condor; for conflicting future dates, withhold the date as well.
     """
     sym = getattr(stock, "ticker", None) or ""
 
-    # Primary: shared Nasdaq-backed calendar.
-    try:
-        from feeds.earnings_calendar import get_next_earnings, get_report_time
-        d = get_next_earnings(sym)
-        if d:
-            return d, get_report_time(sym) or _announced_time(stock, d)
-    except Exception:
-        pass
+    from feeds.earnings_calendar import get_earnings_record
+    today = et_today().isoformat()
+    record = get_earnings_record(sym)
+    if record:
+        d, timing = record["date"], record["timing"]
+        verified = record["verified"]
+        if verified and d > today:
+            return d, timing
+        yahoo_date, yahoo_timing = _confirmed_yahoo_event(stock)
+        conflict = (yahoo_date is not None and yahoo_date != d
+                    or timing is not None and yahoo_timing is not None and timing != yahoo_timing)
+        if conflict or (not verified and yahoo_date != d):
+            return (d, None) if d == today else (None, None)
+        if d == today:
+            if yahoo_date == d:
+                # An exact but unclassified Yahoo time is not corroboration.
+                return d, yahoo_timing
+            return d, timing if verified else None
+        return d, yahoo_timing or timing
 
     # Fallback: per-ticker yfinance, cached + retried.
     import time as _t
@@ -334,7 +344,7 @@ def _next_earnings_info(stock) -> tuple[Optional[str], Optional[str]]:
     if hit is not None:
         val, ts = hit
         ttl = _ED_TTL_HIT if val else _ED_TTL_MISS
-        if now - ts < ttl:
+        if 0 <= now - ts < ttl and (val is None or val >= today):
             return val, _announced_time(stock, val)
     val = _fetch_next_earnings_date(stock)
     if sym:

@@ -27,8 +27,9 @@ Yang-Zhang implied-vs-realized volatility screen (`signals/earnings_scanner.py`)
 | Earnings bump | term structure slope 0–45 days ≤ −0.00406 | front-month volatility inflated by the print |
 
 All three → **SELL_PREMIUM**. The slope plus one other → **CONSIDER** (borderline). Otherwise **AVOID**.
-Earnings dates and report timing come from Nasdaq's earnings calendar (kept across restarts),
-with Yahoo Finance as the fallback; Nasdaq has refused automated requests since 2026-11-10.
+Earnings dates and report timing come from Nasdaq's earnings calendar, with Yahoo Finance as
+the fallback. A Nasdaq record kept from disk or a failed refresh needs Yahoo corroboration
+before it can authorize an entry. Conflicting same-day timing blocks the entry.
 
 ### 2. Opens an iron condor (SELL_PREMIUM only)
 `signals/iv_executor.py`, `main.maybe_execute_condor`:
@@ -73,8 +74,9 @@ never below 25%); three losses in a row halt new condors until a person re-arms 
 None of this trades; it builds the evidence.
 
 - **Hypothetical structures** (`iv_variant_evals`): for every setup, and for up to 25 extra large
-  companies every 6 hours from the Nasdaq calendar (none while Nasdaq refuses), it prices condors at 0.7, 1.0 and 1.3 standard
-  deviations, a butterfly and a straddle, and settles them at the expiry close.
+  companies every 6 hours, it prices condors at 0.7, 1.0 and 1.3 standard deviations, a butterfly,
+  and a straddle, and settles them at the expiry close. Yahoo's bulk calendar fills unanswered
+  Nasdaq dates for research discovery. It cannot supply entry timing or add tradeable tickers.
 - **IV/RV observations** (`iv_rv_evals`): the move the options priced against the move that happened.
 - **Gates vs baseline:** whether setups that pass all three gates do better than all events.
 - **Market-event tags:** days the whole market moved on news (e.g. a hot CPI print) can be tagged;

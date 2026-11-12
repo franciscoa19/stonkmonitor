@@ -51,7 +51,7 @@ def is_pre_earnings_entry_window(earnings_date: Optional[str],
 
     Calendar dates alone are insufficient on the event day: a before-market
     report has already happened at the opening bell. Same-day entries therefore
-    fail closed unless Nasdaq identifies an after-close print and it is still
+    fail closed unless the scanner identifies a verified after-close print and it is still
     before the regular-session close. `now` makes the safety rule testable.
     """
     try:

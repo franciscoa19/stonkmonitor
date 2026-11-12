@@ -123,6 +123,28 @@ This does not keep the host awake or guarantee future availability. Use an
 always-on host and an external trading-loop heartbeat. Preserve the intended
 local risk settings when moving hosts; code defaults can differ from `.env`.
 
+## Monitoring condor management from another host
+
+`GET /health` checks whether the web server is responding. For an outside
+monitor, use `GET /health/trading-loop` to check condor management progress.
+It returns HTTP 200 after a successful pass (including a flat ledger), and
+HTTP 503 until the first success or when no pass has succeeded for 15 minutes.
+A ledger read failure or an exception managing a condor does not refresh the
+timestamp. It measures loop progress; it does not certify quote availability.
+
+After deployment, verify it locally:
+
+    curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8000/health/trading-loop
+
+Like every route, it answers only on this machine: the API binds 127.0.0.1 and
+rejects any client that is not loopback or a Host header that is not localhost.
+Another host cannot poll it without a relay. The simplest outside monitor is a
+push: a small job on the trading host checks this route every few minutes and,
+on HTTP 200, pings an outside heartbeat service that alerts when the pings stop.
+A sleeping, powered-off or offline host sends nothing, so it alerts on those
+too. Verify that it alerts with the host offline. The endpoint itself sends no
+alerts; keep the trading API on its existing private bind address.
+
 ## Account-wide limits
 
 Two settings in `backend/.env` bound the whole account, whatever the per-trade

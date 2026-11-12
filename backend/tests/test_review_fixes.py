@@ -58,6 +58,86 @@ async def test_disarmed_monitor_reconciles_real_expiry_evidence(database, sessio
     assert result["status"] == "closed" and result["pnl"] == 100
 
 
+@pytest.mark.parametrize("age,status", [(None, 503), (-60, 503), (300, 200), (901, 503)])
+async def test_trading_loop_health_is_separate_from_process_health(session, monkeypatch, age, status):
+    last = datetime.now(timezone.utc) - timedelta(seconds=age) if age is not None else None
+    monkeypatch.setattr(session, "_condor_monitor_last_ok", last)
+    response = await session.trading_loop_health()
+    assert response.status_code == status
+    assert json.loads(response.body)["last_successful_cycle"] == (last.isoformat() if last else None)
+    assert (await session.health())["status"] == "ok"
+
+
+@pytest.mark.parametrize("state,expected", [("flat", 200), ("ledger_error", 503), ("manage_error", 503)])
+async def test_trading_loop_health_requires_completed_cycle(session, monkeypatch, state, expected):
+    async def active():
+        if state == "ledger_error":
+            raise DatabaseError("ledger unavailable")
+        return [{"id": 1}] if state == "manage_error" else []
+
+    async def manage(_row):
+        raise RuntimeError("could not manage condor")
+
+    async def leftover():
+        pass
+
+    async def sleep(seconds):
+        if seconds == 300:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(session, "_condor_monitor_last_ok", datetime.now(timezone.utc))
+    monkeypatch.setattr(session, "db", NS(get_active_condors=active))
+    monkeypatch.setattr(session, "_manage_condor", manage)
+    monkeypatch.setattr(session, "_note_valuable_leftover_wings", leftover)
+    monkeypatch.setattr(session.asyncio, "sleep", sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await session.iv_condor_monitor_loop()
+    assert (await session.trading_loop_health()).status_code == expected
+
+
+async def test_research_discovery_stays_out_of_execution(session, monkeypatch):
+    from feeds import earnings_calendar, uw_budget
+    from signals import earnings_scanner
+
+    calls = []
+    day = "2026-11-27"
+    cfg = session.settings.model_copy(update={"iv_measure_universe_enabled": True,
+                                              "iv_variants_log_enabled": True})
+
+    async def scan(ticker):
+        return NS(ticker=ticker, next_earnings_date=day if ticker == "MATCH" else "2026-11-30")
+
+    async def pricing(*_args, **_kwargs):
+        return "fresh", None
+
+    async def log(setup, *, gate_passed, source):
+        calls.append((setup.ticker, gate_passed, source))
+        return 1
+
+    async def execute(*_args, **_kwargs):
+        calls.append("unexpected execution")
+
+    async def sleep(seconds):
+        if seconds == max(1, cfg.iv_measure_interval_hours) * 3600:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(session, "settings", cfg)
+    monkeypatch.setattr(uw_budget, "current_session", lambda: "rth")
+    monkeypatch.setattr(earnings_calendar, "get_measurement_reporters", lambda *a, **kw: [
+        {"ticker": ticker, "date": day} for ticker in ("MISMATCH", "MATCH")])
+    monkeypatch.setattr(earnings_scanner, "scan_ticker", scan)
+    monkeypatch.setattr(earnings_scanner, "is_near_earnings", lambda *_: True)
+    monkeypatch.setattr(earnings_scanner, "passes_all_sell_gates", lambda *_: True)
+    monkeypatch.setattr(session, "variant_pricing_action", pricing)
+    monkeypatch.setattr(session, "_has_front_expiry", lambda *_: True)
+    monkeypatch.setattr(session, "log_variant_evals", log)
+    monkeypatch.setattr(session, "maybe_execute_condor", execute)
+    monkeypatch.setattr(session.asyncio, "sleep", sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await session.measurement_universe_loop()
+    assert calls == [("MATCH", True, "measurement")]
+
+
 def test_measurement_snapshot_preserves_quotes_and_excludes_credentials():
     from signals.measurement_capture import measurement_snapshot
     quote = {"bid": 1, "ask": 2, "timestamp": "2026-10-06T14:00:00+00:00", "feed": "opra"}

@@ -25,3 +25,4 @@ def calendar_cache_in_tmp(monkeypatch, tmp_path):
     from feeds import earnings_calendar
     monkeypatch.setattr(earnings_calendar, "_CACHE_FILE", tmp_path / "earnings_calendar_cache.json")
     monkeypatch.setitem(earnings_calendar._cache, "loaded", True)
+    monkeypatch.setitem(earnings_calendar._cache, "answered_days", frozenset())

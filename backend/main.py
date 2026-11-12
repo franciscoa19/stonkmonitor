@@ -12,9 +12,11 @@ import logging
 import json
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from awake_clock import clock as awake_clock
 from config import get_settings
@@ -1478,12 +1480,12 @@ async def measurement_universe_loop():
     trade, and that is the cheapest way to make the comparison answerable this
     season rather than in 2028.
 
-    Candidates come from the Nasdaq calendar already in memory, filtered by
+    Candidates come from Nasdaq and Yahoo's research-only fallback, filtered by
     market cap as a free liquidity proxy and ordered by proximity to the print
     (where front-month IV is actually inflated), then capped per cycle so the
     scan load stays bounded.
     """
-    from feeds.earnings_calendar import get_upcoming_reporters
+    from feeds.earnings_calendar import get_measurement_reporters
     from feeds.uw_budget import current_session
     from signals.earnings_scanner import (scan_ticker as earnings_scan,
                                           passes_all_sell_gates, is_near_earnings)
@@ -1499,7 +1501,7 @@ async def measurement_universe_loop():
                 await asyncio.sleep(3600)
                 continue
             loop = asyncio.get_event_loop()
-            cands = await loop.run_in_executor(None, lambda: get_upcoming_reporters(
+            cands = await loop.run_in_executor(None, lambda: get_measurement_reporters(
                 s.iv_setup_max_days_to_earnings,
                 min_market_cap=s.iv_measure_min_market_cap,
                 limit=s.iv_measure_max_per_cycle * 4,   # headroom for dedup skips
@@ -1534,7 +1536,8 @@ async def measurement_universe_loop():
                 try:
                     setup = await earnings_scan(tk)
                     scanned += 1
-                    if not setup or not is_near_earnings(setup, s.iv_setup_max_days_to_earnings):
+                    if (not setup or setup.next_earnings_date != c["date"]
+                            or not is_near_earnings(setup, s.iv_setup_max_days_to_earnings)):
                         continue
                     n = await log_variant_evals(
                         setup,
@@ -2155,18 +2158,28 @@ async def _note_valuable_leftover_wings() -> None:
                 "sell it by hand to collect that, or leave it to the broker at expiry.")
 
 
+_condor_monitor_last_ok: datetime | None = None
+_CONDOR_MONITOR_STALE_SECONDS = 900  # three expected five-minute cycles
+
+
 async def iv_condor_monitor_loop():
     """Manage open iron condors: confirm fills, take profit, close after prints."""
+    global _condor_monitor_last_ok
+    _condor_monitor_last_ok = None
     await asyncio.sleep(45)
     while True:
         try:
+            cycle_ok = True
             # Entry arming never disables exits or settlement of existing risk.
             for c in await db.get_active_condors():
                 try:
                     await _manage_condor(c)
                 except Exception as e:
+                    cycle_ok = False
                     logger.warning(f"Condor #{c.get('id')} manage error: {e}")
                 await asyncio.sleep(1)
+            if cycle_ok:
+                _condor_monitor_last_ok = datetime.now(timezone.utc)
             try:
                 await _note_valuable_leftover_wings()
             except Exception as e:
@@ -2780,6 +2793,19 @@ async def health():
         "signals_stored": len(signal_store),
         "ws_clients": len(manager.active),
     }
+
+
+@app.get("/health/trading-loop")
+async def trading_loop_health():
+    """A separate probe for an external monitor; process health is unchanged."""
+    last = _condor_monitor_last_ok
+    age = (datetime.now(timezone.utc) - last).total_seconds() if last else None
+    healthy = age is not None and 0 <= age < _CONDOR_MONITOR_STALE_SECONDS
+    return JSONResponse({"status": "ok" if healthy else "stale",
+                         "last_successful_cycle": last.isoformat() if last else None,
+                         "age_seconds": round(age, 1) if age is not None else None,
+                         "threshold_seconds": _CONDOR_MONITOR_STALE_SECONDS},
+                        status_code=200 if healthy else 503)
 
 
 @app.get("/signals")
