@@ -2189,6 +2189,10 @@ async def iv_condor_monitor_loop():
         await asyncio.sleep(300)  # every 5 min
 
 
+EARNINGS_SCAN_INTERVAL = 1800        # each ticker's earnings scan, at most this often
+EARNINGS_QUOTE_RETRY_SECONDS = 300   # sooner while Yahoo has not quoted the front expiry
+
+
 async def iv_scanner_loop():
     """Poll IV rank + earnings setup for watchlist tickers every 5 minutes.
 
@@ -2200,7 +2204,7 @@ async def iv_scanner_loop():
     from api.routes import _watchlist
     from feeds.uw_budget import current_session, budget
     from feeds.unusual_whales import iv_summary_from_termstructure
-    from signals.earnings_scanner import (scan_ticker as earnings_scan,
+    from signals.earnings_scanner import (scan_ticker_with_reason,
                                           is_sell_eligible, is_near_earnings, passes_all_sell_gates)
     await asyncio.sleep(30)  # give server time to start
 
@@ -2212,6 +2216,7 @@ async def iv_scanner_loop():
             await asyncio.sleep(1800)  # check again in 30 min
             continue
 
+        not_quoted: list[str] = []  # front expiry not quoted by Yahoo yet, this pass
         for ticker in list(_watchlist):
             try:
                 # ── IV Rank (UW) ────────────────────────────────────────
@@ -2235,9 +2240,15 @@ async def iv_scanner_loop():
 
                 # ── Earnings IV/RV setup (yfinance) — max once per 30 min ──
                 now = _time.time()
-                if now - _earnings_last_run.get(ticker, 0) >= 1800:
+                if now - _earnings_last_run.get(ticker, 0) >= EARNINGS_SCAN_INTERVAL:
                     _earnings_last_run[ticker] = now
-                    setup  = await earnings_scan(ticker)
+                    setup, why = await scan_ticker_with_reason(ticker)
+                    if why == "quotes_not_ready" and is_rth_now():
+                        # Yahoo fills its chains in some minutes after the open.
+                        # A same-day entry should not wait the full interval.
+                        _earnings_last_run[ticker] = (
+                            now - EARNINGS_SCAN_INTERVAL + EARNINGS_QUOTE_RETRY_SECONDS)
+                        not_quoted.append(ticker)
                     signal = engine.score_earnings_setup(setup)
                     # Only act on a scored setup when it's a real earnings play —
                     # a known print within the window, valid IV/RV. Filters the
@@ -2304,6 +2315,13 @@ async def iv_scanner_loop():
             except Exception as e:
                 logger.warning(f"IV scanner error for {ticker}: {e}")
             await asyncio.sleep(2)  # 2s between tickers
+
+        if not_quoted:
+            logger.info(
+                f"Earnings scan: no Yahoo quote on the front expiry yet for "
+                f"{len(not_quoted)} ticker(s) ({', '.join(not_quoted[:8])}"
+                f"{', …' if len(not_quoted) > 8 else ''}) — trying again in "
+                f"{EARNINGS_QUOTE_RETRY_SECONDS // 60} min")
 
         # Cycle cadence: 5 min RTH, 15 min extended, 30 min overnight.
         # Throttle doubles all of these.

@@ -27,6 +27,9 @@ Yang-Zhang implied-vs-realized volatility screen (`signals/earnings_scanner.py`)
 | Earnings bump | term structure slope 0–45 days ≤ −0.00406 | front-month volatility inflated by the print |
 
 All three → **SELL_PREMIUM**. The slope plus one other → **CONSIDER** (borderline). Otherwise **AVOID**.
+Option prices come from Yahoo. When Yahoo has no two-sided quote at the money on the front
+expiry (bid and ask 0 overnight and for the first minutes after the open), the scan returns
+no result rather than AVOID; in market hours that ticker is scanned again 5 minutes later.
 Earnings dates and report timing come from Nasdaq's earnings calendar, with Yahoo Finance as
 the fallback. A Nasdaq record kept from disk or a failed refresh needs Yahoo corroboration
 before it can authorize an entry. Conflicting same-day timing blocks the entry.

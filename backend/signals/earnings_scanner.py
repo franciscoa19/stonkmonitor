@@ -359,24 +359,58 @@ def _next_earnings_date(stock) -> Optional[str]:
 
 # ── Main scanner ──────────────────────────────────────────────────────────────
 
-async def scan_ticker(ticker: str) -> Optional[EarningsSetup]:
+class QuotesNotReady(Exception):
+    """Yahoo lists the front expiry but has no usable quote at the money yet."""
+
+
+# Yahoo's IV for an unquoted contract is a placeholder (seen: 0.00001, 0.002,
+# 0.004). A real equity option's IV is well above this floor.
+MIN_QUOTED_IV = 0.01
+
+
+def _quoted(row) -> bool:
+    """A contract Yahoo actually has a two-sided market and an IV for.
+
+    Overnight and for the first minutes after the open Yahoo shows bid = ask = 0
+    with a placeholder IV (CSCO's whole chain on 2026-11-12 until about 09:35).
     """
-    Run the full IV/RV earnings scan for one ticker.
-    Returns EarningsSetup if enough data exists, else None.
-    Runs yfinance in a thread so it doesn't block the event loop.
-    """
+    try:
+        bid, ask, iv = float(row["bid"]), float(row["ask"]), float(row["impliedVolatility"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (math.isfinite(bid) and math.isfinite(ask) and math.isfinite(iv)
+            and 0 < bid <= ask and iv >= MIN_QUOTED_IV)
+
+
+async def scan_ticker_with_reason(ticker: str) -> tuple[Optional[EarningsSetup], Optional[str]]:
+    """`scan_ticker`, plus why there is no setup: "quotes_not_ready" when Yahoo
+    has not quoted the front expiry yet (worth asking again soon), "error" for
+    anything else that failed, None when the scan ran."""
     ticker = ticker.strip().upper()
     if not ticker:
-        return None
+        return None, None
 
     try:
         result = await asyncio.get_event_loop().run_in_executor(
             None, _compute_sync, ticker
         )
-        return result
+        return result, None
+    except QuotesNotReady as e:
+        logger.debug(f"Earnings scan {ticker}: {e}")
+        return None, "quotes_not_ready"
     except Exception as e:
         logger.debug(f"Earnings scan {ticker}: {e}")
-        return None
+        return None, "error"
+
+
+async def scan_ticker(ticker: str) -> Optional[EarningsSetup]:
+    """
+    Run the full IV/RV earnings scan for one ticker.
+    Returns EarningsSetup if enough data exists, else None — including while
+    Yahoo has no two-sided quote on the front expiry (no data is not "AVOID").
+    Runs yfinance in a thread so it doesn't block the event loop.
+    """
+    return (await scan_ticker_with_reason(ticker))[0]
 
 
 def _compute_sync(ticker: str) -> Optional[EarningsSetup]:
@@ -414,20 +448,25 @@ def _compute_sync(ticker: str) -> Optional[EarningsSetup]:
             if calls.empty or puts.empty:
                 continue
 
-            call_idx = (calls["strike"] - underlying).abs().idxmin()
-            put_idx  = (puts["strike"]  - underlying).abs().idxmin()
-            call_iv  = float(calls.loc[call_idx, "impliedVolatility"])
-            put_iv   = float(puts.loc[put_idx,  "impliedVolatility"])
-            atm_ivs[exp_date] = (call_iv + put_iv) / 2.0
+            call = calls.loc[(calls["strike"] - underlying).abs().idxmin()]
+            put  = puts.loc[(puts["strike"]  - underlying).abs().idxmin()]
+            # An unquoted contract still has a row, with bid/ask 0 and a
+            # placeholder IV; averaging that in reads as "no premium at all".
+            if not (_quoted(call) and _quoted(put)):
+                if i == 0:
+                    # The front expiry carries the earnings premium and the
+                    # expected move: without it there is nothing to score.
+                    raise QuotesNotReady(f"no two-sided ATM quote on {exp_date} yet")
+                continue
+            atm_ivs[exp_date] = (float(call["impliedVolatility"])
+                                 + float(put["impliedVolatility"])) / 2.0
 
             # Front month straddle for expected move
             if i == 0:
-                cb = calls.loc[call_idx, "bid"]
-                ca = calls.loc[call_idx, "ask"]
-                pb = puts.loc[put_idx,  "bid"]
-                pa = puts.loc[put_idx,  "ask"]
-                if all(v is not None for v in [cb, ca, pb, pa]):
-                    straddle_price = (cb + ca) / 2.0 + (pb + pa) / 2.0
+                straddle_price = ((float(call["bid"]) + float(call["ask"])) / 2.0
+                                  + (float(put["bid"]) + float(put["ask"])) / 2.0)
+        except QuotesNotReady:
+            raise
         except Exception:
             continue
 
