@@ -1,5 +1,5 @@
 {
-  "generated": "2026-11-12T13:02:19.248466+00:00",
+  "generated": "2026-11-13T13:00:47.116450+00:00",
   "account": {
     "equity": 50284.91,
     "cash": 50284.91,
@@ -11,7 +11,7 @@
     "total_pnl": 284.9100000000035,
     "total_pnl_pct": 0.569820000000007,
     "open_positions": 0,
-    "days_running": 65,
+    "days_running": 66,
     "error": null
   },
   "metrics": {
@@ -313,6 +313,10 @@
     {
       "date": "2026-11-12",
       "equity": 50284.91
+    },
+    {
+      "date": "2026-11-13",
+      "equity": 50284.91
     }
   ],
   "iv_rv": {
@@ -320,7 +324,7 @@
     "wins": 22,
     "win_rate": 42.3,
     "avg_edge_pct": -2.01,
-    "open": 3
+    "open": 9
   },
   "iv_condors": {
     "closed": 12,
@@ -772,16 +776,16 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 226,
-    "structures_attempted": 1130,
-    "structures_priced": 862,
-    "priced_pct": 76.3,
+    "events": 261,
+    "structures_attempted": 1305,
+    "structures_priced": 967,
+    "priced_pct": 74.1,
     "dropped_variants": {
-      "condor_0.7sd": 59,
-      "condor_1.0sd": 74,
-      "condor_1.3sd": 101,
-      "fly": 22,
-      "straddle": 12
+      "condor_0.7sd": 77,
+      "condor_1.0sd": 92,
+      "condor_1.3sd": 125,
+      "fly": 31,
+      "straddle": 13
     }
   },
   "implied_vs_realized": {
@@ -2760,7 +2764,7 @@
       "wins": 19,
       "win_rate": 45.2,
       "avg_edge_pct": -1.91,
-      "open": 3
+      "open": 9
     },
     "iv_condors": {
       "closed": 10,
@@ -2874,8 +2878,8 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-11-12T12:41:55.912654",
-    "age_minutes": 20.4,
+    "last_seen": "2026-11-13T12:20:26.470654",
+    "age_minutes": 40.3,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
