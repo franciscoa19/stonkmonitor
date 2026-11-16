@@ -111,6 +111,32 @@ async def test_an_empty_or_unreadable_later_expiry_is_skipped(yahoo, later):
     assert setup.iv30 == pytest.approx(full.iv30, rel=0.02)
 
 
+@pytest.mark.parametrize("failure", ["empty_calls", "empty_puts", "request_error", "missing_strike"])
+async def test_missing_front_data_cannot_score_later_expiries(yahoo, monkeypatch, failure):
+    import yfinance
+
+    ticker = FakeTicker([good(0)] + [quote(2, 3, 0.95 - 0.08 * i) for i in range(1, len(EXPIRIES))])
+    original = ticker.option_chain
+
+    def option_chain(expiry):
+        chain = original(expiry)
+        if expiry != EXPIRIES[0]:
+            return chain
+        if failure == "request_error":
+            raise ValueError("Yahoo did not return the front expiry")
+        if failure == "empty_calls":
+            chain.calls = chain.calls.iloc[:0]
+        elif failure == "empty_puts":
+            chain.puts = chain.puts.iloc[:0]
+        else:
+            chain.calls = chain.calls.drop(columns="strike")
+        return chain
+
+    monkeypatch.setattr(ticker, "option_chain", option_chain)
+    monkeypatch.setattr(yfinance, "Ticker", lambda _: ticker)
+    assert await scanner.scan_ticker_with_reason("CSCO") == (None, "quotes_not_ready")
+
+
 async def test_an_unquoted_later_expiry_is_left_out_of_the_term_structure(yahoo):
     full, _ = await scanner.scan_ticker_with_reason("CSCO")
     yahoo["atm"][4] = BLANK["Yahoo overnight (bid = ask = 0, placeholder IV)"]   # 12-18, 36 DTE
