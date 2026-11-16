@@ -51,6 +51,11 @@ class FakeTicker:
 
     def option_chain(self, expiry):
         atm = self.atm[EXPIRIES.index(expiry)]
+        if atm == "read fails":
+            raise ValueError("Yahoo returned a malformed chain")
+        if atm == "no puts":
+            return NS(calls=side(good(0)), puts=pd.DataFrame(columns=["strike", "bid", "ask",
+                                                                       "impliedVolatility"]))
         return NS(calls=side(atm), puts=side(atm))
 
 
@@ -87,6 +92,23 @@ async def test_an_unquoted_front_expiry_is_no_data_not_avoid(yahoo, front):
     yahoo["atm"][0] = front
     assert await scanner.scan_ticker_with_reason("CSCO") == (None, "quotes_not_ready")
     assert await scanner.scan_ticker("CSCO") is None
+
+
+@pytest.mark.parametrize("front", ["no puts", "read fails"])
+async def test_an_empty_or_unreadable_front_expiry_is_no_data(yahoo, front):
+    """Codex's review of 0bb8ab6: these fell through to the later expiries and
+    scored SELL_PREMIUM with no expected move (the order builder refused it)."""
+    yahoo["atm"][0] = front
+    assert await scanner.scan_ticker_with_reason("CSCO") == (None, "quotes_not_ready")
+
+
+@pytest.mark.parametrize("later", ["no puts", "read fails"])
+async def test_an_empty_or_unreadable_later_expiry_is_skipped(yahoo, later):
+    full, _ = await scanner.scan_ticker_with_reason("CSCO")
+    yahoo["atm"][4] = later                                    # 12-18, 36 DTE
+    setup, why = await scanner.scan_ticker_with_reason("CSCO")
+    assert why is None and setup.expected_move == full.expected_move == "8.45%"
+    assert setup.iv30 == pytest.approx(full.iv30, rel=0.02)
 
 
 async def test_an_unquoted_later_expiry_is_left_out_of_the_term_structure(yahoo):

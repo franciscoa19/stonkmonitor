@@ -383,9 +383,10 @@ def _quoted(row) -> bool:
 
 
 async def scan_ticker_with_reason(ticker: str) -> tuple[Optional[EarningsSetup], Optional[str]]:
-    """`scan_ticker`, plus why there is no setup: "quotes_not_ready" when Yahoo
-    has not quoted the front expiry yet (worth asking again soon), "error" for
-    anything else that failed, None when the scan ran."""
+    """`scan_ticker`, plus why there is no setup: "quotes_not_ready" when the
+    front expiry has no usable quote yet — unquoted, an empty side, or a read
+    that failed (worth asking again soon) — "error" for anything else that
+    failed, None when the scan ran."""
     ticker = ticker.strip().upper()
     if not ticker:
         return None, None
@@ -441,11 +442,16 @@ def _compute_sync(ticker: str) -> Optional[EarningsSetup]:
     atm_ivs: dict[str, float] = {}
     straddle_price: Optional[float] = None
 
+    # The front expiry carries the earnings premium and the expected move:
+    # without a usable quote there — unquoted, an empty side, or a read that
+    # failed — there is nothing to score, and the scan is no data, not a setup.
     for i, exp_date in enumerate(exp_dates):
         try:
             chain = stock.option_chain(exp_date)
             calls, puts = chain.calls, chain.puts
             if calls.empty or puts.empty:
+                if i == 0:
+                    raise QuotesNotReady(f"no contracts on one side of {exp_date} yet")
                 continue
 
             call = calls.loc[(calls["strike"] - underlying).abs().idxmin()]
@@ -454,8 +460,6 @@ def _compute_sync(ticker: str) -> Optional[EarningsSetup]:
             # placeholder IV; averaging that in reads as "no premium at all".
             if not (_quoted(call) and _quoted(put)):
                 if i == 0:
-                    # The front expiry carries the earnings premium and the
-                    # expected move: without it there is nothing to score.
                     raise QuotesNotReady(f"no two-sided ATM quote on {exp_date} yet")
                 continue
             atm_ivs[exp_date] = (float(call["impliedVolatility"])
@@ -467,8 +471,14 @@ def _compute_sync(ticker: str) -> Optional[EarningsSetup]:
                                   + (float(put["bid"]) + float(put["ask"])) / 2.0)
         except QuotesNotReady:
             raise
-        except Exception:
+        except Exception as e:
+            if i == 0:
+                raise QuotesNotReady(
+                    f"front expiry {exp_date} could not be read: {type(e).__name__}") from e
             continue
+
+    if straddle_price is None or exp_dates[0] not in atm_ivs:
+        raise QuotesNotReady(f"no usable quote on the front expiry {exp_dates[0]}")
 
     if not atm_ivs:
         return None
