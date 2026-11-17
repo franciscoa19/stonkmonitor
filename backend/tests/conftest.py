@@ -1,5 +1,29 @@
 """Shared test setup."""
+import importlib
+
 import pytest
+
+# Application modules that copy market_time's clock into their own namespace at
+# import time (a top-level `from market_time import et_today` / `et_now`).
+# Tests freeze the clock with monkeypatch.setattr(market_time, "et_today", ...).
+# A module imported for the FIRST time while such a patch is active copies the
+# fake, and keeps it after monkeypatch restores market_time, so "today" stays
+# frozen for every later test in the run. That made test_eval_loop fail when it
+# ran after test_review_fixes (the shared `session` fixture's 2026-11-27 clock
+# leaked into earnings_scanner and iv_executor). Importing them here, before any
+# test runs, makes the result independent of test order.
+# test_clock_isolation.py fails if a module with such an import is missing here.
+CLOCK_COPYING_MODULES = (
+    "daily_report",
+    "db",
+    "feeds.alpaca_feed",
+    "feeds.earnings_calendar",
+    "signals.earnings_scanner",
+    "signals.iv_executor",
+    "signals.iv_variants",
+)
+for _name in CLOCK_COPYING_MODULES:
+    importlib.import_module(_name)
 
 
 @pytest.fixture(autouse=True)
