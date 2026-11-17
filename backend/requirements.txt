@@ -29,3 +29,5 @@ protobuf>=6.33.5
 curl-cffi>=0.15.0
 msgpack>=1.2.1     # GHSA-6v7p-g79w-8964 (added 2026-07-03)
 setuptools>=83.0.0  # PYSEC-2026-3447 (added 2026-07-22)
+# CVE-2026-126190/-126191/-126193: CSS-selector ReDoS and recursion; yfinance -> bs4 (2026-11-16)
+soupsieve>=4.0.1
