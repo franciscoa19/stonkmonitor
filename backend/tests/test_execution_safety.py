@@ -238,15 +238,18 @@ def test_condor_risk_uses_minimum_accepted_credit():
     broker = NS(get_option_contracts=lambda tk, start, end, kind: [
         {"symbol": f"{kind}-{strike}", "strike": strike, "expiry": expiry}
         for strike in ([110, 115] if kind == "call" else [85, 90])],
-        get_option_quotes=lambda syms: {s: {"bid": 1.5 if s in ("call-110", "put-90") else 1,
-                                          "ask": 1.5 if s in ("call-110", "put-90") else 1} for s in syms})
+        # Mid credit $1.00; natural $0.88 (shorts sold at 1.47, wings bought at 1.03).
+        get_option_quotes=lambda syms: {s: {"bid": 1.47 if s in ("call-110", "put-90") else .97,
+                                          "ask": 1.53 if s in ("call-110", "put-90") else 1.03} for s in syms})
     settings = NS(iv_exec_min_dte=1, iv_exec_max_dte=7, iv_exec_short_move_mult=1,
         iv_exec_wing_width_pct=.05, iv_exec_risk_pct=.016,
         iv_exec_max_risk_usd=800, iv_exec_min_credit=.25)
     plan = build_iron_condor(broker, NS(ticker="TEST", price=100, expected_move="10%",
         next_earnings_date=(today + timedelta(days=1)).isoformat()), 50000, settings)
+    # Sized against the natural it accepts ($412 a spread), not the mid ($400,
+    # which would have bought two).
     assert plan["ok"] and plan["qty"] == 1
-    assert plan["limit_price"] == -.9 and plan["risk_usd"] == 410
+    assert plan["limit_price"] == -.88 and plan["risk_usd"] == 412
 
 
 async def test_missing_close_quantity_does_not_invent_a_fill(database, session, monkeypatch):

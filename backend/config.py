@@ -148,6 +148,13 @@ class Settings(BaseSettings):
     # pin risk, and closing is correct.
     iv_exec_expiry_hold_buffer_pct: float = Field(0.03)
     iv_exec_min_credit: float = Field(0.10)           # skip if net credit < $0.10 (not worth it)
+    # Skip a condor whose option market is too wide to trade. The natural credit
+    # (short legs at their bids, wings at their asks) must be at least this
+    # share of the mid credit; the entry limit is then the natural. On the
+    # research log at natural prices (to 2026-11-16) watchlist names at 85% or
+    # more made +6.6% of max loss, 70-85% -5.1%, under 70% -30%. 0 = no
+    # minimum (the limit is still the natural).
+    iv_exec_min_natural_to_mid: float = Field(0.85, ge=0, le=1)
     iv_exec_min_dte: int = Field(1)                       # front expiry must be ≥1 DTE after earnings
     iv_exec_max_dte: int = Field(10)                      # …and ≤10 DTE (front-month only)
     # Log several hypothetical structures per earnings event (condor 0.7/1.0/1.3×,

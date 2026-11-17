@@ -47,7 +47,10 @@ before it can authorize an entry. Conflicting same-day timing blocks the entry.
   reservation is voided. Existing-position exits never wait for entry readiness.
 - **Structure:** short put and short call at the options' implied move (1.0×), protective wings
   3% beyond, in the first expiry after the print that is 1–10 days out. One multi-leg order.
-- **Price:** a limit at 90% of the mid credit; skipped if the credit is under $0.10.
+- **Price:** a limit at the natural credit (short legs at their bids, wings at their asks), sized
+  against it. Skipped when the natural is under 85% of the mid credit (`IV_EXEC_MIN_NATURAL_TO_MID`):
+  a market that wide rarely filled, and lost money in the research log at prices it would trade.
+  Also skipped under $0.10 of credit, or under 10% of the wing width.
 - **Size:** maximum loss = 10% of *current* account equity × the risk throttle; at most 4 contracts
   per $10k of equity.
 - **Limits:** at most 3 condors open (pending entries count), 4 new per day, one per ticker, one

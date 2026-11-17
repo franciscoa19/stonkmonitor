@@ -1263,10 +1263,13 @@ async def _open_condor(setup, s, ticker: str):
         logger.warning(f"IV-exec {ticker}: size reduced to x{plan['qty']} by the {limit_name} — "
                        f"before this entry: {describe(limits)}")
     st = plan["strikes"]
+    nm = plan.get("natural_to_mid")
+    priced = (f" (natural, {nm:.0%} of mid ${plan['credit_mid']:.2f})"
+              if nm is not None and plan.get("credit_mid") is not None else "")
     logger.info(
         f"IV-exec ✅ {ticker} iron condor #{cid}: "
         f"{st['long_put']}/{st['short_put']}--{st['short_call']}/{st['long_call']} "
-        f"x{plan['qty']} credit ${plan['credit']:.2f} maxloss ${plan['max_loss']:.0f} "
+        f"x{plan['qty']} credit ${plan['credit']:.2f}{priced} maxloss ${plan['max_loss']:.0f} "
         f"risk ${plan['risk_usd']:.0f} exp {plan['expiry']} order={res.get('id')} | "
         f"account risk now ${limits['open_risk'] + plan_risk:,.0f} "
         f"({(limits['open_risk'] + plan_risk) / equity:.1%} of equity, cap {limits['max_risk_pct']:.0%})")

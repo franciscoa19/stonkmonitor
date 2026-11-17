@@ -186,8 +186,9 @@ def narrow_condor(equity=50_000, **limits_kw):
     at $50k from the per-condor rules alone."""
     from market_time import et_today
     expiry = et_today() + timedelta(days=3)
-    quotes = {"call-110": {"bid": 0.30, "ask": 0.34}, "put-90": {"bid": 0.30, "ask": 0.34},
-              "call-111": {"bid": 0.16, "ask": 0.20}, "put-89": {"bid": 0.16, "ask": 0.20}}
+    # Natural credit $0.25 (86% of the $0.29 mid): tight enough to trade.
+    quotes = {"call-110": {"bid": 0.33, "ask": 0.35}, "put-90": {"bid": 0.32, "ask": 0.34},
+              "call-111": {"bid": 0.18, "ask": 0.20}, "put-89": {"bid": 0.18, "ask": 0.20}}
     broker = NS(get_option_contracts=lambda tk, start, end, kind: [
         {"symbol": f"{kind}-{strike}", "strike": strike, "expiry": expiry}
         for strike in ([110, 111] if kind == "call" else [89, 90])],

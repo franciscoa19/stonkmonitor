@@ -60,8 +60,9 @@ def cheap_condor(equity, s):
     """A narrow, cheap spread: max loss $75 per spread, so the budget alone buys many."""
     from market_time import et_today
     expiry = et_today() + timedelta(days=3)
-    quotes = {"call-110": {"bid": 0.30, "ask": 0.34}, "put-90": {"bid": 0.30, "ask": 0.34},
-              "call-111": {"bid": 0.16, "ask": 0.20}, "put-89": {"bid": 0.16, "ask": 0.20}}
+    # Natural credit $0.25 (86% of the $0.29 mid): tight enough to trade.
+    quotes = {"call-110": {"bid": 0.33, "ask": 0.35}, "put-90": {"bid": 0.32, "ask": 0.34},
+              "call-111": {"bid": 0.18, "ask": 0.20}, "put-89": {"bid": 0.18, "ask": 0.20}}
     broker = NS(get_option_contracts=lambda tk, start, end, kind: [
         {"symbol": f"{kind}-{strike}", "strike": strike, "expiry": expiry}
         for strike in ([110, 111] if kind == "call" else [89, 90])],

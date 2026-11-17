@@ -734,11 +734,12 @@ def _occ(t, exp, cp, strike):
 
 class FakeOptionTrader(FakeTrader):
     """FakeTrader + a canned single-expiry option chain for build_iron_condor."""
-    def __init__(self, expiry, strikes, mids, **kw):
+    def __init__(self, expiry, strikes, mids, spread=0.02, **kw):
         super().__init__(**kw)
         self.expiry = expiry                 # datetime.date
         self.strikes = strikes               # list[float]
         self.mids = mids                     # {("C"|"P", strike): mid}
+        self.spread = spread                 # bid/ask each this fraction from mid
 
     def get_option_contracts(self, underlying, exp_gte, exp_lte, opt_type=None, limit=500):
         if not (exp_gte <= self.expiry <= exp_lte):
@@ -754,7 +755,8 @@ class FakeOptionTrader(FakeTrader):
             cp = "C" if "C" in s[-9:] else "P"
             strike = int(s[-8:]) / 1000.0
             m = self.mids.get((cp, strike), 0)
-            out[s] = {"bid": round(m * 0.98, 2), "ask": round(m * 1.02, 2), "mid": m}
+            out[s] = {"bid": round(m * (1 - self.spread), 2),
+                      "ask": round(m * (1 + self.spread), 2), "mid": m}
         return out
 
 
@@ -768,7 +770,7 @@ def test_build_iron_condor_happy_path():
         # cheap OTM wings, richer near-the-money shorts — enough credit to pass gates
         mids[("C", k)] = max(0.10, 3.0 - 0.12 * (k - 100)) if k >= 100 else 3.0
         mids[("P", k)] = max(0.10, 3.0 - 0.12 * (100 - k)) if k <= 100 else 3.0
-    trader = FakeOptionTrader(exp, strikes, mids, equity=50000.0)
+    trader = FakeOptionTrader(exp, strikes, mids, spread=0.01, equity=50000.0)
     setup = _types.SimpleNamespace(
         ticker="TEST", price=100.0, expected_move="10.0%",
         recommendation="SELL_PREMIUM",
@@ -1318,7 +1320,7 @@ def test_risk_multiplier_shrinks_the_wing_not_just_quantity():
     for k in strikes:
         mids[("C", k)] = max(0.10, 3.0 - 0.12 * (k - 100)) if k >= 100 else 3.0
         mids[("P", k)] = max(0.10, 3.0 - 0.12 * (100 - k)) if k <= 100 else 3.0
-    trader = FakeOptionTrader(exp, strikes, mids, equity=50000.0)
+    trader = FakeOptionTrader(exp, strikes, mids, spread=0.01, equity=50000.0)
     setup = _types.SimpleNamespace(
         ticker="TEST", price=100.0, expected_move="10.0%", recommendation="SELL_PREMIUM",
         next_earnings_date=et_today().isoformat())

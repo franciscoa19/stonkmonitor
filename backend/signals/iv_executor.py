@@ -13,7 +13,7 @@ reason it declined. main.py's iv_scanner_loop submits the plan when armed.
 """
 import json
 import logging
-from math import isfinite
+from math import floor, isfinite
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -169,7 +169,7 @@ def build_iron_condor(trader, setup, equity: float, settings,
     # a cheap wing is a real market (about a quarter of listed contracts on
     # 2026-10-06), and iv_variants already prices it that way. Such a wing is
     # budgeted at its full ask, the price actually paid, never an invented mid.
-    mids = {}
+    mids, natural_px = {}, {}
     for leg in legs:
         try:
             quote = quotes[leg["symbol"]]
@@ -179,24 +179,45 @@ def build_iron_condor(trader, setup, equity: float, settings,
             if leg["side"] == "sell" and bid <= 0:
                 raise ValueError("no bid for a leg we sell")
             mids[leg["symbol"]] = bid / 2 + ask / 2 if bid > 0 else ask
+            # The executable side: a leg we sell goes at its bid, a wing we buy
+            # at its ask.
+            natural_px[leg["symbol"]] = bid if leg["side"] == "sell" else ask
         except (KeyError, TypeError, ValueError):
             return {"ok": False, "reason": "missing or invalid option quotes"}
 
-    credit = (mids[legs[0]["symbol"]] + mids[legs[2]["symbol"]]) \
-        - (mids[legs[1]["symbol"]] + mids[legs[3]["symbol"]])
+    def net(px):
+        return (px[legs[0]["symbol"]] + px[legs[2]["symbol"]]) \
+            - (px[legs[1]["symbol"]] + px[legs[3]["symbol"]])
+
+    credit = net(mids)
+    natural = net(natural_px)
     call_width = long_call - short_call
     put_width = short_put - long_put
     width = max(call_width, put_width)
-    if not isfinite(credit) or not isfinite(width):
+    if not isfinite(credit) or not isfinite(natural) or not isfinite(width) or width <= 0:
         return {"ok": False, "reason": "nonfinite credit/width"}
-    if credit < settings.iv_exec_min_credit:
-        return {"ok": False, "reason": f"credit ${credit:.2f} < min"}
-    if width <= 0 or credit / width < MIN_CREDIT_WIDTH_RATIO:
-        return {"ok": False, "reason": f"credit/width {credit/width:.2f} too thin"}
 
-    # Size against the least credit this order accepts, rather than the planning
-    # mid. Giving up credit for a fill increases the loss we must budget for.
-    accepted_credit = round(max(credit * 0.90, settings.iv_exec_min_credit), 2)
+    # A market too wide to trade is skipped. The natural credit (every short leg
+    # at its bid, every wing at its ask) must be at least this share of the mid.
+    # On the research log, priced at the natural and held to expiry, names
+    # under 70% lost 30% of max loss; on this paper account a limit placed 6% or
+    # more above the natural filled 2 times in 19 (to 2026-11-16).
+    if natural <= 0 or credit <= 0:
+        return {"ok": False, "reason": f"no credit at the natural (${natural:.2f}, mid ${credit:.2f})"}
+    natural_to_mid = natural / credit
+    min_ratio = float(getattr(settings, "iv_exec_min_natural_to_mid", 0.85))
+    if natural_to_mid < min_ratio - 1e-9:
+        return {"ok": False, "reason": f"market too wide: natural ${natural:.2f} is "
+                                       f"{natural_to_mid:.0%} of mid ${credit:.2f} (min {min_ratio:.0%})"}
+
+    # The limit is the natural, floored to a cent so it is never above it: the
+    # price the market offers now, and the price the research log measures.
+    # Sized against it, since it is the credit actually collected.
+    accepted_credit = floor(round(natural * 100, 6)) / 100
+    if accepted_credit < settings.iv_exec_min_credit:
+        return {"ok": False, "reason": f"credit ${accepted_credit:.2f} at the natural < min"}
+    if accepted_credit / width < MIN_CREDIT_WIDTH_RATIO:
+        return {"ok": False, "reason": f"credit/width {accepted_credit / width:.2f} too thin"}
     max_loss_per = (width - accepted_credit) * CONTRACT_MULTIPLIER
     if max_loss_per <= 0:
         return {"ok": False, "reason": "non-positive max loss"}
@@ -223,7 +244,7 @@ def build_iron_condor(trader, setup, equity: float, settings,
         if fits < qty:
             qty, limited_by = fits, name
 
-    # Entry limit: give up a little credit for fill probability into the print.
+    # Entry limit: the natural credit (negative = a credit received).
     limit_price = -accepted_credit
 
     return {
@@ -232,6 +253,7 @@ def build_iron_condor(trader, setup, equity: float, settings,
         "strikes": {"short_put": short_put, "long_put": long_put,
                     "short_call": short_call, "long_call": long_call},
         "credit": accepted_credit, "credit_mid": round(credit, 2),
+        "natural_to_mid": round(natural_to_mid, 3),
         "max_loss": round(max_loss_per, 2),
         "qty": qty, "limit_price": limit_price,
         "risk_usd": round(max_loss_per * qty, 2),

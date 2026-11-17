@@ -11,7 +11,8 @@ SETUP_FIELDS = ("ticker", "price", "avg_volume", "iv30", "rv30", "iv30_rv30", "t
 CONFIG_FIELDS = ("alpaca_options_feed", "iv_exec_min_dte", "iv_exec_max_dte", "iv_exec_short_move_mult",
                  "iv_exec_wing_width_pct", "iv_conservative_fills", "iv_fee_per_contract",
                  "iv_setup_max_days_to_earnings", "iv_exec_entry_days_before",
-                 "iv_variants_reprice_within_days", "iv_measure_min_market_cap")
+                 "iv_variants_reprice_within_days", "iv_measure_min_market_cap",
+                 "iv_exec_min_natural_to_mid")
 
 
 @lru_cache(maxsize=1)
