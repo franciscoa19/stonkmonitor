@@ -8,17 +8,20 @@ build_iron_condor() now skips a condor whose natural is under
 IV_EXEC_MIN_NATURAL_TO_MID of its mid credit, and prices the rest at the natural.
 """
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace as NS
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from pydantic import ValidationError
 
 from config import Settings
+from market_time import ET
 from signals.iv_executor import build_iron_condor
 from signals.measurement_capture import CONFIG_FIELDS
 from test_account_limits import PLAN, SETUP, entry
 from test_execution_safety import database, session  # noqa: F401  (fixtures)
+from trading.alpaca_trader import AlpacaTrader
 
 
 def settings(**kw):
@@ -33,14 +36,15 @@ def book(short_bid, short_ask, wing_bid, wing_ask):
             "call-111": {"bid": wing_bid, "ask": wing_ask}, "put-89": {"bid": wing_bid, "ask": wing_ask}}
 
 
-def plan(quotes, s=None, equity=50_000):
+def plan(quotes, s=None, equity=50_000, broker=None):
     """Shorts at 110/90 (the 10% implied move on $100), $1 wings at 111/89."""
     from market_time import et_today
     expiry = et_today() + timedelta(days=3)
-    broker = NS(get_option_contracts=lambda tk, start, end, kind: [
+    if broker is None:
+        broker = NS(get_option_quotes=lambda syms: {sym: dict(quotes[sym]) for sym in syms})
+    broker.get_option_contracts = lambda tk, start, end, kind: [
         {"symbol": f"{kind}-{strike}", "strike": strike, "expiry": expiry}
-        for strike in ([110, 111] if kind == "call" else [89, 90])],
-        get_option_quotes=lambda syms: {sym: dict(quotes[sym]) for sym in syms})
+        for strike in ([110, 111] if kind == "call" else [89, 90])]
     setup = NS(ticker="TEST", price=100, expected_move="10%",
                next_earnings_date=(expiry - timedelta(days=1)).isoformat())
     return build_iron_condor(broker, setup, equity, s or settings())
@@ -50,6 +54,115 @@ def plan(quotes, s=None, equity=50_000):
 WIDE = book(0.30, 0.34, 0.16, 0.20)
 # Natural $0.26 against a $0.30 mid: 87%.
 TIGHT = book(0.33, 0.35, 0.18, 0.20)
+
+
+@pytest.fixture
+def quote_adapter(monkeypatch):
+    """Real quote adapter and planner; no requests leave the process."""
+    def make(*, paper, feed, failure=None):
+        broker = AlpacaTrader("unused", "unused", paper=paper, options_feed=feed)
+        requests = []
+        now = datetime(2026, 11, 16, 11, 30, tzinfo=ET)
+        monkeypatch.setattr(broker, "_now", lambda: now)
+
+        def rest(method, url):
+            assert method == "GET"
+            query = parse_qs(urlsplit(url).query)
+            requests.append(query.get("feed", ["auto"])[0])
+            if requests[-1] == "opra" and failure == "forbidden":
+                return 403, {"error": "OPRA not entitled"}
+            if requests[-1] == "opra" and failure == "malformed":
+                return 200, {"quotes": []}
+            rows = {sym: {"bp": q["bid"], "ap": q["ask"], "t": now.isoformat()}
+                    for sym, q in TIGHT.items()}
+            if requests[-1] == "opra" and failure == "partial":
+                rows.pop("call-110")
+            return 200, {"quotes": rows}
+
+        monkeypatch.setattr(broker, "_rest", rest)
+        return broker, requests
+    return make
+
+
+@pytest.mark.parametrize("settings_paper,broker_paper,configured_feed", [
+    (False, False, "auto"), (False, True, "auto"), (True, False, "indicative"),
+])
+def test_live_planning_requests_opra_explicitly(quote_adapter, settings_paper, broker_paper, configured_feed):
+    broker, requests = quote_adapter(paper=broker_paper, feed=configured_feed)
+    p = plan(None, settings(alpaca_paper=settings_paper), broker=broker)
+    assert requests == ["opra"]
+    assert p["ok"] and p["quote_feed"] == "opra" and p["limit_price"] == -0.26
+
+
+@pytest.mark.parametrize("failure", ["forbidden", "partial", "malformed"])
+def test_live_planning_never_falls_back_from_opra(quote_adapter, failure):
+    broker, requests = quote_adapter(paper=False, feed="auto", failure=failure)
+    p = plan(None, settings(alpaca_paper=False), broker=broker)
+    assert requests == ["opra"]
+    assert not p["ok"] and "OPRA" in p["reason"]
+
+
+@pytest.mark.parametrize("feed,expected", [("auto", "unverified"), ("indicative", "indicative")])
+def test_paper_planning_still_uses_configured_feed(quote_adapter, feed, expected):
+    broker, requests = quote_adapter(paper=True, feed=feed)
+    p = plan(None, broker=broker)
+    assert requests == [feed]
+    assert p["ok"] and p["quote_feed"] == expected
+
+
+@pytest.mark.parametrize("provenance", ["indicative", "auto", None])
+def test_live_planning_rejects_an_unverified_leg(provenance):
+    def quotes(syms, *, feed):
+        assert feed == "opra"
+        return {sym: {**TIGHT[sym], "feed": provenance if sym == "call-110" else "opra"}
+                for sym in syms}
+
+    broker = NS(paper=False, get_option_quotes=quotes)
+    p = plan(None, settings(alpaca_paper=False), broker=broker)
+    assert not p["ok"] and "OPRA" in p["reason"]
+
+
+@pytest.mark.parametrize("call_feed", ["indicative", "auto"])
+def test_a_paper_plan_with_mixed_sources_is_unverified(call_feed):
+    # Three legs labelled OPRA do not make the plan OPRA.
+    broker = NS(get_option_quotes=lambda syms: {
+        sym: {**TIGHT[sym], "feed": call_feed if sym == "call-110" else "opra"} for sym in syms})
+    p = plan(None, broker=broker)
+    assert p["ok"] and p["quote_feed"] == "unverified"
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_a_leg_without_a_quote_record_skips_the_entry(live):
+    def quotes(syms, **kw):
+        return {sym: (None if sym == "call-110" else {**TIGHT[sym], "feed": "opra"}) for sym in syms}
+
+    p = plan(None, settings(alpaca_paper=not live), broker=NS(paper=not live, get_option_quotes=quotes))
+    assert not p["ok"]
+    assert p["reason"] == ("complete, verified OPRA quotes unavailable for live entry" if live
+                           else "missing or invalid option quotes")
+
+
+@pytest.mark.parametrize("code,body", [(200, ["not", "a", "dict"]), (200, "text"), (200, {"quotes": None}),
+                                       (200, {"quotes": []}), (500, "Internal Server Error"), (403, None)])
+def test_a_malformed_quote_response_is_no_quotes(monkeypatch, code, body):
+    broker = AlpacaTrader("unused", "unused", paper=False, options_feed="auto")
+    monkeypatch.setattr(broker, "_rest", lambda method, url: (code, body))
+    assert broker.get_option_quotes(["call-110"], feed="opra") == {}
+    assert broker.get_option_quotes(["call-110"]) == {}
+
+
+@pytest.mark.parametrize("feed", [None, "indicative", "opra"])
+async def test_live_entry_persists_and_sends_only_opra_plans(database, session, monkeypatch, caplog, feed):
+    seen = entry(session, database, monkeypatch, plan=dict(PLAN, quote_feed=feed), alpaca_paper=False)
+    with caplog.at_level(logging.INFO, logger="main"):
+        await session.maybe_execute_condor(SETUP)
+    if feed == "opra":
+        assert seen.orders == [5] and len(await database.get_active_condors()) == 1
+        assert "quote feed=opra" in caplog.text
+    else:
+        assert seen.orders == []
+        assert await database._query("SELECT id FROM iv_condors") == []
+        assert "OPRA" in caplog.text
 
 
 def test_a_market_too_wide_to_trade_is_skipped():

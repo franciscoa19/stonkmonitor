@@ -51,6 +51,9 @@ before it can authorize an entry. Conflicting same-day timing blocks the entry.
   against it. Skipped when the natural is under 85% of the mid credit (`IV_EXEC_MIN_NATURAL_TO_MID`):
   a market that wide rarely filled, and lost money in the research log at prices it would trade.
   Also skipped under $0.10 of credit, or under 10% of the wing width.
+  Live condor entries explicitly request OPRA and skip if any of the four quotes is unavailable.
+  Paper tests can still use the configured options feed. Submitted entries log the verified source,
+  or `unverified` when automatic feed selection leaves it unknown.
 - **Size:** maximum loss = 10% of *current* account equity × the risk throttle; at most 4 contracts
   per $10k of equity.
 - **Limits:** at most 3 condors open (pending entries count), 4 new per day, one per ticker, one

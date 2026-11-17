@@ -79,6 +79,12 @@ def _nearest(strikes: list[float], target: float) -> Optional[float]:
     return min(strikes, key=lambda k: abs(k - target)) if strikes else None
 
 
+def condor_entry_requires_opra(trader, settings) -> bool:
+    """Either the configured or connected live mode requires OPRA quotes."""
+    return (getattr(settings, "alpaca_paper", True) is not True
+            or getattr(trader, "paper", True) is not True)
+
+
 def build_iron_condor(trader, setup, equity: float, settings,
                       risk_multiplier: float = 1.0, *,
                       risk_headroom: Optional[float] = None,
@@ -164,15 +170,28 @@ def build_iron_condor(trader, setup, equity: float, settings,
         {"symbol": put_by_strike[long_put]["symbol"],    "side": "buy",  "position_intent": "buy_to_open",  "ratio_qty": 1},
     ]
 
-    quotes = trader.get_option_quotes([l["symbol"] for l in legs])
+    symbols = [leg["symbol"] for leg in legs]
+    require_opra = condor_entry_requires_opra(trader, settings)
+    # Auto may be Alpaca's modified indicative feed, even under live keys.
+    # Require an explicit OPRA response before using the natural to price a
+    # live entry. Leave the shared quote defaults intact for paper and exits.
+    quotes = (trader.get_option_quotes(symbols, feed="opra") if require_opra
+              else trader.get_option_quotes(symbols))
+    quote_error = ("complete, verified OPRA quotes unavailable for live entry" if require_opra
+                   else "missing or invalid option quotes")
     # A leg we SELL needs a bid; a wing we BUY needs only an ask. A zero bid on
     # a cheap wing is a real market (about a quarter of listed contracts on
     # 2026-10-06), and iv_variants already prices it that way. Such a wing is
     # budgeted at its full ask, the price actually paid, never an invented mid.
     mids, natural_px = {}, {}
+    quote_feeds = set()
     for leg in legs:
         try:
             quote = quotes[leg["symbol"]]
+            leg_feed = quote.get("feed")
+            if require_opra and leg_feed != "opra":
+                return {"ok": False, "reason": quote_error}
+            quote_feeds.add(leg_feed if leg_feed in ("opra", "indicative") else "unverified")
             bid, ask = float(quote["bid"]), float(quote["ask"])
             if not (isfinite(bid) and isfinite(ask)) or bid < 0 or ask <= 0 or bid > ask:
                 raise ValueError("invalid book")
@@ -182,8 +201,8 @@ def build_iron_condor(trader, setup, equity: float, settings,
             # The executable side: a leg we sell goes at its bid, a wing we buy
             # at its ask.
             natural_px[leg["symbol"]] = bid if leg["side"] == "sell" else ask
-        except (KeyError, TypeError, ValueError):
-            return {"ok": False, "reason": "missing or invalid option quotes"}
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return {"ok": False, "reason": quote_error}
 
     def net(px):
         return (px[legs[0]["symbol"]] + px[legs[2]["symbol"]]) \
@@ -254,6 +273,7 @@ def build_iron_condor(trader, setup, equity: float, settings,
                     "short_call": short_call, "long_call": long_call},
         "credit": accepted_credit, "credit_mid": round(credit, 2),
         "natural_to_mid": round(natural_to_mid, 3),
+        "quote_feed": quote_feeds.pop() if len(quote_feeds) == 1 else "unverified",
         "max_loss": round(max_loss_per, 2),
         "qty": qty, "limit_price": limit_price,
         "risk_usd": round(max_loss_per * qty, 2),

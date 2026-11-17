@@ -145,6 +145,22 @@ A sleeping, powered-off or offline host sends nothing, so it alerts on those
 too. Verify that it alerts with the host offline. The endpoint itself sends no
 alerts; keep the trading API on its existing private bind address.
 
+## Options quotes for live condor entries
+
+When live condor entry is enabled, the planner explicitly requests `feed=opra`
+from Alpaca. All four legs must have usable current-session OPRA quotes before
+the bot can save or send the entry. Missing entitlement (HTTP 403), an
+incomplete book, or a failed quote response skips the entry; there is no
+fallback to indicative data. The skip log mentions OPRA. Successful submission
+logs include `quote feed=opra`.
+
+`ALPACA_OPTIONS_FEED` remains the default for paper entries, research, and
+existing-position exits. Paper settings that use `auto` can keep running;
+entry logs show `unverified` when Alpaca selected the source automatically.
+Before enabling live entries, verify OPRA access with the intended account
+using a read-only [latest-quotes request](https://docs.alpaca.markets/us/reference/optionlatestquotes).
+An OPRA quote is not a promise that all four legs will fill at the quoted price.
+
 ## Account-wide limits
 
 Two settings in `backend/.env` bound the whole account, whatever the per-trade

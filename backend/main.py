@@ -1121,7 +1121,7 @@ async def maybe_execute_condor(setup):
 async def _open_condor(setup, s, ticker: str):
     """Size, persist and submit one condor (the caller holds the entry lock)."""
     from math import isfinite
-    from signals.iv_executor import build_iron_condor
+    from signals.iv_executor import build_iron_condor, condor_entry_requires_opra
     from trading.account_risk import account_limits, describe, read_risk_snapshot
     from trading.ownership import option_ownership
 
@@ -1207,6 +1207,10 @@ async def _open_condor(setup, s, ticker: str):
     if not plan.get("ok"):
         logger.info(f"IV-exec {ticker}: no condor ({plan.get('reason')})")
         return
+    quote_feed = plan.get("quote_feed")
+    if condor_entry_requires_opra(trader, s) and quote_feed != "opra":
+        logger.warning("IV-exec %s: plan refused — live entry requires verified OPRA quotes", ticker)
+        return
     # The sizer applies the limits; this is the check that it did. A plan that
     # would breach either one is never persisted or sent.
     plan_risk = float(plan["qty"]) * float(plan["max_loss"])
@@ -1272,7 +1276,8 @@ async def _open_condor(setup, s, ticker: str):
         f"x{plan['qty']} credit ${plan['credit']:.2f}{priced} maxloss ${plan['max_loss']:.0f} "
         f"risk ${plan['risk_usd']:.0f} exp {plan['expiry']} order={res.get('id')} | "
         f"account risk now ${limits['open_risk'] + plan_risk:,.0f} "
-        f"({(limits['open_risk'] + plan_risk) / equity:.1%} of equity, cap {limits['max_risk_pct']:.0%})")
+        f"({(limits['open_risk'] + plan_risk) / equity:.1%} of equity, cap {limits['max_risk_pct']:.0%}) "
+        f"| quote feed={quote_feed or 'unverified'}")
 
 
 def opening_quotes_settling(now=None) -> bool:

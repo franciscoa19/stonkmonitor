@@ -132,10 +132,13 @@ def test_a_short_leg_is_never_left_out(session):
 
 
 # ── The close order ─────────────────────────────────────────────────────────
-async def test_a_winner_is_closed_by_buying_back_the_short_legs_only(database, desk):
+@pytest.mark.parametrize("paper", [True, False])
+async def test_a_winner_is_closed_by_buying_back_the_short_legs_only(database, desk, monkeypatch, paper):
     await condor(database, expiry=LATER)
-    broker = Broker()
+    broker = Broker({sym: {**quote, "feed": "indicative"} for sym, quote in book().items()})
+    broker.paper = paper
     main = desk(broker)
+    monkeypatch.setattr(main, "settings", main.settings.model_copy(update={"alpaca_paper": paper}))
     await manage(main, database)
     assert broker.sent[0]["legs"] == SHORTS and broker.sent[0]["qty"] == 2
     assert broker.sent[0]["limit"] == 0.18              # $0.17 at the touch + one tick, as before

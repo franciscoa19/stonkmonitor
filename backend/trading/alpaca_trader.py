@@ -569,13 +569,15 @@ class AlpacaTrader:
         session_open = now.astimezone(ET).replace(hour=9, minute=30, second=0, microsecond=0)
         return at.astimezone(ET) >= session_open
 
-    def get_option_quotes(self, symbols: list[str]) -> dict:
+    def get_option_quotes(self, symbols: list[str], *,
+                          feed: Optional[Literal["opra", "indicative"]] = None) -> dict:
         """Finite, uncrossed, current-session quotes with timestamp/feed provenance.
 
         A real zero bid is retained for close/measurement consumers, but never
         turned into an invented one-sided mid. Invalid books, and marks from an
         earlier session, are absent. `age_seconds` records how long ago the
-        book last changed.
+        book last changed. An explicit feed override never falls back to a
+        different feed. Without one, `auto` leaves the source up to Alpaca.
         """
         if not symbols:
             return {}
@@ -583,7 +585,7 @@ class AlpacaTrader:
         import math
         from datetime import datetime, timezone
         now = self._now()
-        quote_feed = getattr(self, "options_feed", "auto")
+        quote_feed = feed if feed is not None else getattr(self, "options_feed", "auto")
         out: dict = {}
         # batch to keep URLs sane
         for i in range(0, len(symbols), 100):
@@ -594,8 +596,9 @@ class AlpacaTrader:
             q = urllib.parse.urlencode(params)
             url = f"{self._data_base}/v1beta1/options/quotes/latest?{q}"
             code, body = self._rest("GET", url)
-            if code == 200:
-                for sym, qt in (body.get("quotes") or {}).items():
+            rows = body.get("quotes") if isinstance(body, dict) else None
+            if code == 200 and isinstance(rows, dict):
+                for sym, qt in rows.items():
                     try:
                         bid, ask = float(qt["bp"]), float(qt["ap"])
                         at = datetime.fromisoformat(qt["t"].replace("Z", "+00:00"))
@@ -610,7 +613,8 @@ class AlpacaTrader:
                                 "age_seconds": round((now - at).total_seconds(), 1),
                                 "bid_size": qt.get("bs"), "ask_size": qt.get("as")}
             else:
-                logger.debug(f"get_option_quotes {code}: {body.get('error')}")
+                logger.debug("get_option_quotes feed=%s status=%s: %s", quote_feed, code,
+                             body.get("error") if isinstance(body, dict) else "invalid response")
         return out
 
     def multileg_order(self, legs: list[dict], qty: int, limit_price: float,
