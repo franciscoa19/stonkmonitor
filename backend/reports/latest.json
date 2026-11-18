@@ -1,17 +1,17 @@
 {
-  "generated": "2026-11-17T13:14:26.116114+00:00",
+  "generated": "2026-11-18T13:12:02.934690+00:00",
   "account": {
-    "equity": 50284.91,
-    "cash": 50284.91,
-    "buying_power": 201139.64,
+    "equity": 50110.02,
+    "cash": 50867.02,
+    "buying_power": 194668.08,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": 284.9100000000035,
-    "total_pnl_pct": 0.569820000000007,
-    "open_positions": 0,
-    "days_running": 70,
+    "total_pnl": 110.0199999999968,
+    "total_pnl_pct": 0.22003999999999363,
+    "open_positions": 8,
+    "days_running": 71,
     "error": null
   },
   "metrics": {
@@ -30,28 +30,28 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 50284.91,
+    "equity": 50110.02,
     "max_risk_pct": 0.06,
-    "risk_cap": 3017.0946,
-    "open_risk": 0.0,
-    "open_risk_pct": 0.0,
-    "condor_risk": 0.0,
+    "risk_cap": 3006.6012,
+    "open_risk": 1617.0,
+    "open_risk_pct": 0.0323,
+    "condor_risk": 1617.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 3017.0946,
+    "risk_headroom": 1389.6012,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 10056.982,
-    "free_cash": 50284.91,
-    "free_cash_pct": 1.0,
+    "cash_reserve": 10022.004,
+    "free_cash": 48667.02,
+    "free_cash_pct": 0.9712,
     "unlisted_reserved": 0.0,
-    "cash_available": 40227.928
+    "cash_available": 38645.016
   },
   "account_risk_error": null,
   "activity": {
     "tag": "MEASURED",
-    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 12 closed, 0 open."
+    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 12 closed, 2 open."
   },
   "equity_curve": [
     {
@@ -332,7 +332,11 @@
     },
     {
       "date": "2026-11-17",
-      "equity": 50284.91
+      "equity": 50110.41
+    },
+    {
+      "date": "2026-11-18",
+      "equity": 50110.02
     }
   ],
   "iv_rv": {
@@ -340,16 +344,49 @@
     "wins": 23,
     "win_rate": 42.6,
     "avg_edge_pct": -1.92,
-    "open": 7
+    "open": 8
   },
   "iv_condors": {
     "closed": 12,
     "wins": 9,
     "win_rate": 75.0,
     "total_pnl": -1846.0,
-    "open": 0,
+    "open": 2,
     "pending": 0,
-    "open_detail": []
+    "open_detail": [
+      {
+        "ticker": "WMT",
+        "status": "open",
+        "settlement_note": null,
+        "qty": 3,
+        "expiry": "2026-11-20",
+        "earnings_date": "2026-11-19",
+        "strikes": "115.0/119.0 \u2014 136.0/140.0",
+        "credit_collected": 351.0,
+        "max_risk": 849.0,
+        "unrealized_pnl": -120.0,
+        "pct_of_max_risk": -14.1,
+        "legs_matched": 4,
+        "legs_expected": 4,
+        "partial": false
+      },
+      {
+        "ticker": "TGT",
+        "status": "open",
+        "settlement_note": null,
+        "qty": 2,
+        "expiry": "2026-11-20",
+        "earnings_date": "2026-11-18",
+        "strikes": "140.0/143.0 \u2014 172.5/177.5",
+        "credit_collected": 232.0,
+        "max_risk": 768.0,
+        "unrealized_pnl": -54.0,
+        "pct_of_max_risk": -7.0,
+        "legs_matched": 4,
+        "legs_expected": 4,
+        "partial": false
+      }
+    ]
   },
   "iv_variants": [
     {
@@ -792,16 +829,16 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 269,
-    "structures_attempted": 1345,
-    "structures_priced": 978,
-    "priced_pct": 72.7,
+    "events": 279,
+    "structures_attempted": 1395,
+    "structures_priced": 1033,
+    "priced_pct": 74.1,
     "dropped_variants": {
-      "condor_0.7sd": 84,
-      "condor_1.0sd": 100,
-      "condor_1.3sd": 131,
-      "fly": 35,
-      "straddle": 17
+      "condor_0.7sd": 83,
+      "condor_1.0sd": 102,
+      "condor_1.3sd": 135,
+      "fly": 29,
+      "straddle": 13
     }
   },
   "implied_vs_realized": {
@@ -2834,14 +2871,14 @@
       "wins": 20,
       "win_rate": 45.5,
       "avg_edge_pct": -1.8,
-      "open": 7
+      "open": 8
     },
     "iv_condors": {
       "closed": 10,
       "wins": 9,
       "win_rate": 90.0,
       "total_pnl": 854.0,
-      "open": 0,
+      "open": 2,
       "pending": 0
     },
     "iv_gate_comparison": {
@@ -2948,8 +2985,8 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-11-17T13:00:31.449105",
-    "age_minutes": 13.9,
+    "last_seen": "2026-11-18T12:51:02.439175",
+    "age_minutes": 21.0,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -2957,7 +2994,64 @@
   "by_strategy": [],
   "by_hour": [],
   "recent": [],
-  "open_positions": [],
+  "open_positions": [
+    {
+      "symbol": "TGT261120C00172500",
+      "qty": -2.0,
+      "pnl": 18.0,
+      "pnl_pct": 4.5,
+      "market_val": -382.0
+    },
+    {
+      "symbol": "TGT261120C00177500",
+      "qty": 2.0,
+      "pnl": -50.0,
+      "pnl_pct": -20.66,
+      "market_val": 192.0
+    },
+    {
+      "symbol": "TGT261120P00140000",
+      "qty": 2.0,
+      "pnl": -146.0,
+      "pnl_pct": -57.48,
+      "market_val": 108.0
+    },
+    {
+      "symbol": "TGT261120P00143000",
+      "qty": -2.0,
+      "pnl": 124.0,
+      "pnl_pct": 37.8,
+      "market_val": -204.0
+    },
+    {
+      "symbol": "WMT261120C00136000",
+      "qty": -3.0,
+      "pnl": -48.0,
+      "pnl_pct": -13.79,
+      "market_val": -396.0
+    },
+    {
+      "symbol": "WMT261120C00140000",
+      "qty": 3.0,
+      "pnl": -6.0,
+      "pnl_pct": -3.45,
+      "market_val": 168.0
+    },
+    {
+      "symbol": "WMT261120P00115000",
+      "qty": 3.0,
+      "pnl": 12.0,
+      "pnl_pct": 6.9,
+      "market_val": 186.0
+    },
+    {
+      "symbol": "WMT261120P00119000",
+      "qty": -3.0,
+      "pnl": -78.0,
+      "pnl_pct": -22.22,
+      "market_val": -429.0
+    }
+  ],
   "proposals": [
     "No changes proposed \u2014 baseline accruing. Keep collecting."
   ]
