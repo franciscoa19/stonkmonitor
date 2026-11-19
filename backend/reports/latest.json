@@ -1,23 +1,23 @@
 {
-  "generated": "2026-11-18T13:12:02.934690+00:00",
+  "generated": "2026-11-19T13:03:31.059976+00:00",
   "account": {
-    "equity": 50110.02,
-    "cash": 50867.02,
-    "buying_power": 194668.08,
+    "equity": 50382.75,
+    "cash": 50754.75,
+    "buying_power": 198219.0,
     "paper": true,
     "start_equity": 50000.0,
     "baseline": "net_deposits",
     "net_deposits": 50000.0,
-    "total_pnl": 110.0199999999968,
-    "total_pnl_pct": 0.22003999999999363,
-    "open_positions": 8,
-    "days_running": 71,
+    "total_pnl": 382.75,
+    "total_pnl_pct": 0.7655000000000001,
+    "open_positions": 5,
+    "days_running": 72,
     "error": null
   },
   "metrics": {
     "closed_trades": 0,
-    "closed_condors": 12,
-    "closed_all": 12,
+    "closed_condors": 13,
+    "closed_all": 13,
     "wins": 0,
     "losses": 0,
     "win_rate": 0.0,
@@ -30,28 +30,28 @@
     "trades_per_day": 0.0
   },
   "account_risk": {
-    "equity": 50110.02,
+    "equity": 50382.75,
     "max_risk_pct": 0.06,
-    "risk_cap": 3006.6012,
-    "open_risk": 1617.0,
-    "open_risk_pct": 0.0323,
-    "condor_risk": 1617.0,
+    "risk_cap": 3022.965,
+    "open_risk": 849.0,
+    "open_risk_pct": 0.0169,
+    "condor_risk": 849.0,
     "position_risk": 0.0,
     "pending_risk": 0.0,
     "manual_risk": 0.0,
     "broker_order_risk": 0.0,
-    "risk_headroom": 1389.6012,
+    "risk_headroom": 2173.965,
     "cash_reserve_pct": 0.2,
-    "cash_reserve": 10022.004,
-    "free_cash": 48667.02,
-    "free_cash_pct": 0.9712,
+    "cash_reserve": 10076.55,
+    "free_cash": 49554.75,
+    "free_cash_pct": 0.9836,
     "unlisted_reserved": 0.0,
-    "cash_available": 38645.016
+    "cash_available": 39478.2
   },
   "account_risk_error": null,
   "activity": {
     "tag": "MEASURED",
-    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 12 closed, 2 open."
+    "note": "No single-leg entries \u2014 that engine is paused. The condor path is carrying it: 13 closed, 1 open."
   },
   "equity_curve": [
     {
@@ -336,7 +336,11 @@
     },
     {
       "date": "2026-11-18",
-      "equity": 50110.02
+      "equity": 50382.87
+    },
+    {
+      "date": "2026-11-19",
+      "equity": 50382.75
     }
   ],
   "iv_rv": {
@@ -347,11 +351,11 @@
     "open": 8
   },
   "iv_condors": {
-    "closed": 12,
-    "wins": 9,
-    "win_rate": 75.0,
-    "total_pnl": -1846.0,
-    "open": 2,
+    "closed": 13,
+    "wins": 10,
+    "win_rate": 76.9,
+    "total_pnl": -1726.0,
+    "open": 1,
     "pending": 0,
     "open_detail": [
       {
@@ -364,24 +368,8 @@
         "strikes": "115.0/119.0 \u2014 136.0/140.0",
         "credit_collected": 351.0,
         "max_risk": 849.0,
-        "unrealized_pnl": -120.0,
-        "pct_of_max_risk": -14.1,
-        "legs_matched": 4,
-        "legs_expected": 4,
-        "partial": false
-      },
-      {
-        "ticker": "TGT",
-        "status": "open",
-        "settlement_note": null,
-        "qty": 2,
-        "expiry": "2026-11-20",
-        "earnings_date": "2026-11-18",
-        "strikes": "140.0/143.0 \u2014 172.5/177.5",
-        "credit_collected": 232.0,
-        "max_risk": 768.0,
-        "unrealized_pnl": -54.0,
-        "pct_of_max_risk": -7.0,
+        "unrealized_pnl": -21.0,
+        "pct_of_max_risk": -2.5,
         "legs_matched": 4,
         "legs_expected": 4,
         "partial": false
@@ -542,64 +530,64 @@
       "events_needed": 29
     },
     "ungated": {
-      "n_events": 174,
-      "n_wins": 94,
-      "win_rate": 54.0,
-      "total_pnl": -22022.8,
-      "expectancy": -126.57,
+      "n_events": 175,
+      "n_wins": 95,
+      "win_rate": 54.3,
+      "total_pnl": -21899.0,
+      "expectancy": -125.14,
       "profit_factor": 0.32,
-      "avg_win": 109.12,
+      "avg_win": 109.27,
       "avg_loss": -403.5,
       "largest_single_loss": -3322.2,
       "max_drawdown": 24452.4,
-      "sharpe": -0.25,
+      "sharpe": -0.24,
       "sortino": -0.25,
-      "tail_ratio": 59.0,
+      "tail_ratio": 60.8,
       "tail_events": 9,
-      "tail_pct_effective": 5.2,
+      "tail_pct_effective": 5.1,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": true,
       "events_needed": 0
     },
     "failed_gates": {
-      "n_events": 100,
-      "n_wins": 49,
-      "win_rate": 49.0,
-      "total_pnl": -19172.0,
-      "expectancy": -191.72,
+      "n_events": 101,
+      "n_wins": 50,
+      "win_rate": 49.5,
+      "total_pnl": -19048.2,
+      "expectancy": -188.6,
       "profit_factor": 0.26,
-      "avg_win": 135.51,
+      "avg_win": 135.28,
       "avg_loss": -506.12,
       "largest_single_loss": -3322.2,
       "max_drawdown": 21687.4,
-      "sharpe": -0.3,
+      "sharpe": -0.29,
       "sortino": -0.29,
-      "tail_ratio": 39.06,
-      "tail_events": 5,
-      "tail_pct_effective": 5.0,
+      "tail_ratio": 49.48,
+      "tail_events": 6,
+      "tail_pct_effective": 5.9,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": true,
       "events_needed": 0
     },
     "consider": {
-      "n_events": 51,
-      "n_wins": 27,
-      "win_rate": 52.9,
-      "total_pnl": -7087.2,
-      "expectancy": -138.96,
-      "profit_factor": 0.29,
-      "avg_win": 107.36,
+      "n_events": 52,
+      "n_wins": 28,
+      "win_rate": 53.8,
+      "total_pnl": -6963.4,
+      "expectancy": -133.91,
+      "profit_factor": 0.3,
+      "avg_win": 107.94,
       "avg_loss": -416.07,
       "largest_single_loss": -2813.2,
       "max_drawdown": 7630.0,
-      "sharpe": -0.28,
-      "sortino": -0.28,
-      "tail_ratio": 40.77,
+      "sharpe": -0.27,
+      "sortino": -0.27,
+      "tail_ratio": 44.36,
       "tail_events": 3,
-      "tail_pct_effective": 5.9,
+      "tail_pct_effective": 5.8,
       "pct_events_exceeding_implied": null,
       "sufficient_sample": false,
-      "events_needed": 49
+      "events_needed": 48
     },
     "unknown_gates": {
       "n_events": 3,
@@ -645,64 +633,64 @@
         "events_needed": 76
       },
       "ungated": {
-        "n_events": 59,
-        "n_wins": 38,
-        "win_rate": 64.4,
-        "total_pnl": -5052.8,
-        "expectancy": -85.64,
-        "profit_factor": 0.5,
-        "avg_win": 134.85,
+        "n_events": 60,
+        "n_wins": 39,
+        "win_rate": 65.0,
+        "total_pnl": -4929.0,
+        "expectancy": -82.15,
+        "profit_factor": 0.52,
+        "avg_win": 134.57,
         "avg_loss": -484.63,
         "largest_single_loss": -2308.2,
         "max_drawdown": 7211.2,
         "sharpe": -0.18,
-        "sortino": -0.19,
-        "tail_ratio": 853.04,
+        "sortino": -0.18,
+        "tail_ratio": -6022.27,
         "tail_events": 3,
-        "tail_pct_effective": 5.1,
-        "pct_events_exceeding_implied": null,
-        "sufficient_sample": false,
-        "events_needed": 41
-      },
-      "failed_gates": {
-        "n_events": 34,
-        "n_wins": 18,
-        "win_rate": 52.9,
-        "total_pnl": -6058.8,
-        "expectancy": -178.2,
-        "profit_factor": 0.3,
-        "avg_win": 147.36,
-        "avg_loss": -544.45,
-        "largest_single_loss": -2308.2,
-        "max_drawdown": 7349.2,
-        "sharpe": -0.32,
-        "sortino": -0.32,
-        "tail_ratio": 35.86,
-        "tail_events": 2,
-        "tail_pct_effective": 5.9,
-        "pct_events_exceeding_implied": null,
-        "sufficient_sample": false,
-        "events_needed": 66
-      },
-      "consider": {
-        "n_events": 20,
-        "n_wins": 9,
-        "win_rate": 45.0,
-        "total_pnl": -2544.0,
-        "expectancy": -127.2,
-        "profit_factor": 0.35,
-        "avg_win": 151.24,
-        "avg_loss": -355.02,
-        "largest_single_loss": -744.2,
-        "max_drawdown": 3082.2,
-        "sharpe": -0.41,
-        "sortino": -0.42,
-        "tail_ratio": 7.86,
-        "tail_events": 1,
         "tail_pct_effective": 5.0,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 80
+        "events_needed": 40
+      },
+      "failed_gates": {
+        "n_events": 35,
+        "n_wins": 19,
+        "win_rate": 54.3,
+        "total_pnl": -5935.0,
+        "expectancy": -169.57,
+        "profit_factor": 0.32,
+        "avg_win": 146.12,
+        "avg_loss": -544.45,
+        "largest_single_loss": -2308.2,
+        "max_drawdown": 7349.2,
+        "sharpe": -0.3,
+        "sortino": -0.3,
+        "tail_ratio": 39.6,
+        "tail_events": 2,
+        "tail_pct_effective": 5.7,
+        "pct_events_exceeding_implied": null,
+        "sufficient_sample": false,
+        "events_needed": 65
+      },
+      "consider": {
+        "n_events": 21,
+        "n_wins": 10,
+        "win_rate": 47.6,
+        "total_pnl": -2420.2,
+        "expectancy": -115.25,
+        "profit_factor": 0.38,
+        "avg_win": 148.5,
+        "avg_loss": -355.02,
+        "largest_single_loss": -744.2,
+        "max_drawdown": 3082.2,
+        "sharpe": -0.38,
+        "sortino": -0.39,
+        "tail_ratio": 11.0,
+        "tail_events": 2,
+        "tail_pct_effective": 9.5,
+        "pct_events_exceeding_implied": null,
+        "sufficient_sample": false,
+        "events_needed": 79
       },
       "unknown_gates": {
         "n_events": 1,
@@ -829,26 +817,26 @@
     }
   },
   "iv_quote_coverage": {
-    "events": 279,
-    "structures_attempted": 1395,
-    "structures_priced": 1033,
+    "events": 281,
+    "structures_attempted": 1405,
+    "structures_priced": 1041,
     "priced_pct": 74.1,
     "dropped_variants": {
-      "condor_0.7sd": 83,
+      "condor_0.7sd": 84,
       "condor_1.0sd": 102,
-      "condor_1.3sd": 135,
+      "condor_1.3sd": 136,
       "fly": 29,
       "straddle": 13
     }
   },
   "implied_vs_realized": {
     "watchlist": {
-      "n_events": 53,
-      "pct_exceeding_implied": 37.7,
+      "n_events": 54,
+      "pct_exceeding_implied": 37.0,
       "n_exceeding": 20,
-      "avg_implied_pct": 6.33,
-      "avg_realized_pct": 6.16,
-      "avg_edge_pct": 0.17,
+      "avg_implied_pct": 6.37,
+      "avg_realized_pct": 6.11,
+      "avg_edge_pct": 0.25,
       "events": [
         {
           "ticker": "NOW",
@@ -1281,6 +1269,15 @@
           "edge_pct": 4.27,
           "exceeded": false,
           "lead_days": 1
+        },
+        {
+          "ticker": "NVDA",
+          "earnings_date": "2026-11-17",
+          "implied_pct": 8.37,
+          "realized_pct": 3.91,
+          "edge_pct": 4.46,
+          "exceeded": false,
+          "lead_days": 0
         },
         {
           "ticker": "AMZN",
@@ -2855,7 +2852,7 @@
     "halted_at": null,
     "halted_reason": null,
     "rearmed_at": null,
-    "closes_counted": 12
+    "closes_counted": 13
   },
   "market_events": [
     {
@@ -2874,11 +2871,11 @@
       "open": 8
     },
     "iv_condors": {
-      "closed": 10,
-      "wins": 9,
-      "win_rate": 90.0,
-      "total_pnl": 854.0,
-      "open": 2,
+      "closed": 11,
+      "wins": 10,
+      "win_rate": 90.9,
+      "total_pnl": 974.0,
+      "open": 1,
       "pending": 0
     },
     "iv_gate_comparison": {
@@ -2903,64 +2900,64 @@
         "events_needed": 36
       },
       "ungated": {
-        "n_events": 144,
-        "n_wins": 76,
-        "win_rate": 52.8,
-        "total_pnl": -20426.8,
-        "expectancy": -141.85,
+        "n_events": 145,
+        "n_wins": 77,
+        "win_rate": 53.1,
+        "total_pnl": -20303.0,
+        "expectancy": -140.02,
         "profit_factor": 0.24,
-        "avg_win": 84.42,
+        "avg_win": 84.93,
         "avg_loss": -394.74,
         "largest_single_loss": -3322.2,
         "max_drawdown": 20829.2,
-        "sharpe": -0.29,
+        "sharpe": -0.28,
         "sortino": -0.28,
-        "tail_ratio": 39.03,
+        "tail_ratio": 40.11,
         "tail_events": 8,
-        "tail_pct_effective": 5.6,
+        "tail_pct_effective": 5.5,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": true,
         "events_needed": 0
       },
       "failed_gates": {
-        "n_events": 78,
-        "n_wins": 36,
-        "win_rate": 46.2,
-        "total_pnl": -17633.6,
-        "expectancy": -226.07,
-        "profit_factor": 0.16,
-        "avg_win": 94.86,
+        "n_events": 79,
+        "n_wins": 37,
+        "win_rate": 46.8,
+        "total_pnl": -17509.8,
+        "expectancy": -221.64,
+        "profit_factor": 0.17,
+        "avg_win": 95.64,
         "avg_loss": -501.15,
         "largest_single_loss": -3322.2,
         "max_drawdown": 18074.8,
-        "sharpe": -0.36,
+        "sharpe": -0.35,
         "sortino": -0.34,
-        "tail_ratio": 26.13,
+        "tail_ratio": 26.94,
         "tail_events": 4,
         "tail_pct_effective": 5.1,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 22
+        "events_needed": 21
       },
       "consider": {
-        "n_events": 48,
-        "n_wins": 25,
-        "win_rate": 52.1,
-        "total_pnl": -6716.6,
-        "expectancy": -139.93,
-        "profit_factor": 0.27,
-        "avg_win": 101.0,
+        "n_events": 49,
+        "n_wins": 26,
+        "win_rate": 53.1,
+        "total_pnl": -6592.8,
+        "expectancy": -134.55,
+        "profit_factor": 0.29,
+        "avg_win": 101.88,
         "avg_loss": -401.81,
         "largest_single_loss": -2813.2,
         "max_drawdown": 7566.6,
-        "sharpe": -0.28,
-        "sortino": -0.28,
-        "tail_ratio": 42.28,
+        "sharpe": -0.27,
+        "sortino": -0.27,
+        "tail_ratio": 46.49,
         "tail_events": 3,
-        "tail_pct_effective": 6.2,
+        "tail_pct_effective": 6.1,
         "pct_events_exceeding_implied": null,
         "sufficient_sample": false,
-        "events_needed": 52
+        "events_needed": 51
       },
       "unknown_gates": {
         "n_events": 2,
@@ -2985,8 +2982,8 @@
     }
   },
   "heartbeat": {
-    "last_seen": "2026-11-18T12:51:02.439175",
-    "age_minutes": 21.0,
+    "last_seen": "2026-11-19T12:53:12.310181",
+    "age_minutes": 10.3,
     "stale": false,
     "threshold_minutes": 180,
     "note": "hourly loop is current"
@@ -2996,60 +2993,39 @@
   "recent": [],
   "open_positions": [
     {
-      "symbol": "TGT261120C00172500",
-      "qty": -2.0,
-      "pnl": 18.0,
-      "pnl_pct": 4.5,
-      "market_val": -382.0
-    },
-    {
-      "symbol": "TGT261120C00177500",
-      "qty": 2.0,
-      "pnl": -50.0,
-      "pnl_pct": -20.66,
-      "market_val": 192.0
-    },
-    {
       "symbol": "TGT261120P00140000",
       "qty": 2.0,
-      "pnl": -146.0,
-      "pnl_pct": -57.48,
-      "market_val": 108.0
-    },
-    {
-      "symbol": "TGT261120P00143000",
-      "qty": -2.0,
-      "pnl": 124.0,
-      "pnl_pct": 37.8,
-      "market_val": -204.0
+      "pnl": -254.0,
+      "pnl_pct": -100.0,
+      "market_val": 0.0
     },
     {
       "symbol": "WMT261120C00136000",
       "qty": -3.0,
-      "pnl": -48.0,
-      "pnl_pct": -13.79,
-      "market_val": -396.0
+      "pnl": 69.0,
+      "pnl_pct": 19.83,
+      "market_val": -279.0
     },
     {
       "symbol": "WMT261120C00140000",
       "qty": 3.0,
-      "pnl": -6.0,
-      "pnl_pct": -3.45,
-      "market_val": 168.0
+      "pnl": -69.0,
+      "pnl_pct": -39.66,
+      "market_val": 105.0
     },
     {
       "symbol": "WMT261120P00115000",
       "qty": 3.0,
-      "pnl": 12.0,
-      "pnl_pct": 6.9,
-      "market_val": 186.0
+      "pnl": -42.0,
+      "pnl_pct": -24.14,
+      "market_val": 132.0
     },
     {
       "symbol": "WMT261120P00119000",
       "qty": -3.0,
-      "pnl": -78.0,
-      "pnl_pct": -22.22,
-      "market_val": -429.0
+      "pnl": 21.0,
+      "pnl_pct": 5.98,
+      "market_val": -330.0
     }
   ],
   "proposals": [
