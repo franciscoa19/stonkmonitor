@@ -19,13 +19,15 @@ def report(tmp_path, monkeypatch):
     import market_time
     (tmp_path / "backend").mkdir()
     monkeypatch.setattr(main, "__file__", str(tmp_path / "backend" / "main.py"))
-    calls = NS(build=0, export=0, push=[], notify=[], export_error=None, push_ok=True)
+    calls = NS(build=0, export=0, push=[], notify=[], messages=[], export_error=None, push_ok=True)
 
     async def build(db, trader, thresholds=None, settings=None):
         calls.build += 1
         return {"generated": f"{DAY}T12:00:05+00:00", "proposals": [],
                 "account": {"equity": 50000.0, "total_pnl_pct": 0.0, "open_positions": 0, "error": None},
-                "metrics": {"closed_trades": 0, "win_rate": 0.0}}
+                "metrics": {"closed_trades": 0, "win_rate": 0.0},
+                "iv_condors": {"closed": 0, "win_rate": 0.0, "total_pnl": 0.0,
+                               "open": 0, "pending": 0}}
 
     async def export(db, reports_dir):
         calls.export += 1
@@ -35,6 +37,7 @@ def report(tmp_path, monkeypatch):
 
     async def send_alert(title, message):
         calls.notify.append(title)
+        calls.messages.append(message)
         return True
 
     monkeypatch.setattr(daily_report, "build_report_data", build)
@@ -46,6 +49,45 @@ def report(tmp_path, monkeypatch):
                                              auto_trade_pattern_threshold=9.5))
     monkeypatch.setattr(market_time, "et_today", lambda *a: date.fromisoformat(DAY))
     return main, calls, tmp_path / "backend" / "reports"
+
+
+@pytest.mark.parametrize("single_closed,single_wr,condors,positions,expected", [
+    (0, 0.0, {"closed": 14, "win_rate": 78.6, "total_pnl": -1417.0, "open": 0, "pending": 0}, 2,
+     ("Condors: 14 closed, 78.6% WR, -$1,417 gross, 0 active / 0 pending",
+      "Single-leg: 0 closed, WR n/a")),
+    (4, 25.0, {"closed": 3, "win_rate": 66.7, "total_pnl": 40.0, "open": 1, "pending": 2}, 6,
+     ("Condors: 3 closed, 66.7% WR, $40 gross, 1 active / 2 pending",
+      "Single-leg: 4 closed, 25.0% WR")),
+    (2, 0.0, {"closed": 0, "win_rate": 0.0, "total_pnl": 0.0, "open": 0, "pending": 1}, 0,
+     ("Condors: 0 closed, WR n/a, $0 gross, 0 active / 1 pending",
+      "Single-leg: 2 closed, 0.0% WR")),
+    (0, 0.0, {"closed": 0, "win_rate": 0.0, "total_pnl": 0.0, "open": 0, "pending": 0}, 0,
+     ("Condors: 0 closed, WR n/a, $0 gross, 0 active / 0 pending",
+      "Single-leg: 0 closed, WR n/a")),
+])
+async def test_daily_summary_separates_condors_single_legs_and_broker_positions(
+        report, monkeypatch, caplog, single_closed, single_wr, condors, positions, expected):
+    """The same correctly scoped figures reach notification, durable state and log."""
+    import daily_report
+    main, calls, reports = report
+    original_build = daily_report.build_report_data
+
+    async def build(*args, **kwargs):
+        data = await original_build(*args, **kwargs)
+        data["account"]["open_positions"] = positions
+        data["metrics"].update(closed_trades=single_closed, win_rate=single_wr)
+        data["iv_condors"] = condors
+        return data
+
+    monkeypatch.setattr(daily_report, "build_report_data", build)
+    caplog.set_level("INFO", logger="main")
+    await main.generate_daily_report(scheduled=True)
+    assert len(calls.messages) == 1
+    message = calls.messages[0]
+    for text in (*expected, f"Broker positions: {positions}"):
+        assert text in message
+    assert main._load_report_state(reports, DAY)["summary"] == message
+    assert message in caplog.text
 
 
 async def test_export_failure_leaves_the_day_unfinished_and_is_retried(report):

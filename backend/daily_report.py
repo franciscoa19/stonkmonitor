@@ -17,7 +17,7 @@ import html as _html
 import asyncio
 
 from market_time import et_today
-from db import LONG_ENTRY_PREDICATE
+from db import CLOSED_LONG_ENTRY_PREDICATE, LONG_ENTRY_PREDICATE
 import logging
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,24 @@ def report_day(d: dict) -> str:
     every 10 minutes until midnight ET.
     """
     return et_today(datetime.fromisoformat(d["generated"])).isoformat()
+
+
+def build_report_summary(d: dict) -> str:
+    """Notification/log summary with each strategy's own counts and win rate.
+
+    Broker positions count individual holdings, including residual long wings;
+    they are not a count of active condors. Condor P&L is before fees.
+    """
+    a, m, c = d["account"], d["metrics"], d["iv_condors"]
+    return_display = (f"{a['total_pnl_pct']:+.2f}%" if a["total_pnl_pct"] is not None
+                      else f"P&L ${a['total_pnl']:+,.0f}; return percentage unavailable")
+    condor_wr = f"{c['win_rate']:.1f}% WR" if c["closed"] else "WR n/a"
+    single_wr = f"{m['win_rate']:.1f}% WR" if m["closed_trades"] else "WR n/a"
+    return (f"Equity ${a['equity']:,.0f} ({return_display}) | "
+            f"Condors: {c['closed']} closed, {condor_wr}, {_money(c['total_pnl'])} gross, "
+            f"{c['open']} active / {c['pending']} pending | "
+            f"Single-leg: {m['closed_trades']} closed, {single_wr} | "
+            f"Broker positions: {a['open_positions']} | {len(d['proposals'])} proposal(s)")
 
 
 def _condor_rollups(condors: list, positions: list) -> list[dict]:
@@ -128,11 +146,14 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
     total_pnl_pct = (total_pnl / start_equity * 100.0) if start_equity > 0 else None
     days_running = len(curve)
 
-    # ── Closed trades (realized) ─────────────────────────────────────────
-    closed = await db._query(
-        f"SELECT * FROM trade_performance WHERE {LONG_ENTRY_PREDICATE} "
+    # A trim realizes dollars without completing the entry. Keep those dollars
+    # in realized_total, but wait for all units to close before scoring outcomes.
+    realized = await db._query(
+        f"SELECT *, ({CLOSED_LONG_ENTRY_PREDICATE}) AS is_closed "
+        f"FROM trade_performance WHERE {LONG_ENTRY_PREDICATE} "
         "AND realized_pnl IS NOT NULL ORDER BY updated_at DESC"
     )
+    closed = [t for t in realized if t["is_closed"]]
     n = len(closed)
     wins = [t for t in closed if (t.get("realized_pnl") or 0) > 0]
     losses = [t for t in closed if (t.get("realized_pnl") or 0) < 0]
@@ -142,7 +163,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
     profit_factor = (gross_win / gross_loss) if gross_loss else None
     avg_win = (gross_win / len(wins)) if wins else 0.0
     avg_loss = (gross_loss / len(losses)) if losses else 0.0
-    realized_total = sum(float(t["realized_pnl"]) for t in closed)
+    realized_total = sum(float(t["realized_pnl"]) for t in realized)
     holds = [float(t["hold_minutes"]) for t in closed if t.get("hold_minutes") is not None]
     avg_hold_min = mean(holds) if holds else None
 
@@ -163,7 +184,7 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
                   ROUND(SUM(realized_pnl),2) pnl,
                   ROUND(AVG(realized_pnl),2) avg_pnl,
                   ROUND(AVG(hold_minutes),1) avg_hold
-           FROM trade_performance WHERE {LONG_ENTRY_PREDICATE} AND realized_pnl IS NOT NULL
+           FROM trade_performance WHERE {CLOSED_LONG_ENTRY_PREDICATE}
            GROUP BY 1 ORDER BY pnl DESC"""
     )
     # ── IV/RV edge validation (hypothetical short-straddle hit-rate) ─────
@@ -242,8 +263,8 @@ async def build_report_data(db, trader, thresholds: dict | None = None, settings
     # ── Attribution: by entry hour (ET) ──────────────────────────────────
     by_hour = await db._query(
         f"""SELECT entry_hour_et h, COUNT(*) n, ROUND(SUM(realized_pnl),2) pnl
-           FROM trade_performance WHERE {LONG_ENTRY_PREDICATE}
-           AND realized_pnl IS NOT NULL AND entry_hour_et IS NOT NULL
+           FROM trade_performance WHERE {CLOSED_LONG_ENTRY_PREDICATE}
+           AND entry_hour_et IS NOT NULL
            GROUP BY h ORDER BY h"""
     )
 
@@ -430,8 +451,7 @@ async def export_history(db, reports_dir) -> dict:
             f.write(_json.dumps(row, default=str) + "\n")
 
     closed = await db._query(
-        f"SELECT * FROM trade_performance WHERE {LONG_ENTRY_PREDICATE} "
-        "AND realized_pnl IS NOT NULL ORDER BY updated_at")
+        f"SELECT * FROM trade_performance WHERE {CLOSED_LONG_ENTRY_PREDICATE} ORDER BY updated_at")
     cols = ["ticker", "symbol", "strategy", "trade_type", "side", "qty",
             "filled_avg_price", "exit_price", "realized_pnl", "realized_pnl_pct",
             "exit_reason", "entry_hour_et", "hold_minutes", "submitted_at", "updated_at"]
@@ -837,7 +857,7 @@ def render_html(d: dict) -> str:
         f"<td class='{ 'up' if (s['pnl'] or 0)>=0 else 'down'}'>{_money(s['pnl'])}</td>"
         f"<td>{_money(s['avg_pnl'])}</td>"
         f"<td>{_hold(s['avg_hold'])}</td></tr>"
-        for s in d["by_strategy"]) or "<tr><td colspan='6' class='mut'>No closed trades yet — fills will populate this.</td></tr>"
+        for s in d["by_strategy"]) or "<tr><td colspan='6' class='mut'>No closed single-leg trades yet — fills will populate this.</td></tr>"
 
     recent_rows = "".join(
         f"<tr><td>{e(str(r['ticker']))}</td><td class='mut'>{e(str(r['strategy']))}</td>"
@@ -845,7 +865,7 @@ def render_html(d: dict) -> str:
         f"<td class='{ 'up' if r['pnl']>=0 else 'down'}'>{r['pnl_pct']:+.0f}%</td>"
         f"<td class='mut'>{e(str(r['exit_reason'] or ''))}</td>"
         f"<td>{_hold(r['hold_min'])}</td></tr>"
-        for r in d["recent"]) or "<tr><td colspan='6' class='mut'>No closed trades yet.</td></tr>"
+        for r in d["recent"]) or "<tr><td colspan='6' class='mut'>No closed single-leg trades yet.</td></tr>"
 
     proposals = "".join(f"<li>{e(p)}</li>" for p in d["proposals"])
     curve_json = _json_points(d["equity_curve"], a["start_equity"])
@@ -899,10 +919,10 @@ def render_html(d: dict) -> str:
   <div class="kpis">
     <div class="kpi"><div class="k">Equity</div><div class="v">${a['equity']:,.0f}</div><div class="n">{baseline_label} ${a['start_equity']:,.0f}</div></div>
     <div class="kpi"><div class="k">Total P&L</div><div class="v {pnl_cls}">{pnl_sign}${a['total_pnl']:,.0f}</div><div class="n {pnl_cls}">{pnl_pct_display}</div></div>
-    <div class="kpi"><div class="k">Closed trades</div><div class="v">{m['closed_trades']}</div><div class="n">{m['wins']}W / {m['losses']}L</div></div>
-    <div class="kpi"><div class="k">Win rate</div><div class="v">{(str(round(m['win_rate']))+'%') if m['closed_trades'] else '—'}</div><div class="n">PF {pf_disp}</div></div>
-    <div class="kpi"><div class="k">Entries / day</div><div class="v">{m['trades_per_day']:.1f}</div><div class="n">{m['trades_7d']} in 7d</div></div>
-    <div class="kpi"><div class="k">Open positions</div><div class="v">{a['open_positions']}</div><div class="n">avg hold {_hold(m['avg_hold_min'])}</div></div>
+    <div class="kpi"><div class="k">Closed single-leg trades</div><div class="v">{m['closed_trades']}</div><div class="n">{m['wins']}W / {m['losses']}L · avg hold {_hold(m['avg_hold_min'])}</div></div>
+    <div class="kpi"><div class="k">Single-leg win rate</div><div class="v">{(str(round(m['win_rate']))+'%') if m['closed_trades'] else '—'}</div><div class="n">PF {pf_disp}</div></div>
+    <div class="kpi"><div class="k">Single-leg entries / day</div><div class="v">{m['trades_per_day']:.1f}</div><div class="n">{m['trades_7d']} in 7d</div></div>
+    <div class="kpi"><div class="k">Broker positions</div><div class="v">{a['open_positions']}</div><div class="n">option legs counted individually</div></div>
     {risk_kpis}
   </div>
 
@@ -924,7 +944,7 @@ def render_html(d: dict) -> str:
     <div style="display:flex;gap:26px;flex-wrap:wrap;font-family:var(--mono)">
       <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Closed</div><div style="font-size:22px;font-weight:700">{condors['closed']}</div></div>
       <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Win rate</div><div style="font-size:22px;font-weight:700">{(str(round(condors['win_rate']))+'%') if condors['closed'] else '—'}</div></div>
-      <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Condor P&amp;L</div><div class="{ 'up' if (condors['total_pnl'] or 0)>=0 else 'down'}" style="font-size:22px;font-weight:700">{_money(condors['total_pnl'])}</div></div>
+      <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Condor P&amp;L (gross)</div><div class="{ 'up' if (condors['total_pnl'] or 0)>=0 else 'down'}" style="font-size:22px;font-weight:700">{_money(condors['total_pnl'])}</div></div>
       <div><div class="mut" style="font-size:10.5px;text-transform:uppercase">Active / pending</div><div style="font-size:22px;font-weight:700">{condors['open']} / {condors['pending']}</div></div>
     </div>
     {_open_condor_table}
@@ -938,15 +958,15 @@ def render_html(d: dict) -> str:
   {_market_events_card}
 
   <div class="card">
-    <h2>Equity curve</h2>
+    <h2>Account equity curve</h2>
     <svg id="eq" viewBox="0 0 640 200" role="img" aria-label="Paper account equity over time"></svg>
   </div>
 
-  <div class="card"><h2>By strategy (closed trades)</h2>
+  <div class="card"><h2>By strategy (closed single-leg trades)</h2>
     <div class="scroll"><table><thead><tr><th>Setup</th><th>N</th><th>Win%</th><th>P&L</th><th>Avg</th><th>Avg hold</th></tr></thead>
     <tbody>{strat_rows}</tbody></table></div></div>
 
-  <div class="card"><h2>Recent closed trades</h2>
+  <div class="card"><h2>Recent closed single-leg trades</h2>
     <div class="scroll"><table><thead><tr><th>Ticker</th><th>Setup</th><th>P&L</th><th>%</th><th>Exit</th><th>Hold</th></tr></thead>
     <tbody>{recent_rows}</tbody></table></div></div>
 

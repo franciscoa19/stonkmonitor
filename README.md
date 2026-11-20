@@ -101,6 +101,12 @@ Mondays). View it at <http://localhost:8000/api/report/daily?format=html>. With
 `REPORT_GIT_PUSH=true` the evaluation data (`backend/reports/history.jsonl`, `latest.json`,
 `trades.csv`) is also committed to GitHub as an off-machine backup.
 
+The notification and log summary report condor and single-leg results separately, with
+condor P&L labeled gross (before fees). Broker position counts include individual option
+legs and any residual long wings; they are not counts of active condors.
+Single-leg win rates and closed-trade exports wait until the full entry has been closed;
+realized P&L still includes profits and losses from partial exits while the rest remains open.
+
 ---
 
 ## Safety rails

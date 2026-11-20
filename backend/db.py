@@ -109,6 +109,8 @@ LONG_ENTRY_PREDICATE = f"side='buy' AND ({LONG_ENTRY_QTY_SQL})>0"
 OPEN_LONG_QTY_SQL = (
     "CASE WHEN position_intent='buy_to_close' THEN 0 ELSE COALESCE(open_qty,"
     "CASE WHEN realized_pnl IS NULL THEN filled_qty ELSE 0 END,0) END")
+CLOSED_LONG_ENTRY_PREDICATE = (
+    f"({LONG_ENTRY_PREDICATE}) AND realized_pnl IS NOT NULL AND ({OPEN_LONG_QTY_SQL})=0")
 
 def _outside_market_events(start_sql: str, end_sql: str) -> str:
     """SQL condition: no tagged market-event day falls in [start, end].
@@ -2443,24 +2445,25 @@ class Database:
         )
 
     async def get_performance_summary(self) -> dict:
-        """Aggregate performance stats across all closed trades."""
+        """Closed-entry outcomes, plus total realized dollars including trims."""
         summary = await self._scalar(
             f"""SELECT
                 COUNT(*) as total_trades,
-                SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winners,
-                SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) as losers,
+                SUM(CASE WHEN is_closed AND realized_pnl > 0 THEN 1 ELSE 0 END) as winners,
+                SUM(CASE WHEN is_closed AND realized_pnl < 0 THEN 1 ELSE 0 END) as losers,
                 SUM(CASE WHEN ({OPEN_LONG_QTY_SQL})>0 THEN 1 ELSE 0 END) as open_trades,
-                SUM(CASE WHEN realized_pnl IS NOT NULL THEN 1 ELSE 0 END) as closed_trades,
+                SUM(CASE WHEN is_closed THEN 1 ELSE 0 END) as closed_trades,
                 SUM(realized_pnl) as total_pnl,
-                AVG(realized_pnl) as avg_pnl,
-                AVG(realized_pnl_pct) as avg_pnl_pct,
-                MAX(realized_pnl) as best_trade,
-                MIN(realized_pnl) as worst_trade,
-                AVG(CASE WHEN realized_pnl > 0 THEN realized_pnl END) as avg_win,
-                AVG(CASE WHEN realized_pnl < 0 THEN realized_pnl END) as avg_loss,
-                SUM(CASE WHEN realized_pnl > 0 THEN realized_pnl ELSE 0 END) as gross_win,
-                SUM(CASE WHEN realized_pnl < 0 THEN -realized_pnl ELSE 0 END) as gross_loss
-               FROM trade_performance WHERE {LONG_ENTRY_PREDICATE}"""
+                AVG(CASE WHEN is_closed THEN realized_pnl END) as avg_pnl,
+                AVG(CASE WHEN is_closed THEN realized_pnl_pct END) as avg_pnl_pct,
+                MAX(CASE WHEN is_closed THEN realized_pnl END) as best_trade,
+                MIN(CASE WHEN is_closed THEN realized_pnl END) as worst_trade,
+                AVG(CASE WHEN is_closed AND realized_pnl > 0 THEN realized_pnl END) as avg_win,
+                AVG(CASE WHEN is_closed AND realized_pnl < 0 THEN realized_pnl END) as avg_loss,
+                SUM(CASE WHEN is_closed AND realized_pnl > 0 THEN realized_pnl ELSE 0 END) as gross_win,
+                SUM(CASE WHEN is_closed AND realized_pnl < 0 THEN -realized_pnl ELSE 0 END) as gross_loss
+               FROM (SELECT *, ({CLOSED_LONG_ENTRY_PREDICATE}) AS is_closed
+                     FROM trade_performance WHERE {LONG_ENTRY_PREDICATE}) entries"""
         )
         for key in ("total_trades", "winners", "losers", "open_trades", "closed_trades"):
             summary[key] = summary.get(key) or 0

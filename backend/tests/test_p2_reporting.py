@@ -74,7 +74,101 @@ async def test_partial_exit_stays_open_and_unfilled_orders_are_not_entries(db):
     assert (saved["long_entry_qty"], saved["open_qty"], saved["realized_pnl"]) == (10, 7, 30)
     summary = await db.get_performance_summary()
     assert summary["total_trades"] == summary["open_trades"] == 1
-    assert (await build_report_data(db, FakeTrader()))["metrics"]["trades_7d"] == 1
+    assert summary["closed_trades"] == summary["winners"] == summary["losers"] == 0
+    assert summary["profit_factor"] is None
+    data = await build_report_data(db, FakeTrader())
+    assert data["metrics"]["trades_7d"] == 1
+    assert data["metrics"]["closed_trades"] == 0
+    assert data["metrics"]["realized_total"] == summary["total_pnl"] == 30
+    assert data["recent"] == data["by_strategy"] == data["by_hour"] == []
+
+
+@pytest.mark.parametrize("partial_pnl", [30, -30, 0])
+async def test_partial_realizations_do_not_count_as_completed_trade_results(db, tmp_path, partial_pnl):
+    """An early trim can reverse before the entry's remaining shares are sold."""
+    at = datetime.now(timezone.utc).isoformat()
+    await seed_entry(db, "partial-entry", "AAPL", "AAPL", 100, 10,
+                     trade_type="equity", submitted_at=at)
+    await seed_exit(db, "trim", "AAPL", "AAPL", 100 + partial_pnl / 3, 3,
+                    trade_type="equity", filled_at=at)
+    await seed_entry(db, "closed-entry", "MSFT", "MSFT", 100, 1,
+                     trade_type="equity", submitted_at=at)
+    await seed_exit(db, "closed-exit", "MSFT", "MSFT", 90, 1,
+                    trade_type="equity", filled_at=at)
+    await db.reconcile_trades()
+
+    summary = await db.get_performance_summary()
+    report = await build_report_data(db, FakeTrader())
+    assert summary["open_trades"] == 1
+    assert summary["closed_trades"] == report["metrics"]["closed_trades"] == 1
+    assert summary["winners"] == report["metrics"]["wins"] == 0
+    assert summary["losers"] == report["metrics"]["losses"] == 1
+    assert summary["win_rate"] == report["metrics"]["win_rate"] == 0
+    assert summary["profit_factor"] == report["metrics"]["profit_factor"] == 0
+    assert summary["total_pnl"] == report["metrics"]["realized_total"] == partial_pnl - 10
+    assert summary["avg_pnl"] == summary["best_trade"] == summary["worst_trade"] == -10
+    assert [r["ticker"] for r in report["recent"]] == ["MSFT"]
+    assert sum(s["n"] for s in report["by_strategy"]) == sum(h["n"] for h in report["by_hour"]) == 1
+
+    from daily_report import export_history
+    import csv
+    exported = await export_history(db, tmp_path / "reports")
+    with open(exported["trades"], newline="") as f:
+        assert [r["ticker"] for r in csv.DictReader(f)] == ["MSFT"]
+
+    await seed_exit(db, "final-exit", "AAPL", "AAPL", 90, 7, trade_type="equity",
+                    filled_at=(datetime.fromisoformat(at) + timedelta(seconds=1)).isoformat())
+    await db.reconcile_trades()
+    summary = await db.get_performance_summary()
+    report = await build_report_data(db, FakeTrader())
+    assert summary["open_trades"] == 0
+    assert summary["closed_trades"] == report["metrics"]["closed_trades"] == 2
+    assert summary["winners"] == report["metrics"]["wins"] == 0
+    assert summary["total_pnl"] == report["metrics"]["realized_total"] == partial_pnl - 80
+    assert {r["ticker"] for r in report["recent"]} == {"MSFT", "AAPL"}
+    exported = await export_history(db, tmp_path / "reports")
+    with open(exported["trades"], newline="") as f:
+        trades = list(csv.DictReader(f))
+    assert len(trades) == 2 and {r["ticker"] for r in trades} == {"MSFT", "AAPL"}
+
+
+async def test_partial_loss_on_an_open_entry_stays_out_of_profit_factor(db):
+    """Gross losses, like wins, come only from completed entries: a losing trim on a
+    position still open must not turn a clean winning record into a profit factor."""
+    at = datetime.now(timezone.utc).isoformat()
+    await seed_entry(db, "winner", "MSFT", "MSFT", 100, 1, trade_type="equity", submitted_at=at)
+    await seed_exit(db, "winner-exit", "MSFT", "MSFT", 110, 1, trade_type="equity", filled_at=at)
+    await seed_entry(db, "open-entry", "AAPL", "AAPL", 100, 10, trade_type="equity", submitted_at=at)
+    await seed_exit(db, "losing-trim", "AAPL", "AAPL", 90, 3, trade_type="equity", filled_at=at)
+    await db.reconcile_trades()
+
+    summary = await db.get_performance_summary()
+    report = await build_report_data(db, FakeTrader())
+    assert summary["closed_trades"] == report["metrics"]["closed_trades"] == 1
+    assert (summary["winners"], summary["losers"]) == (1, 0)
+    assert summary["profit_factor"] is None and report["metrics"]["profit_factor"] is None
+    assert summary["total_pnl"] == report["metrics"]["realized_total"] == -20
+
+
+async def test_an_entry_without_a_recorded_realization_is_not_a_completed_trade(db, tmp_path):
+    """No remaining quantity is not enough: a completed trade also needs its P&L."""
+    at = datetime.now(timezone.utc).isoformat()
+    await seed_entry(db, "unpriced", "AAPL", "AAPL", 100, 5, strategy="sweep",
+                     trade_type="equity", submitted_at=at)
+    await db._exec("UPDATE trade_performance SET long_entry_qty=5, open_qty=0, realized_pnl=NULL "
+                   "WHERE alpaca_order_id='unpriced'")
+
+    summary = await db.get_performance_summary()
+    assert summary["total_trades"] == 1
+    assert summary["closed_trades"] == summary["open_trades"] == 0
+    report = await build_report_data(db, FakeTrader())
+    assert report["metrics"]["closed_trades"] == 0
+    assert report["by_strategy"] == report["by_hour"] == []
+    from daily_report import export_history
+    import csv
+    exported = await export_history(db, tmp_path / "reports")
+    with open(exported["trades"], newline="") as f:
+        assert list(csv.DictReader(f)) == []
 
 
 async def test_inferred_stock_cover_counts_only_its_excess_as_a_long_entry(db):

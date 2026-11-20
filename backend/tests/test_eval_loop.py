@@ -1766,6 +1766,13 @@ async def test_proposals_count_closed_condors_not_just_the_legacy_ledger(db):
     assert d["metrics"]["closed_all"] == d["metrics"]["closed_trades"] + 3
     assert "No closed trades" not in text, f"still blind to condors: {text}"
     assert d["activity"]["tag"] != "QUIET"
+    html = render_html(d)
+    assert "Closed single-leg trades" in html
+    assert "Single-leg win rate" in html
+    assert "Single-leg entries / day" in html
+    assert "Broker positions" in html
+    assert "Recent closed single-leg trades" in html
+    assert "No closed trades yet" not in html
 
 
 async def test_no_trade_proposal_does_not_target_a_disabled_engine(db, monkeypatch):

@@ -2508,7 +2508,7 @@ async def generate_daily_report(is_weekly: bool = False, scheduled: bool = False
     """
     from pathlib import Path
     import json as _json
-    from daily_report import (build_report_data, render_html, build_watchlist_review,
+    from daily_report import (build_report_data, build_report_summary, render_html, build_watchlist_review,
                               export_history, report_day)
     from api.routes import _watchlist
     from market_time import et_today
@@ -2543,12 +2543,7 @@ async def generate_daily_report(is_weekly: bool = False, scheduled: bool = False
         data["proposals"] = (await build_watchlist_review(db, list(_watchlist))) + data["proposals"]
 
     day = report_day(data)
-    a, m = data["account"], data["metrics"]
-    return_display = (f"{a['total_pnl_pct']:+.2f}%" if a["total_pnl_pct"] is not None
-                      else f"P&L ${a['total_pnl']:+,.0f}; return percentage unavailable")
-    summary = (f"Equity ${a['equity']:,.0f} ({return_display}) | "
-               f"{m['closed_trades']} closed {m['win_rate']:.0f}%WR | "
-               f"{a['open_positions']} open | {len(data['proposals'])} proposal(s)")
+    summary = build_report_summary(data)
     # Record the run as incomplete BEFORE writing the HTML, so a failure below
     # is seen as unfinished rather than mistaken for a completed legacy report.
     state = {"exported": False, "published": False, "notified": False, "complete": False,
